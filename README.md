@@ -1,6 +1,8 @@
 # Sendmer
 
-This project is based on [n0-computer/sendme](https://github.com/n0-computer/sendme) is an example application using [iroh](https://crates.io/crates/iroh) with
+This project is based on [n0-computer/sendme v0.31.0](https://github.com/n0-computer/sendme/commit/6e50167a8a4d45736179cce3d8d5fd803c87c24e)
+
+It is an example application using [iroh](https://crates.io/crates/iroh) with
 the [iroh-blobs](https://crates.io/crates/iroh-blobs) protocol to send files and
 directories over the internet.
 
@@ -12,14 +14,14 @@ and fall back to a relay if hole punching does not succeed.
 Iroh-blobs will take care of [blake3](https://crates.io/crates/blake3) verified
 streaming, including resuming interrupted downloads.
 
-Sendme works with 256 bit node ids and is, therefore, location transparent. A ticket
+sendmer works with 256 bit node ids and is, therefore, location transparent. A ticket
 will remain valid if the IP address changes. Connections are encrypted using
 TLS.
 
 # Installation
 
 ```
-cargo install sendme
+cargo install sendmer
 ```
 
 # Usage
@@ -27,7 +29,7 @@ cargo install sendme
 ## Send side
 
 ```
-sendme send <file or directory>
+sendmer send <file or directory>
 ```
 
 This will create a temporary [iroh](https://crates.io/crates/iroh) node that
@@ -43,7 +45,7 @@ the future this won't be needed anymore.
 ### Receive side
 
 ```
-sendme receive <ticket>
+sendmer receive <ticket>
 ```
 
 This will download the data and create a file or directory named like the source
@@ -55,4 +57,4 @@ directory.
 
 On completion, it will delete the temp directory.
 
-All temp directories start with `.sendme-`.
+All temp directories start with `.sendmer-`.

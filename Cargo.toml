@@ -1,12 +1,12 @@
 [package]
-name = "sendme"
-version = "0.31.0"
+name = "sendmer"
+version = "0.0.1"
 edition = "2021"
-authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>", "n0 team"]
+authors = ["likanug <likanug.g@qq.com>"]
 keywords = ["scp", "sftp", "network", "p2p", "holepunching"]
 categories = ["network-programming"]
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/n0-computer/sendme"
+repository = "https://github.com/bruceblink/sendmer"
 description = "A cli tool to send directories over the network, with NAT hole punching"
 readme = "README.md"
 

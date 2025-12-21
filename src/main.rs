@@ -662,7 +662,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     // use a flat store - todo: use a partial in mem store instead
     let suffix = rand::rng().random::<[u8; 16]>();
     let cwd = std::env::current_dir()?;
-    let blobs_data_dir = cwd.join(format!(".sendme-send-{}", HEXLOWER.encode(&suffix)));
+    let blobs_data_dir = cwd.join(format!(".sendmer-send-{}", HEXLOWER.encode(&suffix)));
     if blobs_data_dir.exists() {
         println!(
             "can not share twice from the same directory: {}",
@@ -761,7 +761,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     }
 
     println!("to get this data, use");
-    println!("sendme receive {ticket}");
+    println!("sendmer receive {ticket}");
 
     #[cfg(feature = "clipboard")]
     handle_key_press(args.clipboard, ticket);
@@ -856,7 +856,7 @@ fn add_to_clipboard(ticket: &BlobTicket) {
 
     execute!(
         stdout(),
-        CopyToClipboard::to_clipboard_from(format!("sendme receive {ticket}"))
+        CopyToClipboard::to_clipboard_from(format!("sendmer receive {ticket}"))
     )
     .unwrap_or_else(|e| eprintln!("Failed to copy to clipboard: {e}"));
 }
@@ -1015,7 +1015,7 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         builder = builder.bind_addr_v6(addr);
     }
     let endpoint = builder.bind().await?;
-    let dir_name = format!(".sendme-recv-{}", ticket.hash().to_hex());
+    let dir_name = format!(".sendmer-recv-{}", ticket.hash().to_hex());
     let iroh_data_dir = std::env::current_dir()?.join(dir_name);
     let db = FsStore::load(&iroh_data_dir).await?;
     let db2 = db.clone();
