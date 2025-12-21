@@ -35,7 +35,7 @@ on:
         default: "true"
 
 env:
-  BIN_NAME: sendme
+  BIN_NAME: sendmer
   IROH_FORCE_STAGING_RELAYS: "1"
 
 jobs:
