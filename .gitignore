@@ -2,3 +2,7 @@
 tmp/*
 tmp2/*
 .sendmer-*
+
+# ide
+.idea/
+*.iml
