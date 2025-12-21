@@ -1,6 +1,6 @@
-# Sendme
+# Sendmer
 
-This is an example application using [iroh](https://crates.io/crates/iroh) with
+This project is based on [n0-computer/sendme](https://github.com/n0-computer/sendme) is an example application using [iroh](https://crates.io/crates/iroh) with
 the [iroh-blobs](https://crates.io/crates/iroh-blobs) protocol to send files and
 directories over the internet.
 
