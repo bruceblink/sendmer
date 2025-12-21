@@ -48,7 +48,7 @@ use n0_future::{task::AbortOnDropHandle, FuturesUnordered, StreamExt};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::{select, sync::mpsc};
-use tracing::{error, trace};
+use tracing::{trace, warn};
 use walkdir::WalkDir;
 
 /// Send a file or directory between two machines, using blake3 verified streaming.
@@ -544,7 +544,7 @@ async fn per_request_progress(
         connection.requests.insert(request_id, pb.clone());
         connection.endpoint_id.clone()
     } else {
-        error!("got request for unknown connection {connection_id}");
+        warn!("got request for unknown connection {connection_id}");
         return;
     };
     pb.set_style(
