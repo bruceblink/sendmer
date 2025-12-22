@@ -1,5 +1,5 @@
-pub mod send;
-pub mod receive;
+mod send;
+mod receive;
 mod progress;
 mod common;
 
