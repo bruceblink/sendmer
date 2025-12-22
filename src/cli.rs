@@ -3,12 +3,10 @@ use clap::{
     CommandFactory, Parser,
 };
 use console::style;
-use sendmer::core::{receive, send};
-use sendmer::types::{Args, Commands};
+use crate::core::{receive, send};
+use crate::types::{Args, Commands};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+pub async fn run() -> anyhow::Result<()> {
     let args = match Args::try_parse() {
         Ok(args) => args,
         Err(cause) => {
@@ -24,15 +22,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     };
-    let res = match args.command {
+
+    match args.command {
         Commands::Send(args) => send(args).await,
         Commands::Receive(args) => receive(args).await,
-    };
-    if let Err(e) = &res {
-        eprintln!("{e}");
-    }
-    match res {
-        Ok(()) => std::process::exit(0),
-        Err(_) => std::process::exit(1),
     }
 }
