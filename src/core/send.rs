@@ -1,6 +1,7 @@
 use crate::core::types::{
     AddrInfoOptions, AppHandle, SendOptions, SendResult, apply_options, get_or_create_secret,
 };
+use crate::core::progress::{emit_event, emit_progress_event};
 use anyhow::Context;
 use data_encoding::HEXLOWER;
 use iroh::{Endpoint, RelayMode, discovery::pkarr::PkarrPublisher};
@@ -26,33 +27,7 @@ use tokio::{select, sync::mpsc};
 use tracing::trace;
 use walkdir::WalkDir;
 
-fn emit_event(app_handle: &AppHandle, event_name: &str) {
-    if let Some(e) = app_handle
-        .as_ref()
-        .and_then(|handle| handle.emit_event(event_name).err())
-    {
-        tracing::warn!("Failed to emit event {}: {}", event_name, e);
-    }
-}
-
-fn emit_progress_event(
-    app_handle: &AppHandle,
-    bytes_transferred: u64,
-    total_bytes: u64,
-    speed_bps: f64,
-) {
-    if let Some(handle) = app_handle {
-        let event_name = "transfer-progress";
-
-        let speed_int = (speed_bps * 1000.0) as i64;
-
-        let payload = format!("{}:{}:{}", bytes_transferred, total_bytes, speed_int);
-
-        if let Err(e) = handle.emit_event_with_payload(event_name, &payload) {
-            tracing::warn!("Failed to emit progress event: {}", e);
-        }
-    }
-}
+// use helpers from core::progress
 
 pub async fn start_share(
     path: PathBuf,
@@ -389,7 +364,7 @@ async fn show_provide_progress_with_logging(
                                                 0.0
                                             };
 
-                                            emit_progress_event(&app_handle_task, m.end_offset, state.total_size, speed_bps);
+                                            emit_progress_event(&app_handle_task, "transfer-progress", m.end_offset, state.total_size, speed_bps);
                                         }
                                     }
                                     iroh_blobs::provider::events::RequestUpdate::Completed(_m) => {
