@@ -68,7 +68,7 @@ pub struct CliEventEmitter {
 impl CliEventEmitter {
     /// 创建一个新的 `CliEventEmitter`。
     ///
-    /// `prefix` 用于在进度条前显示，例如 "[send]" 或 "[recv]"。
+    /// `prefix` 用于在进度条前显示，例如 "\[send\]" 或 "\[recv\]"。
     pub fn new(prefix: &str) -> Self {
         Self {
             mp: Arc::new(MultiProgress::new()),
