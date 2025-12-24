@@ -9,6 +9,9 @@ use clap::{
 };
 use console::style;
 
+/// 处理 CLI 参数并分发到具体子命令处理函数。
+///
+/// 该函数负责解析 `Args` 并调用 `send` 或 `receive`。
 pub async fn run() -> anyhow::Result<()> {
     let args = match Args::try_parse() {
         Ok(args) => args,
@@ -31,6 +34,15 @@ pub async fn run() -> anyhow::Result<()> {
         Commands::Receive(args) => receive(args).await,
     }
 }
+
+/// CLI wrapper: call library `start_share` and show minimal output.
+///
+/// 该函数为 `send` 子命令提供一个小封装：构建 `SendOptions`，
+/// 根据 `args.common.no_progress` 决定是否启用 `CliEventEmitter`，
+/// 启动分享并在完成后清理临时资源。
+///
+/// 该函数主要用于命令行程序，不作为库 API 的一部分使用。
+pub async fn send(args: SendArgs) -> anyhow::Result<()> {
 
 /// CLI wrapper: call library `start_share` and show minimal output.
 pub async fn send(args: SendArgs) -> anyhow::Result<()> {
@@ -72,6 +84,10 @@ pub async fn send(args: SendArgs) -> anyhow::Result<()> {
 }
 
 /// CLI wrapper: call library `download` and print the result message.
+/// CLI wrapper: call library `download` and print the result message.
+///
+/// 与 `send` 类似，`receive` 在命令行模式下决定是否创建 `CliEventEmitter`，
+/// 调用 `download` 并将结果消息输出到 stdout。
 pub async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
 
     let opts = ReceiveOptions {
