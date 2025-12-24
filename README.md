@@ -2,9 +2,16 @@
 
 This project is based on [n0-computer/sendme v0.31.0](https://github.com/n0-computer/sendme/commit/6e50167a8a4d45736179cce3d8d5fd803c87c24e)
 
+Crate: https://crates.io/crates/sendmer
+Documentation: https://docs.rs/sendmer
+
 It is an example application using [iroh](https://crates.io/crates/iroh) with
 the [iroh-blobs](https://crates.io/crates/iroh-blobs) protocol to send files and
 directories over the internet.
+
+This repository serves two purposes: it provides a command-line application
+(CLI) for end users, and it also exposes library APIs so other Rust projects
+can reuse the iroh-based transfer functionality.
 
 It is also useful as a standalone tool for quick copy jobs.
 
