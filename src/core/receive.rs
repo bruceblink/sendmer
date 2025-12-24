@@ -1,4 +1,5 @@
 use crate::core::types::{AppHandle, ReceiveOptions, ReceiveResult, get_or_create_secret};
+use crate::core::progress::{emit_event, emit_event_with_payload, emit_progress_event};
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
 use iroh_blobs::{
     api::{
@@ -18,47 +19,7 @@ use std::time::Instant;
 use tokio::select;
 use tracing::log::trace;
 
-// Helper function to emit events through the app handle
-fn emit_event(app_handle: &AppHandle, event_name: &str) {
-    if let Some(handle) = app_handle
-        && let Err(e) = handle.emit_event(event_name)
-    {
-        tracing::warn!("Failed to emit event {}: {}", event_name, e);
-    }
-}
-
-// Helper function to emit progress events with payload
-fn emit_progress_event(
-    app_handle: &AppHandle,
-    bytes_transferred: u64,
-    total_bytes: u64,
-    speed_bps: f64,
-) {
-    if let Some(handle) = app_handle {
-        // Use a consistent event name
-        let event_name = "receive-progress";
-
-        // Convert speed to integer (multiply by 1000 to preserve 3 decimal places)
-        let speed_int = (speed_bps * 1000.0) as i64;
-
-        // Create payload data as colon-separated string
-        let payload = format!("{}:{}:{}", bytes_transferred, total_bytes, speed_int);
-
-        // Emit the event with proper payload
-        if let Err(e) = handle.emit_event_with_payload(event_name, &payload) {
-            tracing::warn!("Failed to emit progress event: {}", e);
-        }
-    }
-}
-
-// Helper function to emit events with payload
-fn emit_event_with_payload(app_handle: &AppHandle, event_name: &str, payload: &str) {
-    if let Some(handle) = app_handle
-        && let Err(e) = handle.emit_event_with_payload(event_name, payload)
-    {
-        tracing::warn!("Failed to emit event {} with payload: {}", event_name, e);
-    }
-}
+// event helpers provided by `core::progress`
 
 pub async fn download(
     ticket_str: String,
@@ -103,18 +64,46 @@ pub async fn download(
             // Emit receive-started event
             emit_event(&app_handle, "receive-started");
 
-            let connection = endpoint.connect(addr, iroh_blobs::protocol::ALPN).await?;
+            let mut connection = endpoint.connect(addr.clone(), iroh_blobs::protocol::ALPN).await?;
 
-            let sizes_result =
-                get_hash_seq_and_sizes(&connection, &hash_and_format.hash, 1024 * 1024 * 32, None)
-                    .await;
+            // Try to get sizes with retries to handle transient connection resets
+            let mut sizes_opt: Option<(iroh_blobs::hashseq::HashSeq, std::sync::Arc<[u64]>)> = None;
+            let mut last_err: Option<iroh_blobs::get::GetError> = None;
+            for attempt in 1..=3 {
+                let sizes_result = get_hash_seq_and_sizes(&connection, &hash_and_format.hash, 1024 * 1024 * 32, None).await;
+                match sizes_result {
+                    Ok((hash_seq, sizes)) => {
+                        sizes_opt = Some((hash_seq, sizes));
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!("Attempt {attempt} to get sizes failed: {e:?}");
+                        last_err = Some(e);
+                        if attempt < 3 {
+                            let backoff = std::time::Duration::from_millis(250 * attempt as u64);
+                            tokio::time::sleep(backoff).await;
+                            // try to reconnect the endpoint before retrying
+                            match endpoint.connect(addr.clone(), iroh_blobs::protocol::ALPN).await {
+                                Ok(new_conn) => connection = new_conn,
+                                Err(conn_err) => {
+                                    tracing::error!("reconnect failed: {conn_err}");
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
 
-            let (_hash_seq, sizes) = match sizes_result {
-                Ok((hash_seq, sizes)) => (hash_seq, sizes),
-                Err(e) => {
-                    tracing::error!("Failed to get sizes: {:?}", e);
-                    tracing::error!("Error type: {}", std::any::type_name_of_val(&e));
-                    return Err(show_get_error(e).into());
+            let ( _hash_seq, sizes) = match sizes_opt {
+                Some((hash_seq, sizes)) => (hash_seq, sizes),
+                None => {
+                    if let Some(e) = last_err {
+                        tracing::error!("Failed to get sizes after retries: {:?}", e);
+                        tracing::error!("Error type: {}", std::any::type_name_of_val(&e));
+                        return Err(show_get_error(e).into());
+                    }
+                    anyhow::bail!("unknown error getting sizes");
                 }
             };
             let _total_size = sizes.iter().copied().sum::<u64>();
@@ -125,7 +114,7 @@ pub async fn download(
             let total_files = sizes.len().saturating_sub(1) as u64;
 
             // Emit initial progress event (0%) so frontend can display total size immediately
-            emit_progress_event(&app_handle, 0, payload_size, 0.0);
+            emit_progress_event(&app_handle, "receive-progress", 0, payload_size, 0.0);
 
             let _local_size = local.local_bytes();
             let get = db.remote().execute_get(connection, local.missing());
@@ -150,7 +139,7 @@ pub async fn download(
                                 0.0
                             };
 
-                            emit_progress_event(&app_handle, offset, payload_size, speed_bps);
+                            emit_progress_event(&app_handle, "receive-progress", offset, payload_size, speed_bps);
                         }
                     }
                     GetProgressItem::Done(value) => {
@@ -163,7 +152,7 @@ pub async fn download(
                         } else {
                             0.0
                         };
-                        emit_progress_event(&app_handle, payload_size, payload_size, speed_bps);
+                        emit_progress_event(&app_handle, "receive-progress", payload_size, payload_size, speed_bps);
 
                         break;
                     }
