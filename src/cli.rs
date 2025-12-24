@@ -43,10 +43,6 @@ pub async fn run() -> anyhow::Result<()> {
 ///
 /// 该函数主要用于命令行程序，不作为库 API 的一部分使用。
 pub async fn send(args: SendArgs) -> anyhow::Result<()> {
-
-/// CLI wrapper: call library `start_share` and show minimal output.
-pub async fn send(args: SendArgs) -> anyhow::Result<()> {
-
     let opts = SendOptions {
         relay_mode: args.common.relay,
         ticket_type: args.ticket_type,
@@ -83,7 +79,6 @@ pub async fn send(args: SendArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// CLI wrapper: call library `download` and print the result message.
 /// CLI wrapper: call library `download` and print the result message.
 ///
 /// 与 `send` 类似，`receive` 在命令行模式下决定是否创建 `CliEventEmitter`，
