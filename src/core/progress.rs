@@ -79,7 +79,9 @@ impl CliEventEmitter {
 
     // 创建并返回进度条样式（内部使用）。
     fn make_progress_style() -> ProgressStyle {
-        ProgressStyle::with_template("{prefix}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec}")
+        #[allow(clippy::literal_string_with_formatting_args)]
+        let template = "{prefix}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec}";
+        ProgressStyle::with_template(template)
             .unwrap()
             .progress_chars("#>-")
     }
@@ -96,19 +98,20 @@ impl EventEmitter for CliEventEmitter {
                     pb.enable_steady_tick(Duration::from_millis(250));
                     pb.set_prefix(format!("{} ", self.prefix));
                     *guard = Some(pb);
+                    drop(guard);
                 }
                 Ok(())
             }
             "transfer-completed" | "receive-completed" => {
-                let mut guard = self.pb.lock().unwrap();
-                if let Some(pb) = guard.take() {
+                let value = self.pb.lock().unwrap().take();
+                if let Some(pb) = value {
                     pb.finish_and_clear();
                 }
                 Ok(())
             }
             "transfer-failed" | "receive-failed" => {
-                let mut guard = self.pb.lock().unwrap();
-                if let Some(pb) = guard.take() {
+                let value = self.pb.lock().unwrap().take();
+                if let Some(pb) = value {
                     pb.abandon();
                 }
                 Ok(())
@@ -144,6 +147,7 @@ impl EventEmitter for CliEventEmitter {
             pb.set_length(total);
             pb.set_position(bytes);
             *guard = Some(pb);
+            drop(guard);
             return Ok(());
         }
         if let Some(pb) = guard.as_ref() {
@@ -151,6 +155,7 @@ impl EventEmitter for CliEventEmitter {
             pb.set_position(bytes);
             pb.set_message(format!("{}/s", humantime_bytes_per_sec(speed)));
         }
+        drop(guard);
         Ok(())
     }
 }
