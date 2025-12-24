@@ -1,10 +1,10 @@
+use crate::common::{receive, send};
+use crate::core::types::{Args, Commands};
 use clap::{
-    error::{ContextKind, ErrorKind},
     CommandFactory, Parser,
+    error::{ContextKind, ErrorKind},
 };
 use console::style;
-use crate::core::{receive, send};
-use crate::types::{Args, Commands};
 
 pub async fn run() -> anyhow::Result<()> {
     let args = match Args::try_parse() {
