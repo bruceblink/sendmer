@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use crate::core::types::{ReceiveArgs, SendArgs};
-use crate::cli_progress::CliEventEmitter;
+use crate::core::progress::CliEventEmitter;
 use crate::{SendOptions, ReceiveOptions, AppHandle};
 use indicatif::HumanBytes;
 
