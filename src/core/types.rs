@@ -64,17 +64,12 @@ pub struct ReceiveOptions {
     pub magic_ipv6_addr: Option<SocketAddrV6>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum RelayModeOption {
     Disabled,
+    #[default]
     Default,
     Custom(RelayUrl),
-}
-
-impl Default for RelayModeOption {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 impl From<RelayModeOption> for iroh::RelayMode {
