@@ -1,3 +1,7 @@
+//! 核心类型与命令行参数定义。
+//!
+//! 本文件定义：事件发射器 trait、共享的配置结构、以及 CLI 参数解析相关的类型。
+
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use iroh::{EndpointAddr, RelayUrl, TransportAddr};
@@ -9,13 +13,17 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-// Import the EventEmitter trait - we'll define it here or import it
+/// 事件发射器接口：库通过该 trait 在运行时向前端/UI 发送事件。
+///
+/// 实现者应尽量保持非阻塞并返回 `Result` 表示是否成功处理事件。
 pub trait EventEmitter: Send + Sync {
     fn emit_event(&self, event_name: &str) -> Result<(), String>;
     fn emit_event_with_payload(&self, event_name: &str, payload: &str) -> Result<(), String>;
 }
 
-// Type alias for the app handle - we use Arc<dyn EventEmitter> to allow cloning and avoid direct tauri dependency in core
+/// 应用层句柄：可选包装的共享 `EventEmitter`。
+///
+/// 使用 `None` 表示不发射任何事件（例如在测试或禁止进度时）。
 pub type AppHandle = Option<Arc<dyn EventEmitter>>;
 
 pub struct SendResult {
@@ -31,6 +39,8 @@ pub struct SendResult {
     pub _progress_handle: n0_future::task::AbortOnDropHandle<anyhow::Result<()>>, // Keeps event channel open
     pub _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
 }
+
+// 以上结构都是内部核心类型，包含跨模块共享的返回值与资源句柄。
 
 #[derive(Debug)]
 pub struct ReceiveResult {
