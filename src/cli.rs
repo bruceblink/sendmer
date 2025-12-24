@@ -16,16 +16,21 @@ pub async fn run() -> anyhow::Result<()> {
     let args = match Args::try_parse() {
         Ok(args) => args,
         Err(cause) => {
-            if let Some(text) = cause.get(ContextKind::InvalidSubcommand) {
-                eprintln!("{} \"{}\"\n", ErrorKind::InvalidSubcommand, text);
-                eprintln!("Available subcommands are");
-                for cmd in Args::command().get_subcommands() {
-                    eprintln!("    {}", style(cmd.get_name()).bold());
-                }
-                std::process::exit(1);
-            } else {
-                cause.exit();
-            }
+            cause
+                .get(ContextKind::InvalidSubcommand)
+                .map_or_else(
+                    || {
+                        cause.exit();
+                    },
+                    |text| {
+                        eprintln!("{} \"{}\"\n", ErrorKind::InvalidSubcommand, text);
+                        eprintln!("Available subcommands are");
+                        for cmd in Args::command().get_subcommands() {
+                            eprintln!("    {}", style(cmd.get_name()).bold());
+                        }
+                        std::process::exit(1);
+                    },
+                )
         }
     };
 
