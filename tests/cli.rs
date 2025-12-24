@@ -67,7 +67,7 @@ fn send_recv_file() {
     let ticket = output.split_ascii_whitespace().last().unwrap();
     let ticket = BlobTicket::from_str(ticket).unwrap();
     // Call library `download` directly to keep tests focused on library API.
-    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let opts = sendmer::ReceiveOptions {
         output_dir: Some(tgt_dir.path().to_path_buf()),
         relay_mode: Default::default(),
@@ -124,7 +124,7 @@ fn send_recv_dir() {
     let ticket = output.split_ascii_whitespace().last().unwrap();
     let ticket = BlobTicket::from_str(ticket).unwrap();
     // Call library `download` directly to keep tests focused on library API.
-    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let opts = sendmer::ReceiveOptions {
         output_dir: Some(tgt_dir.path().to_path_buf()),
         relay_mode: Default::default(),
