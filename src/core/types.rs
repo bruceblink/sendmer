@@ -80,9 +80,9 @@ impl Default for RelayModeOption {
 impl From<RelayModeOption> for iroh::RelayMode {
     fn from(value: RelayModeOption) -> Self {
         match value {
-            RelayModeOption::Disabled => iroh::RelayMode::Disabled,
-            RelayModeOption::Default => iroh::RelayMode::Default,
-            RelayModeOption::Custom(url) => iroh::RelayMode::Custom(url.into()),
+            RelayModeOption::Disabled => Self::Disabled,
+            RelayModeOption::Default => Self::Default,
+            RelayModeOption::Custom(url) => Self::Custom(url.into()),
         }
     }
 }
@@ -135,13 +135,13 @@ pub fn apply_options(addr: &mut EndpointAddr, opts: AddrInfoOptions) {
 }
 
 pub fn get_or_create_secret() -> anyhow::Result<iroh::SecretKey> {
-    match std::env::var("IROH_SECRET") {
-        Ok(secret) => iroh::SecretKey::from_str(&secret).context("invalid secret"),
-        Err(_) => {
+    std::env::var("IROH_SECRET").map_or_else(
+        |_| {
             let key = iroh::SecretKey::generate(&mut rand::rng());
             Ok(key)
-        }
-    }
+        },
+        |secret| iroh::SecretKey::from_str(&secret).context("invalid secret"),
+    )
 }
 
 #[derive(Parser, Debug)]
@@ -163,8 +163,8 @@ impl FromStr for Format {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            "hex" => Ok(Format::Hex),
-            "cid" => Ok(Format::Cid),
+            "hex" => Ok(Self::Hex),
+            "cid" => Ok(Self::Cid),
             _ => Err(anyhow::anyhow!("invalid format")),
         }
     }
@@ -173,15 +173,15 @@ impl FromStr for Format {
 impl Display for Format {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Format::Hex => write!(f, "hex"),
-            Format::Cid => write!(f, "cid"),
+            Self::Hex => write!(f, "hex"),
+            Self::Cid => write!(f, "cid"),
         }
     }
 }
 
 pub fn print_hash(hash: &Hash, format: Format) -> String {
     match format {
-        Format::Hex => hash.to_hex().to_string(),
+        Format::Hex => hash.to_hex(),
         Format::Cid => hash.to_string(),
     }
 }
