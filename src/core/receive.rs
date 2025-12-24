@@ -30,6 +30,7 @@ use tracing::log::trace;
 /// - `ticket_str`：连接票据字符串。
 /// - `options`：接收选项（输出目录、转发模式等）。
 /// - `app_handle`：可选的事件发射器句柄，用于 UI/CLI 上报进度与文件名等信息。
+#[allow(clippy::cognitive_complexity)]
 pub async fn download(
     ticket_str: String,
     options: ReceiveOptions,
@@ -300,33 +301,48 @@ async fn export(db: &Store, collection: Collection, output_dir: &Path) -> anyhow
 
 /// 将 `GetError` 打印到日志并原样返回，便于上层处理。
 fn show_get_error(e: GetError) -> GetError {
-    match &e {
-        GetError::InitialNext { source, .. } => {
-            tracing::error!("initial connection error: {source}");
+    log_get_error(&e);
+    e
+}
+
+fn log_get_error(e: &GetError) {
+    match e {
+        GetError::InitialNext { .. } | GetError::ConnectedNext { .. } | GetError::AtBlobHeaderNext { .. } => {
+            log_get_error_connection(e);
         }
-        GetError::ConnectedNext { source, .. } => {
-            tracing::error!("connected error: {source}");
+        GetError::Decode { .. } | GetError::IrpcSend { .. } => {
+            log_get_error_decode_or_irpc(e);
         }
-        GetError::AtBlobHeaderNext { source, .. } => {
-            tracing::error!("reading blob header error: {source}");
-        }
-        GetError::Decode { source, .. } => {
-            tracing::error!("decoding error: {source}");
-        }
-        GetError::IrpcSend { source, .. } => {
-            tracing::error!("error sending over irpc: {source}");
-        }
-        GetError::AtClosingNext { source, .. } => {
-            tracing::error!("error at closing: {source}");
-        }
-        GetError::BadRequest { .. } => {
-            tracing::error!("bad request");
-        }
-        GetError::LocalFailure { source, .. } => {
-            tracing::error!("local failure {source:?}");
+        GetError::AtClosingNext { .. } | GetError::BadRequest { .. } | GetError::LocalFailure { .. } => {
+            log_get_error_misc(e);
         }
     }
-    e
+}
+
+fn log_get_error_connection(e: &GetError) {
+    match e {
+        GetError::InitialNext { source, .. } => tracing::error!("initial connection error: {source}"),
+        GetError::ConnectedNext { source, .. } => tracing::error!("connected error: {source}"),
+        GetError::AtBlobHeaderNext { source, .. } => tracing::error!("reading blob header error: {source}"),
+        _ => {}
+    }
+}
+
+fn log_get_error_decode_or_irpc(e: &GetError) {
+    match e {
+        GetError::Decode { source, .. } => tracing::error!("decoding error: {source}"),
+        GetError::IrpcSend { source, .. } => tracing::error!("error sending over irpc: {source}"),
+        _ => {}
+    }
+}
+
+fn log_get_error_misc(e: &GetError) {
+    match e {
+        GetError::AtClosingNext { source, .. } => tracing::error!("error at closing: {source}"),
+        GetError::BadRequest { .. } => tracing::error!("bad request"),
+        GetError::LocalFailure { source, .. } => tracing::error!("local failure {source:?}"),
+        _ => {}
+    }
 }
 
 /// 根据集合内的名称生成导出路径，同时验证每个路径组件的合法性。
