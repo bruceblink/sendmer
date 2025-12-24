@@ -1,3 +1,7 @@
+//! 发送端功能：将本地文件/目录导入 Blob 存储并通过 iroh 协议对外提供。
+//!
+//! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
+
 use crate::core::types::{
     AddrInfoOptions, AppHandle, SendOptions, SendResult, apply_options, get_or_create_secret,
 };
@@ -29,6 +33,13 @@ use walkdir::WalkDir;
 
 // use helpers from core::progress
 
+/// 开始共享（发送）指定的 `path`（文件或目录）。
+///
+/// - `path`：要分享的文件或目录路径。
+/// - `options`：发送配置（转发模式、ticket 类型等）。
+/// - `app_handle`：可选的事件发射器句柄，用于 UI/CLI 上报进度。
+///
+/// 返回 `SendResult`，其中包含票据、hash、大小以及需要保持存活的 router/store 句柄。
 pub async fn start_share(
     path: PathBuf,
     options: SendOptions,
@@ -154,6 +165,7 @@ pub async fn start_share(
     })
 }
 
+/// 将 `path`（文件或目录）导入到给定的 `Store`，并返回临时标签、总字节数和集合信息。
 async fn import(path: PathBuf, db: &Store) -> anyhow::Result<(TempTag, u64, Collection)> {
     let parallelism = num_cpus::get();
     let path = path.canonicalize()?;
@@ -226,6 +238,9 @@ async fn import(path: PathBuf, db: &Store) -> anyhow::Result<(TempTag, u64, Coll
     Ok((temp_tag, size, collection))
 }
 
+/// 将已经标准化的路径转换为库内部使用的字符串表示，路径分隔使用 `/`。
+///
+/// - `must_be_relative`：如果为 true，则遇到根目录将返回错误（要求相对路径）。
 pub fn canonicalized_path_to_string(
     path: impl AsRef<Path>,
     must_be_relative: bool,
@@ -263,6 +278,10 @@ pub fn canonicalized_path_to_string(
     Ok(path_str)
 }
 
+/// 从提供者事件流中读取进度信息并将其转换为 `emit_event`/`emit_progress_event` 调用。
+///
+/// 该函数在后台运行，监控请求启动、进度、完成与中止事件，并根据策略判断何时发射
+/// `transfer-started`、`transfer-progress`、`transfer-completed` 等事件。
 async fn show_provide_progress_with_logging(
     mut recv: mpsc::Receiver<iroh_blobs::provider::events::ProviderMessage>,
     app_handle: AppHandle,
