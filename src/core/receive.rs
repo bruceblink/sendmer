@@ -2,8 +2,8 @@
 //!
 //! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
 
-use crate::core::types::{AppHandle, ReceiveOptions, ReceiveResult, get_or_create_secret};
 use crate::core::progress::{emit_event, emit_event_with_payload, emit_progress_event};
+use crate::core::types::{AppHandle, ReceiveOptions, ReceiveResult, get_or_create_secret};
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
 use iroh_blobs::{
     api::{
@@ -73,13 +73,21 @@ pub async fn download(
             // Emit receive-started event
             emit_event(&app_handle, "receive-started");
 
-            let mut connection = endpoint.connect(addr.clone(), iroh_blobs::protocol::ALPN).await?;
+            let mut connection = endpoint
+                .connect(addr.clone(), iroh_blobs::protocol::ALPN)
+                .await?;
 
             // Try to get sizes with retries to handle transient connection resets
             let mut sizes_opt: Option<(iroh_blobs::hashseq::HashSeq, std::sync::Arc<[u64]>)> = None;
             let mut last_err: Option<iroh_blobs::get::GetError> = None;
             for attempt in 1..=3 {
-                let sizes_result = get_hash_seq_and_sizes(&connection, &hash_and_format.hash, 1024 * 1024 * 32, None).await;
+                let sizes_result = get_hash_seq_and_sizes(
+                    &connection,
+                    &hash_and_format.hash,
+                    1024 * 1024 * 32,
+                    None,
+                )
+                .await;
                 match sizes_result {
                     Ok((hash_seq, sizes)) => {
                         sizes_opt = Some((hash_seq, sizes));
@@ -92,7 +100,10 @@ pub async fn download(
                             let backoff = std::time::Duration::from_millis(250 * attempt as u64);
                             tokio::time::sleep(backoff).await;
                             // try to reconnect the endpoint before retrying
-                            match endpoint.connect(addr.clone(), iroh_blobs::protocol::ALPN).await {
+                            match endpoint
+                                .connect(addr.clone(), iroh_blobs::protocol::ALPN)
+                                .await
+                            {
                                 Ok(new_conn) => connection = new_conn,
                                 Err(conn_err) => {
                                     tracing::error!("reconnect failed: {conn_err}");
@@ -104,7 +115,7 @@ pub async fn download(
                 }
             }
 
-            let ( _hash_seq, sizes) = match sizes_opt {
+            let (_hash_seq, sizes) = match sizes_opt {
                 Some((hash_seq, sizes)) => (hash_seq, sizes),
                 None => {
                     if let Some(e) = last_err {
@@ -148,7 +159,13 @@ pub async fn download(
                                 0.0
                             };
 
-                            emit_progress_event(&app_handle, "receive-progress", offset, payload_size, speed_bps);
+                            emit_progress_event(
+                                &app_handle,
+                                "receive-progress",
+                                offset,
+                                payload_size,
+                                speed_bps,
+                            );
                         }
                     }
                     GetProgressItem::Done(value) => {
@@ -161,7 +178,13 @@ pub async fn download(
                         } else {
                             0.0
                         };
-                        emit_progress_event(&app_handle, "receive-progress", payload_size, payload_size, speed_bps);
+                        emit_progress_event(
+                            &app_handle,
+                            "receive-progress",
+                            payload_size,
+                            payload_size,
+                            speed_bps,
+                        );
 
                         break;
                     }

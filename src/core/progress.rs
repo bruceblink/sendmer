@@ -15,10 +15,10 @@ use tracing::warn;
 /// - `app_handle`：可选的事件发射句柄（`None` 表示禁用进度/事件显示）。
 /// - `event_name`：事件名称，例如 `transfer-started`。
 pub fn emit_event(app_handle: &AppHandle, event_name: &str) {
-    if let Some(handle) = app_handle {
-        if let Err(e) = handle.emit_event(event_name) {
-            warn!("Failed to emit event {}: {}", event_name, e);
-        }
+    if let Some(handle) = app_handle
+        && let Err(e) = handle.emit_event(event_name)
+    {
+        warn!("Failed to emit event {}: {}", event_name, e);
     }
 }
 
@@ -26,10 +26,10 @@ pub fn emit_event(app_handle: &AppHandle, event_name: &str) {
 ///
 /// 负载格式由调用方指定，CLI 发射器期望形如 `"bytes:total:speed_int"`。
 pub fn emit_event_with_payload(app_handle: &AppHandle, event_name: &str, payload: &str) {
-    if let Some(handle) = app_handle {
-        if let Err(e) = handle.emit_event_with_payload(event_name, payload) {
-            warn!("Failed to emit event {} with payload: {}", event_name, e);
-        }
+    if let Some(handle) = app_handle
+        && let Err(e) = handle.emit_event_with_payload(event_name, payload)
+    {
+        warn!("Failed to emit event {} with payload: {}", event_name, e);
     }
 }
 
