@@ -5,9 +5,24 @@ on:
     branches:
       # This helps fill the caches properly, caches are not shared between PRs.
       - main
+    # Don't run CI for changes that only touch docs or license files
+    paths-ignore:
+      - '**/*.md'
+      - 'README*'
+      - 'LICENSE'
+      - 'LICENSE*'
+      - '.gitignore'
+      - 'docs/**'
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - '**/*.md'
+      - 'README*'
+      - 'LICENSE'
+      - 'LICENSE*'
+      - '.gitignore'
+      - 'docs/**'
 
 env:
   MSRV: "1.88"
