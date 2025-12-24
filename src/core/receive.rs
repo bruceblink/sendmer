@@ -17,6 +17,7 @@ use iroh_blobs::{
     ticket::BlobTicket,
 };
 use n0_future::StreamExt;
+use std::sync::Arc as StdArc;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Instant;
@@ -36,201 +37,67 @@ pub async fn download(
     options: ReceiveOptions,
     app_handle: AppHandle,
 ) -> anyhow::Result<ReceiveResult> {
+    // Prepare environment: ticket, addr, endpoint, db, temp dir
     let ticket = BlobTicket::from_str(&ticket_str)?;
-
     let addr = ticket.addr().clone();
-
-    let secret_key = get_or_create_secret()?;
-
-    let mut builder = Endpoint::builder()
-        .alpns(vec![])
-        .secret_key(secret_key)
-        .relay_mode(options.relay_mode.clone().into());
-
-    if ticket.addr().relay_urls().next().is_none() && ticket.addr().ip_addrs().next().is_none() {
-        builder = builder.discovery(DnsDiscovery::n0_dns());
-    }
-    if let Some(addr) = options.magic_ipv4_addr {
-        builder = builder.bind_addr_v4(addr);
-    }
-    if let Some(addr) = options.magic_ipv6_addr {
-        builder = builder.bind_addr_v6(addr);
-    }
-    let endpoint = builder.bind().await?;
-
-    // Use system temp directory instead of current_dir for GUI app
-    // This avoids polluting user directories and OS manages cleanup automatically
-    let dir_name = format!(".sendmer-recv-{}", ticket.hash().to_hex());
-    let temp_base = std::env::temp_dir();
-    let iroh_data_dir = temp_base.join(&dir_name);
-    let db = FsStore::load(&iroh_data_dir).await?;
+    let (endpoint, iroh_data_dir, db) = prepare_env(&ticket, &options).await?;
     let db2 = db.clone();
+
     trace!("load done!");
+
     let fut = async move {
         let hash_and_format = ticket.hash_and_format();
         let local = db.remote().local(hash_and_format).await?;
 
         let (stats, total_files, payload_size) = if !local.is_complete() {
-            // Emit receive-started event
             emit_event(&app_handle, "receive-started");
 
-            let mut connection = endpoint
-                .connect(addr.clone(), iroh_blobs::protocol::ALPN)
-                .await?;
+            // connect and get sizes with retries
+            let (_hash_seq, sizes) =
+                get_sizes_with_retries(&endpoint, &addr, &hash_and_format.hash).await?;
 
-            // Try to get sizes with retries to handle transient connection resets
-            let mut sizes_opt: Option<(iroh_blobs::hashseq::HashSeq, std::sync::Arc<[u64]>)> = None;
-            let mut last_err: Option<iroh_blobs::get::GetError> = None;
-            for attempt in 1..=3 {
-                let sizes_result = get_hash_seq_and_sizes(
-                    &connection,
-                    &hash_and_format.hash,
-                    1024 * 1024 * 32,
-                    None,
-                )
-                .await;
-                match sizes_result {
-                    Ok((hash_seq, sizes)) => {
-                        sizes_opt = Some((hash_seq, sizes));
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::error!("Attempt {attempt} to get sizes failed: {e:?}");
-                        last_err = Some(e);
-                        if attempt < 3 {
-                            let backoff = std::time::Duration::from_millis(250 * attempt as u64);
-                            tokio::time::sleep(backoff).await;
-                            // try to reconnect the endpoint before retrying
-                            match endpoint
-                                .connect(addr.clone(), iroh_blobs::protocol::ALPN)
-                                .await
-                            {
-                                Ok(new_conn) => connection = new_conn,
-                                Err(conn_err) => {
-                                    tracing::error!("reconnect failed: {conn_err}");
-                                }
-                            }
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            let (_hash_seq, sizes) = match sizes_opt {
-                Some((hash_seq, sizes)) => (hash_seq, sizes),
-                None => {
-                    if let Some(e) = last_err {
-                        tracing::error!("Failed to get sizes after retries: {:?}", e);
-                        tracing::error!("Error type: {}", std::any::type_name_of_val(&e));
-                        return Err(show_get_error(e).into());
-                    }
-                    anyhow::bail!("unknown error getting sizes");
-                }
-            };
             let _total_size = sizes.iter().copied().sum::<u64>();
-            // For payload size, we want the actual file data size
-            // The sizes array contains: [collection_size, file1_size, file2_size, ...]
-            // We skip the first element (collection metadata) but include all file sizes
             let payload_size = sizes.iter().skip(1).copied().sum::<u64>();
             let total_files = sizes.len().saturating_sub(1) as u64;
 
-            // Emit initial progress event (0%) so frontend can display total size immediately
             emit_progress_event(&app_handle, "receive-progress", 0, payload_size, 0.0);
 
-            let _local_size = local.local_bytes();
+            let connection = endpoint
+                .connect(addr.clone(), iroh_blobs::protocol::ALPN)
+                .await?;
+
             let get = db.remote().execute_get(connection, local.missing());
-            let mut stats = Stats::default();
             let mut stream = get.stream();
-            let mut last_log_offset = 0u64;
-            let transfer_start_time = Instant::now();
+            let stats = process_get_stream(&mut stream, payload_size, &app_handle).await?;
 
-            while let Some(item) = stream.next().await {
-                trace!("got item {item:?}");
-                match item {
-                    GetProgressItem::Progress(offset) => {
-                        // Emit progress events every 1MB
-                        if offset - last_log_offset > 1_000_000 {
-                            last_log_offset = offset;
-
-                            // Calculate speed and emit progress event
-                            let elapsed = transfer_start_time.elapsed().as_secs_f64();
-                            let speed_bps = if elapsed > 0.0 {
-                                offset as f64 / elapsed
-                            } else {
-                                0.0
-                            };
-
-                            emit_progress_event(
-                                &app_handle,
-                                "receive-progress",
-                                offset,
-                                payload_size,
-                                speed_bps,
-                            );
-                        }
-                    }
-                    GetProgressItem::Done(value) => {
-                        stats = value;
-
-                        // Emit final progress event
-                        let elapsed = transfer_start_time.elapsed().as_secs_f64();
-                        let speed_bps = if elapsed > 0.0 {
-                            payload_size as f64 / elapsed
-                        } else {
-                            0.0
-                        };
-                        emit_progress_event(
-                            &app_handle,
-                            "receive-progress",
-                            payload_size,
-                            payload_size,
-                            speed_bps,
-                        );
-
-                        break;
-                    }
-                    GetProgressItem::Error(cause) => {
-                        tracing::error!("Download error: {:?}", cause);
-                        anyhow::bail!(show_get_error(cause));
-                    }
-                }
-            }
             (stats, total_files, payload_size)
         } else {
             let total_files = local.children().unwrap() - 1;
-            let payload_bytes = 0; // todo local.sizes().skip(2).map(Option::unwrap).sum::<u64>();
-
-            // Emit events for already complete data
+            let payload_bytes = 0;
             emit_event(&app_handle, "receive-started");
             emit_event(&app_handle, "receive-completed");
-
             (Stats::default(), total_files, payload_bytes)
         };
 
-        let collection = Collection::load(hash_and_format.hash, db.as_ref()).await?;
+        let collection = Collection::load(hash_and_format.hash, &db).await?;
 
-        // Extract file names from collection and emit them BEFORE export
-        // This allows the UI to show file names during the export phase
+        // Extract file names
         let mut file_names: Vec<String> = Vec::new();
         for (name, _hash) in collection.iter() {
             file_names.push(name.to_string());
         }
 
-        // Emit file names information
         if !file_names.is_empty() {
-            let file_names_json =
-                serde_json::to_string(&file_names).unwrap_or_else(|_| "[]".to_string());
+            let file_names_json = serde_json::to_string(&file_names).unwrap_or_else(|_| "[]".to_string());
             emit_event_with_payload(&app_handle, "receive-file-names", &file_names_json);
         }
 
-        // Determine output directory
         let output_dir = options.output_dir.unwrap_or_else(|| {
             dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap())
         });
 
         export(&db, collection, &output_dir).await?;
 
-        // Emit completion event AFTER everything is done
         emit_event(&app_handle, "receive-completed");
 
         anyhow::Ok((total_files, payload_size, stats, output_dir))
@@ -241,7 +108,6 @@ pub async fn download(
             Ok(x) => x,
             Err(e) => {
                 tracing::error!("Download operation failed: {}", e);
-                // make sure we shutdown the db before exiting
                 db2.shutdown().await?;
                 anyhow::bail!("error: {e}");
             }
@@ -354,6 +220,116 @@ fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
         path.push(part);
     }
     Ok(path)
+}
+
+// Helper: prepare endpoint, temp dir and FsStore
+async fn prepare_env(ticket: &BlobTicket, options: &ReceiveOptions) -> anyhow::Result<(Endpoint, PathBuf, Store)> {
+    let secret_key = get_or_create_secret()?;
+    let mut builder = Endpoint::builder()
+        .alpns(vec![])
+        .secret_key(secret_key)
+        .relay_mode(options.relay_mode.clone().into());
+
+    if ticket.addr().relay_urls().next().is_none() && ticket.addr().ip_addrs().next().is_none() {
+        builder = builder.discovery(DnsDiscovery::n0_dns());
+    }
+    if let Some(addr) = options.magic_ipv4_addr {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = options.magic_ipv6_addr {
+        builder = builder.bind_addr_v6(addr);
+    }
+    let endpoint = builder.bind().await?;
+
+    // temp dir
+    let dir_name = format!(".sendmer-recv-{}", ticket.hash().to_hex());
+    let temp_base = std::env::temp_dir();
+    let iroh_data_dir = temp_base.join(&dir_name);
+    let db = FsStore::load(&iroh_data_dir).await?;
+    Ok((endpoint, iroh_data_dir, db.into()))
+}
+
+// Helper: get sizes with retries and reconnects
+#[allow(clippy::cognitive_complexity)]
+async fn get_sizes_with_retries(
+    endpoint: &Endpoint,
+    addr: &iroh::EndpointAddr,
+    hash: &iroh_blobs::Hash,
+) -> anyhow::Result<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> {
+    // Try to get sizes with retries to handle transient connection resets
+    let mut sizes_opt: Option<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> = None;
+    let mut last_err: Option<iroh_blobs::get::GetError> = None;
+    let mut connection = endpoint.connect(addr.clone(), iroh_blobs::protocol::ALPN).await?;
+    for attempt in 1..=3 {
+        let sizes_result = get_hash_seq_and_sizes(&connection, hash, 1024 * 1024 * 32, None).await;
+        match sizes_result {
+            Ok((hash_seq, sizes)) => {
+                sizes_opt = Some((hash_seq, sizes));
+                break;
+            }
+            Err(e) => {
+                tracing::error!("Attempt {attempt} to get sizes failed: {e:?}");
+                last_err = Some(e);
+                if attempt < 3 {
+                    let backoff = std::time::Duration::from_millis(250 * attempt as u64);
+                    tokio::time::sleep(backoff).await;
+                    match endpoint.connect(addr.clone(), iroh_blobs::protocol::ALPN).await {
+                        Ok(new_conn) => connection = new_conn,
+                        Err(conn_err) => tracing::error!("reconnect failed: {conn_err}"),
+                    }
+                    continue;
+                }
+            }
+        }
+    }
+
+    match sizes_opt {
+        Some((hash_seq, sizes)) => Ok((hash_seq, sizes)),
+        None => {
+            if let Some(e) = last_err {
+                tracing::error!("Failed to get sizes after retries: {:?}", e);
+                tracing::error!("Error type: {}", std::any::type_name_of_val(&e));
+                Err(show_get_error(e).into())
+            } else {
+                anyhow::bail!("unknown error getting sizes")
+            }
+        }
+    }
+}
+
+// Helper: process a Get stream and emit progress events
+async fn process_get_stream<S>(stream: &mut S, payload_size: u64, app_handle: &AppHandle) -> anyhow::Result<Stats>
+where
+    S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
+{
+    let mut last_log_offset = 0u64;
+    let transfer_start_time = Instant::now();
+    let mut stats = Stats::default();
+    while let Some(item) = stream.next().await {
+        trace!("got item {item:?}");
+        match item {
+            GetProgressItem::Progress(offset) => {
+                if offset - last_log_offset > 1_000_000 {
+                    last_log_offset = offset;
+                    let elapsed = transfer_start_time.elapsed().as_secs_f64();
+                    let speed_bps = if elapsed > 0.0 { offset as f64 / elapsed } else { 0.0 };
+                    emit_progress_event(app_handle, "receive-progress", offset, payload_size, speed_bps);
+                }
+            }
+            GetProgressItem::Done(value) => {
+                stats = value;
+                let elapsed = transfer_start_time.elapsed().as_secs_f64();
+                let speed_bps = if elapsed > 0.0 { payload_size as f64 / elapsed } else { 0.0 };
+                emit_progress_event(app_handle, "receive-progress", payload_size, payload_size, speed_bps);
+                break;
+            }
+            GetProgressItem::Error(cause) => {
+                tracing::error!("Download error: {:?}", cause);
+                anyhow::bail!(show_get_error(cause));
+            }
+        }
+    }
+    Ok(stats)
 }
 
 /// 验证单个路径组件是否合法（不应包含分隔符 `/`）。
