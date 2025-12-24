@@ -1,3 +1,6 @@
+#![warn(clippy::all)]
+#![warn(clippy::nursery)]
+
 //! sendmer: small CLI for sharing/downloading blob data
 //!
 //! 这个 crate 暴露了库级 API（`start_share` 和 `download`）给程序化调用，
