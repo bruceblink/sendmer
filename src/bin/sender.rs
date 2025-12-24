@@ -1,5 +1,4 @@
 use sendmer::cli;
-use tracing_subscriber;
 
 #[tokio::main]
 async fn main() {
