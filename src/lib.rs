@@ -1,6 +1,5 @@
 pub mod cli;
 pub mod common;
-mod cli_progress;
 pub mod core;
 
 pub use core::{
