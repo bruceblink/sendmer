@@ -55,3 +55,45 @@ sendmer receive <ticket>
 ---
 
 开发者指南请见： [DEVELOPMENT.md](DEVELOPMENT.md)
+
+## 示例
+
+### 基本发送
+
+```bash
+# 发布目录
+sendmer send ./my-folder
+```
+
+命令会输出一个 ticket，接收方用该 ticket 执行下载。提供者需保持运行直到接收完成（Ctrl-C 结束）。
+
+### 基本接收
+
+```bash
+# 使用 ticket 下载
+sendmer receive <ticket>
+```
+
+默认将数据下载到当前目录，先写入以 `.sendmer-` 开头的临时目录，完成后再移动到最终位置。
+
+### 关闭进度输出
+
+```bash
+sendmer send ./file --no-progress
+sendmer receive <ticket> --no-progress
+```
+
+### 作为库在 Rust 程序中使用
+
+可以通过调用导出的库函数 `start_share` 和 `download` 在其他 Rust 程序中嵌入 `sendmer` 的功能：
+
+```rust
+use sendmer::{start_share, download, SendOptions, ReceiveOptions};
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+	// start_share(path, SendOptions { ... }, Some(event_emitter)).await?;
+	// download(ticket, ReceiveOptions { ... }, Some(event_emitter)).await?;
+	Ok(())
+}
+```
+
