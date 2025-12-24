@@ -66,13 +66,18 @@ fn send_recv_file() {
     let output = String::from_utf8(output).unwrap();
     let ticket = output.split_ascii_whitespace().last().unwrap();
     let ticket = BlobTicket::from_str(ticket).unwrap();
-    let receive_output = duct::cmd(sendmer_bin(), ["receive", &ticket.to_string()])
-        .dir(tgt_dir.path())
-        .env_remove("RUST_LOG") // disable tracing
-        .stderr_to_stdout()
-        .run()
+    // Call library `download` directly to keep tests focused on library API.
+    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    let opts = sendmer::ReceiveOptions {
+        output_dir: Some(tgt_dir.path().to_path_buf()),
+        relay_mode: Default::default(),
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+    };
+    let res = rt
+        .block_on(async { sendmer::download(ticket.to_string(), opts, None).await })
         .unwrap();
-    assert!(receive_output.status.success());
+    assert!(res.message.contains("Downloaded"));
     let tgt_file = tgt_dir.path().join(name);
     let tgt_data = std::fs::read(tgt_file).unwrap();
     assert_eq!(tgt_data, data);
@@ -118,13 +123,18 @@ fn send_recv_dir() {
     let output = String::from_utf8(output).unwrap();
     let ticket = output.split_ascii_whitespace().last().unwrap();
     let ticket = BlobTicket::from_str(ticket).unwrap();
-    let receive_output = duct::cmd(sendmer_bin(), ["receive", &ticket.to_string()])
-        .dir(tgt_dir.path())
-        .env_remove("RUST_LOG") // disable tracing
-        .stderr_to_stdout()
-        .run()
+    // Call library `download` directly to keep tests focused on library API.
+    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    let opts = sendmer::ReceiveOptions {
+        output_dir: Some(tgt_dir.path().to_path_buf()),
+        relay_mode: Default::default(),
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+    };
+    let res = rt
+        .block_on(async { sendmer::download(ticket.to_string(), opts, None).await })
         .unwrap();
-    assert!(receive_output.status.success());
+    assert!(res.message.contains("Downloaded"));
     // validate directory structure
     for i in 0..5 {
         for j in 0..5 {
