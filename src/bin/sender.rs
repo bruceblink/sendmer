@@ -1,3 +1,6 @@
+//! 二进制入口：使用 `sendmer::cli` 启动命令行程序。
+//!
+//! 该文件仅包含最小的启动逻辑：初始化日志并调用 `cli::run()`。
 use sendmer::cli;
 
 #[tokio::main]

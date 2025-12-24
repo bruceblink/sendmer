@@ -1,3 +1,7 @@
+//! 接收端功能：根据票据连接远端并导出数据到本地目录。
+//!
+//! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
+
 use crate::core::types::{AppHandle, ReceiveOptions, ReceiveResult, get_or_create_secret};
 use crate::core::progress::{emit_event, emit_event_with_payload, emit_progress_event};
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
@@ -21,6 +25,11 @@ use tracing::log::trace;
 
 // event helpers provided by `core::progress`
 
+/// 下载并导出由 `ticket_str` 指定的数据到本地目录。
+///
+/// - `ticket_str`：连接票据字符串。
+/// - `options`：接收选项（输出目录、转发模式等）。
+/// - `app_handle`：可选的事件发射器句柄，用于 UI/CLI 上报进度与文件名等信息。
 pub async fn download(
     ticket_str: String,
     options: ReceiveOptions,
@@ -228,6 +237,9 @@ pub async fn download(
     })
 }
 
+/// 将集合中的各个 blob 导出到 `output_dir`。
+///
+/// 该函数会为每个条目创建目标路径并通过 `db.export_with_opts` 执行导出流。
 async fn export(db: &Store, collection: Collection, output_dir: &Path) -> anyhow::Result<()> {
     for (name, hash) in collection.iter() {
         let target = get_export_path(output_dir, name)?;
@@ -263,6 +275,7 @@ async fn export(db: &Store, collection: Collection, output_dir: &Path) -> anyhow
     Ok(())
 }
 
+/// 将 `GetError` 打印到日志并原样返回，便于上层处理。
 fn show_get_error(e: GetError) -> GetError {
     match &e {
         GetError::InitialNext { source, .. } => {
@@ -293,6 +306,7 @@ fn show_get_error(e: GetError) -> GetError {
     e
 }
 
+/// 根据集合内的名称生成导出路径，同时验证每个路径组件的合法性。
 fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
     let parts = name.split('/');
     let mut path = root.to_path_buf();
@@ -303,6 +317,7 @@ fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+/// 验证单个路径组件是否合法（不应包含分隔符 `/`）。
 fn validate_path_component(component: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !component.contains('/'),
