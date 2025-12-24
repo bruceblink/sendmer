@@ -17,9 +17,9 @@ use iroh_blobs::{
     ticket::BlobTicket,
 };
 use n0_future::StreamExt;
-use std::sync::Arc as StdArc;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc as StdArc;
 use std::time::Instant;
 use tokio::select;
 use tracing::log::trace;
@@ -88,7 +88,8 @@ pub async fn download(
         }
 
         if !file_names.is_empty() {
-            let file_names_json = serde_json::to_string(&file_names).unwrap_or_else(|_| "[]".to_string());
+            let file_names_json =
+                serde_json::to_string(&file_names).unwrap_or_else(|_| "[]".to_string());
             emit_event_with_payload(&app_handle, "receive-file-names", &file_names_json);
         }
 
@@ -173,13 +174,17 @@ fn show_get_error(e: GetError) -> GetError {
 
 fn log_get_error(e: &GetError) {
     match e {
-        GetError::InitialNext { .. } | GetError::ConnectedNext { .. } | GetError::AtBlobHeaderNext { .. } => {
+        GetError::InitialNext { .. }
+        | GetError::ConnectedNext { .. }
+        | GetError::AtBlobHeaderNext { .. } => {
             log_get_error_connection(e);
         }
         GetError::Decode { .. } | GetError::IrpcSend { .. } => {
             log_get_error_decode_or_irpc(e);
         }
-        GetError::AtClosingNext { .. } | GetError::BadRequest { .. } | GetError::LocalFailure { .. } => {
+        GetError::AtClosingNext { .. }
+        | GetError::BadRequest { .. }
+        | GetError::LocalFailure { .. } => {
             log_get_error_misc(e);
         }
     }
@@ -187,9 +192,13 @@ fn log_get_error(e: &GetError) {
 
 fn log_get_error_connection(e: &GetError) {
     match e {
-        GetError::InitialNext { source, .. } => tracing::error!("initial connection error: {source}"),
+        GetError::InitialNext { source, .. } => {
+            tracing::error!("initial connection error: {source}")
+        }
         GetError::ConnectedNext { source, .. } => tracing::error!("connected error: {source}"),
-        GetError::AtBlobHeaderNext { source, .. } => tracing::error!("reading blob header error: {source}"),
+        GetError::AtBlobHeaderNext { source, .. } => {
+            tracing::error!("reading blob header error: {source}")
+        }
         _ => {}
     }
 }
@@ -223,7 +232,10 @@ fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
 }
 
 // Helper: prepare endpoint, temp dir and FsStore
-async fn prepare_env(ticket: &BlobTicket, options: &ReceiveOptions) -> anyhow::Result<(Endpoint, PathBuf, Store)> {
+async fn prepare_env(
+    ticket: &BlobTicket,
+    options: &ReceiveOptions,
+) -> anyhow::Result<(Endpoint, PathBuf, Store)> {
     let secret_key = get_or_create_secret()?;
     let mut builder = Endpoint::builder()
         .alpns(vec![])
@@ -259,7 +271,9 @@ async fn get_sizes_with_retries(
     // Try to get sizes with retries to handle transient connection resets
     let mut sizes_opt: Option<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> = None;
     let mut last_err: Option<iroh_blobs::get::GetError> = None;
-    let mut connection = endpoint.connect(addr.clone(), iroh_blobs::protocol::ALPN).await?;
+    let mut connection = endpoint
+        .connect(addr.clone(), iroh_blobs::protocol::ALPN)
+        .await?;
     for attempt in 1..=3 {
         let sizes_result = get_hash_seq_and_sizes(&connection, hash, 1024 * 1024 * 32, None).await;
         match sizes_result {
@@ -273,7 +287,10 @@ async fn get_sizes_with_retries(
                 if attempt < 3 {
                     let backoff = std::time::Duration::from_millis(250 * attempt as u64);
                     tokio::time::sleep(backoff).await;
-                    match endpoint.connect(addr.clone(), iroh_blobs::protocol::ALPN).await {
+                    match endpoint
+                        .connect(addr.clone(), iroh_blobs::protocol::ALPN)
+                        .await
+                    {
                         Ok(new_conn) => connection = new_conn,
                         Err(conn_err) => tracing::error!("reconnect failed: {conn_err}"),
                     }
@@ -298,7 +315,11 @@ async fn get_sizes_with_retries(
 }
 
 // Helper: process a Get stream and emit progress events
-async fn process_get_stream<S>(stream: &mut S, payload_size: u64, app_handle: &AppHandle) -> anyhow::Result<Stats>
+async fn process_get_stream<S>(
+    stream: &mut S,
+    payload_size: u64,
+    app_handle: &AppHandle,
+) -> anyhow::Result<Stats>
 where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
 {
@@ -312,15 +333,35 @@ where
                 if offset - last_log_offset > 1_000_000 {
                     last_log_offset = offset;
                     let elapsed = transfer_start_time.elapsed().as_secs_f64();
-                    let speed_bps = if elapsed > 0.0 { offset as f64 / elapsed } else { 0.0 };
-                    emit_progress_event(app_handle, "receive-progress", offset, payload_size, speed_bps);
+                    let speed_bps = if elapsed > 0.0 {
+                        offset as f64 / elapsed
+                    } else {
+                        0.0
+                    };
+                    emit_progress_event(
+                        app_handle,
+                        "receive-progress",
+                        offset,
+                        payload_size,
+                        speed_bps,
+                    );
                 }
             }
             GetProgressItem::Done(value) => {
                 stats = value;
                 let elapsed = transfer_start_time.elapsed().as_secs_f64();
-                let speed_bps = if elapsed > 0.0 { payload_size as f64 / elapsed } else { 0.0 };
-                emit_progress_event(app_handle, "receive-progress", payload_size, payload_size, speed_bps);
+                let speed_bps = if elapsed > 0.0 {
+                    payload_size as f64 / elapsed
+                } else {
+                    0.0
+                };
+                emit_progress_event(
+                    app_handle,
+                    "receive-progress",
+                    payload_size,
+                    payload_size,
+                    speed_bps,
+                );
                 break;
             }
             GetProgressItem::Error(cause) => {

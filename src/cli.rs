@@ -13,26 +13,21 @@ use std::sync::Arc;
 ///
 /// 该函数负责解析 `Args` 并调用 `send` 或 `receive`。
 pub async fn run() -> anyhow::Result<()> {
-    let args = match Args::try_parse() {
-        Ok(args) => args,
-        Err(cause) => {
-            cause
-                .get(ContextKind::InvalidSubcommand)
-                .map_or_else(
-                    || {
-                        cause.exit();
-                    },
-                    |text| {
-                        eprintln!("{} \"{}\"\n", ErrorKind::InvalidSubcommand, text);
-                        eprintln!("Available subcommands are");
-                        for cmd in Args::command().get_subcommands() {
-                            eprintln!("    {}", style(cmd.get_name()).bold());
-                        }
-                        std::process::exit(1);
-                    },
-                )
-        }
-    };
+    let args = Args::try_parse().unwrap_or_else(|cause| {
+        cause.get(ContextKind::InvalidSubcommand).map_or_else(
+            || {
+                cause.exit();
+            },
+            |text| {
+                eprintln!("{} \"{}\"\n", ErrorKind::InvalidSubcommand, text);
+                eprintln!("Available subcommands are");
+                for cmd in Args::command().get_subcommands() {
+                    eprintln!("    {}", style(cmd.get_name()).bold());
+                }
+                std::process::exit(1);
+            },
+        )
+    });
 
     match args.command {
         Commands::Send(args) => send(args).await,
