@@ -1,13 +1,13 @@
-use std::sync::Arc;
-use crate::core::types::{Args, Commands, ReceiveArgs, SendArgs};
-use crate::{SendOptions, ReceiveOptions, AppHandle};
 use crate::core::progress::CliEventEmitter;
-use indicatif::HumanBytes;
+use crate::core::types::{Args, Commands, ReceiveArgs, SendArgs};
+use crate::{AppHandle, ReceiveOptions, SendOptions};
 use clap::{
     CommandFactory, Parser,
     error::{ContextKind, ErrorKind},
 };
 use console::style;
+use indicatif::HumanBytes;
+use std::sync::Arc;
 
 /// 处理 CLI 参数并分发到具体子命令处理函数。
 ///
@@ -63,7 +63,7 @@ pub async fn send(args: SendArgs) -> anyhow::Result<()> {
         res.entry_type,
         args.path.display(),
         HumanBytes(res.size),
-        res.hash 
+        res.hash
     );
 
     println!("to get this data, use");
@@ -84,7 +84,6 @@ pub async fn send(args: SendArgs) -> anyhow::Result<()> {
 /// 与 `send` 类似，`receive` 在命令行模式下决定是否创建 `CliEventEmitter`，
 /// 调用 `download` 并将结果消息输出到 stdout。
 pub async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
-
     let opts = ReceiveOptions {
         output_dir: None,
         relay_mode: args.common.relay,
