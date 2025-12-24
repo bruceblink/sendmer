@@ -154,7 +154,7 @@ pub async fn start_share(
 
     Ok(SendResult {
         ticket: ticket.to_string(),
-        hash: hash.to_hex().to_string(),
+        hash: hash.to_hex(),
         size,
         entry_type: entry_type.to_string(),
         router,
@@ -329,8 +329,7 @@ async fn show_provide_progress_with_logging(
 
                         active_requests.fetch_add(1, Ordering::SeqCst);
 
-                        let mut last_time = last_request_time.lock().await;
-                        *last_time = Some(Instant::now());
+                        *last_request_time.lock().await = Some(Instant::now());
 
                         let app_handle_task = app_handle.clone();
                         let transfer_states_task = transfer_states.clone();
@@ -417,11 +416,7 @@ async fn show_provide_progress_with_logging(
 
                                                 let last_request_recent = {
                                                     let last_time = last_request_time_task.lock().await;
-                                                    if let Some(time) = *last_time {
-                                                        time.elapsed() < Duration::from_millis(500)
-                                                    } else {
-                                                        false
-                                                    }
+                                                    (*last_time).is_some_and(|time| time.elapsed() < Duration::from_millis(500))
                                                 };
 
                                                 if completed_after >= active_after
@@ -479,11 +474,7 @@ async fn show_provide_progress_with_logging(
 
                                     let last_request_recent = {
                                         let last_time = last_request_time_task.lock().await;
-                                        if let Some(time) = *last_time {
-                                            time.elapsed() < Duration::from_millis(500)
-                                        } else {
-                                            false
-                                        }
+                                        (*last_time).is_some_and(|time| time.elapsed() < Duration::from_millis(500))
                                     };
 
                                     if completed_after >= active_after
