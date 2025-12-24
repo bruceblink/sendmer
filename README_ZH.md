@@ -1,6 +1,12 @@
 # Sendmer
 
-`Sendmer` 基于 [n0-computer/sendme v0.31.0] 的示例应用，用于演示如何使用
+`Sendmer` 基于 [n0-computer/sendme v0.31.0](https://github.com/n0-computer/sendme/commit/6e50167a8a4d45736179cce3d8d5fd803c87c24e)
+
+Crate 地址: <https://crates.io/crates/sendmer>
+
+文档: <https://docs.rs/sendmer>
+
+用于演示如何使用
 [iroh](https://crates.io/crates/iroh) 与 [iroh-blobs](https://crates.io/crates/iroh-blobs)
 协议在互联网上传输文件和目录。
 
