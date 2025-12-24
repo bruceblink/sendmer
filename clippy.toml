@@ -1,0 +1,6 @@
+# Clippy configuration for the sendmer project.
+# Set the minimum supported Rust version for Clippy's MSRV-aware lints.
+msrv = "1.89.0"
+
+# You can add other Clippy configuration keys here as needed.
+# See Clippy docs for available options.
