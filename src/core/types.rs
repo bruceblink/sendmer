@@ -61,6 +61,10 @@ pub enum TransferEvent {
         /// 用于展示的错误信息
         message: String,
     },
+
+    /// 特殊事件：文件名列表
+    /// 特殊事件：传递文件名列表
+    FileNames { role: Role, file_names: Vec<String> },
 }
 
 impl TransferEvent {
@@ -71,6 +75,7 @@ impl TransferEvent {
             TransferEvent::Progress { .. } => "progress",
             TransferEvent::Completed { .. } => "completed",
             TransferEvent::Failed { .. } => "failed",
+            TransferEvent::FileNames { .. } => "file-names",
         }
     }
 
@@ -80,7 +85,8 @@ impl TransferEvent {
             TransferEvent::Started { role }
             | TransferEvent::Completed { role }
             | TransferEvent::Failed { role, .. }
-            | TransferEvent::Progress { role, .. } => *role,
+            | TransferEvent::Progress { role, .. }
+            | TransferEvent::FileNames { role, .. } => *role,
         }
     }
 

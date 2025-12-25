@@ -96,6 +96,9 @@ impl EventEmitter for CliEventEmitter {
                 }
                 eprintln!("Transfer failed: {message}");
             }
+            TransferEvent::FileNames { .. } => {
+                // skipping
+            }
         }
     }
 }
