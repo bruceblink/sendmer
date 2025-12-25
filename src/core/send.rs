@@ -281,7 +281,7 @@ pub fn canonicalized_path_to_string(
 /// 从提供者事件流中读取进度信息并将其转换为 `emit_event`/`emit_progress_event` 调用。
 ///
 /// 该函数在后台运行，监控请求启动、进度、完成与中止事件，并根据策略判断何时发射
-/// `send-started`、`send-progress`、`send-completed` 等事件。
+/// `transfer:send:started`、`transfer:send:progress`、`transfer:send:completed` 等事件。
 async fn show_provide_progress_with_logging(
     mut recv: mpsc::Receiver<iroh_blobs::provider::events::ProviderMessage>,
     app_handle: AppHandle,
