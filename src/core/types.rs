@@ -69,24 +69,24 @@ pub enum TransferEvent {
 
 impl TransferEvent {
     /// 返回事件状态字符串（started / progress / completed / failed）
-    pub fn state(&self) -> &'static str {
+    pub const fn state(&self) -> &'static str {
         match self {
-            TransferEvent::Started { .. } => "started",
-            TransferEvent::Progress { .. } => "progress",
-            TransferEvent::Completed { .. } => "completed",
-            TransferEvent::Failed { .. } => "failed",
-            TransferEvent::FileNames { .. } => "file-names",
+            Self::Started { .. } => "started",
+            Self::Progress { .. } => "progress",
+            Self::Completed { .. } => "completed",
+            Self::Failed { .. } => "failed",
+            Self::FileNames { .. } => "file-names",
         }
     }
 
     /// 返回事件所属角色
-    pub fn role(&self) -> Role {
+    pub const fn role(&self) -> Role {
         match self {
-            TransferEvent::Started { role }
-            | TransferEvent::Completed { role }
-            | TransferEvent::Failed { role, .. }
-            | TransferEvent::Progress { role, .. }
-            | TransferEvent::FileNames { role, .. } => *role,
+            Self::Started { role }
+            | Self::Completed { role }
+            | Self::Failed { role, .. }
+            | Self::Progress { role, .. }
+            | Self::FileNames { role, .. } => *role,
         }
     }
 
@@ -117,10 +117,10 @@ pub enum Role {
 
 impl Role {
     /// 用于事件字符串拼接（Tauri 前端）。
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
-            Role::Sender => "sender",
-            Role::Receiver => "receiver",
+            Self::Sender => "sender",
+            Self::Receiver => "receiver",
         }
     }
 }
