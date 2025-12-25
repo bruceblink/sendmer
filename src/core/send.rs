@@ -2,9 +2,9 @@
 //!
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
-use crate::core::progress::{emit_event, emit_progress_event};
 use crate::core::types::{
-    AddrInfoOptions, AppHandle, SendOptions, SendResult, apply_options, get_or_create_secret,
+    AddrInfoOptions, AppHandle, Role, SendOptions, SendResult, TransferEvent, apply_options,
+    emit_event, get_or_create_secret,
 };
 use anyhow::Context;
 use data_encoding::HEXLOWER;
@@ -358,7 +358,7 @@ async fn show_provide_progress_with_logging(
                                             );
 
                                             if !has_emitted_started_task.swap(true, Ordering::SeqCst) {
-                                                emit_event(&app_handle_task, "send-started");
+                                                emit_event(&app_handle_task, &TransferEvent::Completed {role: Role::Sender});
                                             }
 
                                             transfer_started = true;
@@ -368,7 +368,7 @@ async fn show_provide_progress_with_logging(
                                     iroh_blobs::provider::events::RequestUpdate::Progress(m) => {
                                         if !transfer_started {
                                             if !has_emitted_started_task.swap(true, Ordering::SeqCst) {
-                                                emit_event(&app_handle_task, "send-started");
+                                                emit_event(&app_handle_task, &TransferEvent::Completed {role: Role::Sender});
                                             }
                                             transfer_started = true;
                                             has_any_transfer_task.store(true, Ordering::SeqCst);
@@ -382,7 +382,12 @@ async fn show_provide_progress_with_logging(
                                                 0.0
                                             };
 
-                                            emit_progress_event(&app_handle_task, "send-progress", m.end_offset, state.total_size, speed_bps);
+                                            emit_event(&app_handle_task, &TransferEvent::Progress {
+                                                role: Role::Sender,
+                                                processed: m.end_offset,
+                                                total:state.total_size,
+                                                speed: speed_bps }
+                                            );
                                         }
                                     }
                                     iroh_blobs::provider::events::RequestUpdate::Completed(_m) => {
@@ -424,7 +429,7 @@ async fn show_provide_progress_with_logging(
                                                     && !new_requests_arrived
                                                     && !has_active_transfers
                                                     && !last_request_recent {
-                                                    emit_event(&app_handle_task, "send-completed");
+                                                    emit_event(&app_handle_task, &TransferEvent::Completed {role: Role::Sender});
                                                 }
                                             }
                                         }
@@ -440,7 +445,7 @@ async fn show_provide_progress_with_logging(
                                             let active = active_requests_task.load(Ordering::SeqCst);
 
                                             if completed >= active {
-                                                emit_event(&app_handle_task, "send-failed");
+                                                emit_event(&app_handle_task,  &TransferEvent::Failed {role: Role::Sender, message: "transfer abort !!".to_string()});
                                             }
                                         }
                                     }
@@ -482,7 +487,7 @@ async fn show_provide_progress_with_logging(
                                         && !new_requests_arrived
                                         && !has_active_transfers
                                         && !last_request_recent {
-                                        emit_event(&app_handle_task, "send-completed");
+                                        emit_event(&app_handle_task, &TransferEvent::Completed {role: Role::Sender});
                                     }
                                 }
                             }
@@ -508,7 +513,10 @@ async fn show_provide_progress_with_logging(
         let min_required = if entry_type == "directory" { 2 } else { 1 };
 
         if completed >= active && completed >= min_required && completed > 0 {
-            emit_event(&app_handle, "send-completed");
+            emit_event(
+                &app_handle,
+                &TransferEvent::Completed { role: Role::Sender },
+            );
         }
     }
 
