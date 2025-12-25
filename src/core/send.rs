@@ -358,7 +358,7 @@ async fn show_provide_progress_with_logging(
                                             );
 
                                             if !has_emitted_started_task.swap(true, Ordering::SeqCst) {
-                                                emit_event(&app_handle_task, &TransferEvent::Completed {role: Role::Sender});
+                                                emit_event(&app_handle_task, &TransferEvent::Started {role: Role::Sender});
                                             }
 
                                             transfer_started = true;
@@ -368,7 +368,7 @@ async fn show_provide_progress_with_logging(
                                     iroh_blobs::provider::events::RequestUpdate::Progress(m) => {
                                         if !transfer_started {
                                             if !has_emitted_started_task.swap(true, Ordering::SeqCst) {
-                                                emit_event(&app_handle_task, &TransferEvent::Completed {role: Role::Sender});
+                                                emit_event(&app_handle_task, &TransferEvent::Started {role: Role::Sender});
                                             }
                                             transfer_started = true;
                                             has_any_transfer_task.store(true, Ordering::SeqCst);
