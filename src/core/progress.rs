@@ -13,7 +13,7 @@ use tracing::warn;
 /// 如果提供了 `app_handle` 则发射一个不带负载的事件。
 ///
 /// - `app_handle`：可选的事件发射句柄（`None` 表示禁用进度/事件显示）。
-/// - `event_name`：事件名称，例如 `transfer-started`。
+/// - `event_name`：事件名称，例如 `send-started`。
 pub fn emit_event(app_handle: &AppHandle, event_name: &str) {
     if let Some(handle) = app_handle
         && let Err(e) = handle.emit_event(event_name)
@@ -90,7 +90,7 @@ impl CliEventEmitter {
 impl EventEmitter for CliEventEmitter {
     fn emit_event(&self, event_name: &str) -> Result<(), String> {
         match event_name {
-            "transfer-started" | "receive-started" => {
+            "send-started" | "receive-started" => {
                 let mut guard = self.pb.lock().unwrap();
                 if guard.is_none() {
                     let pb = self.mp.add(ProgressBar::new(0));
@@ -102,14 +102,14 @@ impl EventEmitter for CliEventEmitter {
                 }
                 Ok(())
             }
-            "transfer-completed" | "receive-completed" => {
+            "send-completed" | "receive-completed" => {
                 let value = self.pb.lock().unwrap().take();
                 if let Some(pb) = value {
                     pb.finish_and_clear();
                 }
                 Ok(())
             }
-            "transfer-failed" | "receive-failed" => {
+            "send-failed" | "receive-failed" => {
                 let value = self.pb.lock().unwrap().take();
                 if let Some(pb) = value {
                     pb.abandon();
