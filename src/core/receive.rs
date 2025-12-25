@@ -2,8 +2,9 @@
 //!
 //! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
 
-use crate::core::progress::{emit_event, emit_event_with_payload, emit_progress_event};
-use crate::core::types::{AppHandle, ReceiveOptions, ReceiveResult, get_or_create_secret};
+use crate::core::types::{
+    AppHandle, ReceiveOptions, ReceiveResult, Role, TransferEvent, emit_event, get_or_create_secret,
+};
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
 use iroh_blobs::{
     api::{
@@ -50,7 +51,12 @@ pub async fn download(
         let local = db.remote().local(hash_and_format).await?;
 
         let (stats, total_files, payload_size) = if !local.is_complete() {
-            emit_event(&app_handle, "receive-started");
+            emit_event(
+                &app_handle,
+                &TransferEvent::Started {
+                    role: Role::Receiver,
+                },
+            );
 
             // connect and get sizes with retries
             let (_hash_seq, sizes) =
@@ -60,7 +66,15 @@ pub async fn download(
             let payload_size = sizes.iter().skip(1).copied().sum::<u64>();
             let total_files = sizes.len().saturating_sub(1) as u64;
 
-            emit_progress_event(&app_handle, "receive-progress", 0, payload_size, 0.0);
+            emit_event(
+                &app_handle,
+                &TransferEvent::Progress {
+                    role: Role::Receiver,
+                    processed: 0,
+                    total: payload_size,
+                    speed: 0.0,
+                },
+            );
 
             let connection = endpoint
                 .connect(addr.clone(), iroh_blobs::protocol::ALPN)
@@ -74,8 +88,18 @@ pub async fn download(
         } else {
             let total_files = local.children().unwrap() - 1;
             let payload_bytes = 0;
-            emit_event(&app_handle, "receive-started");
-            emit_event(&app_handle, "receive-completed");
+            emit_event(
+                &app_handle,
+                &TransferEvent::Started {
+                    role: Role::Receiver,
+                },
+            );
+            emit_event(
+                &app_handle,
+                &TransferEvent::Completed {
+                    role: Role::Receiver,
+                },
+            );
             (Stats::default(), total_files, payload_bytes)
         };
 
@@ -88,9 +112,13 @@ pub async fn download(
         }
 
         if !file_names.is_empty() {
-            let file_names_json =
-                serde_json::to_string(&file_names).unwrap_or_else(|_| "[]".to_string());
-            emit_event_with_payload(&app_handle, "receive-file-names", &file_names_json);
+            emit_event(
+                &app_handle,
+                &TransferEvent::FileNames {
+                    role: Role::Receiver,
+                    file_names,
+                },
+            );
         }
 
         let output_dir = options.output_dir.unwrap_or_else(|| {
@@ -99,7 +127,12 @@ pub async fn download(
 
         export(&db, collection, &output_dir).await?;
 
-        emit_event(&app_handle, "receive-completed");
+        emit_event(
+            &app_handle,
+            &TransferEvent::Completed {
+                role: Role::Receiver,
+            },
+        );
 
         anyhow::Ok((total_files, payload_size, stats, output_dir))
     };
@@ -270,7 +303,7 @@ async fn get_sizes_with_retries(
 ) -> anyhow::Result<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> {
     // Try to get sizes with retries to handle transient connection resets
     let mut sizes_opt: Option<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> = None;
-    let mut last_err: Option<iroh_blobs::get::GetError> = None;
+    let mut last_err: Option<GetError> = None;
     let mut connection = endpoint
         .connect(addr.clone(), iroh_blobs::protocol::ALPN)
         .await?;
@@ -338,12 +371,14 @@ where
                     } else {
                         0.0
                     };
-                    emit_progress_event(
+                    emit_event(
                         app_handle,
-                        "receive-progress",
-                        offset,
-                        payload_size,
-                        speed_bps,
+                        &TransferEvent::Progress {
+                            role: Role::Receiver,
+                            processed: offset,
+                            total: payload_size,
+                            speed: speed_bps,
+                        },
                     );
                 }
             }
@@ -355,12 +390,14 @@ where
                 } else {
                     0.0
                 };
-                emit_progress_event(
+                emit_event(
                     app_handle,
-                    "receive-progress",
-                    payload_size,
-                    payload_size,
-                    speed_bps,
+                    &TransferEvent::Progress {
+                        role: Role::Receiver,
+                        processed: payload_size,
+                        total: payload_size,
+                        speed: speed_bps,
+                    },
                 );
                 break;
             }
