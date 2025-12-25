@@ -281,7 +281,7 @@ pub fn canonicalized_path_to_string(
 /// 从提供者事件流中读取进度信息并将其转换为 `emit_event`/`emit_progress_event` 调用。
 ///
 /// 该函数在后台运行，监控请求启动、进度、完成与中止事件，并根据策略判断何时发射
-/// `transfer-started`、`transfer-progress`、`transfer-completed` 等事件。
+/// `send-started`、`send-progress`、`send-completed` 等事件。
 async fn show_provide_progress_with_logging(
     mut recv: mpsc::Receiver<iroh_blobs::provider::events::ProviderMessage>,
     app_handle: AppHandle,
@@ -358,7 +358,7 @@ async fn show_provide_progress_with_logging(
                                             );
 
                                             if !has_emitted_started_task.swap(true, Ordering::SeqCst) {
-                                                emit_event(&app_handle_task, "transfer-started");
+                                                emit_event(&app_handle_task, "send-started");
                                             }
 
                                             transfer_started = true;
@@ -368,7 +368,7 @@ async fn show_provide_progress_with_logging(
                                     iroh_blobs::provider::events::RequestUpdate::Progress(m) => {
                                         if !transfer_started {
                                             if !has_emitted_started_task.swap(true, Ordering::SeqCst) {
-                                                emit_event(&app_handle_task, "transfer-started");
+                                                emit_event(&app_handle_task, "send-started");
                                             }
                                             transfer_started = true;
                                             has_any_transfer_task.store(true, Ordering::SeqCst);
@@ -382,7 +382,7 @@ async fn show_provide_progress_with_logging(
                                                 0.0
                                             };
 
-                                            emit_progress_event(&app_handle_task, "transfer-progress", m.end_offset, state.total_size, speed_bps);
+                                            emit_progress_event(&app_handle_task, "send-progress", m.end_offset, state.total_size, speed_bps);
                                         }
                                     }
                                     iroh_blobs::provider::events::RequestUpdate::Completed(_m) => {
@@ -424,7 +424,7 @@ async fn show_provide_progress_with_logging(
                                                     && !new_requests_arrived
                                                     && !has_active_transfers
                                                     && !last_request_recent {
-                                                    emit_event(&app_handle_task, "transfer-completed");
+                                                    emit_event(&app_handle_task, "send-completed");
                                                 }
                                             }
                                         }
@@ -440,7 +440,7 @@ async fn show_provide_progress_with_logging(
                                             let active = active_requests_task.load(Ordering::SeqCst);
 
                                             if completed >= active {
-                                                emit_event(&app_handle_task, "transfer-failed");
+                                                emit_event(&app_handle_task, "send-failed");
                                             }
                                         }
                                     }
@@ -482,7 +482,7 @@ async fn show_provide_progress_with_logging(
                                         && !new_requests_arrived
                                         && !has_active_transfers
                                         && !last_request_recent {
-                                        emit_event(&app_handle_task, "transfer-completed");
+                                        emit_event(&app_handle_task, "send-completed");
                                     }
                                 }
                             }
@@ -508,7 +508,7 @@ async fn show_provide_progress_with_logging(
         let min_required = if entry_type == "directory" { 2 } else { 1 };
 
         if completed >= active && completed >= min_required && completed > 0 {
-            emit_event(&app_handle, "transfer-completed");
+            emit_event(&app_handle, "send-completed");
         }
     }
 
