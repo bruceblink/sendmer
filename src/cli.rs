@@ -100,7 +100,7 @@ pub async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
     };
 
     let res = crate::download(args.ticket.to_string(), opts, app_handle).await?;
-    println!("{}", res.message);
+    println!("{} in {:?}", res.message, res.file_path);
     Ok(())
 }
 
