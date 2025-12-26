@@ -87,7 +87,7 @@ pub async fn send(args: SendArgs) -> anyhow::Result<()> {
 /// 调用 `download` 并将结果消息输出到 stdout。
 pub async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
     let opts = ReceiveOptions {
-        output_dir: None,
+        output_dir: Option::from(std::env::current_dir()?),
         relay_mode: args.common.relay,
         magic_ipv4_addr: args.common.magic_ipv4_addr,
         magic_ipv6_addr: args.common.magic_ipv6_addr,
