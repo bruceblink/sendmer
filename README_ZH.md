@@ -1,10 +1,6 @@
-# Sendmer
+# Sendmer [![][img_crates]][crates] [![][img_doc]][doc]
 
 `Sendmer` 基于 [n0-computer/sendme v0.31.0](https://github.com/n0-computer/sendme/commit/6e50167a8a4d45736179cce3d8d5fd803c87c24e)
-
-Crate 地址: <https://crates.io/crates/sendmer>
-
-文档: <https://docs.rs/sendmer>
 
 用于演示如何使用
 [iroh](https://crates.io/crates/iroh) 与 [iroh-blobs](https://crates.io/crates/iroh-blobs)
@@ -103,3 +99,8 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+[img_crates]: https://img.shields.io/crates/v/sendmer.svg
+[img_doc]: https://img.shields.io/badge/rust-documentation-blue.svg
+
+[crates]: https://crates.io/crates/sendmer
+[doc]: https://docs.rs/sendmer/
