@@ -1,4 +1,4 @@
-use crate::core::progress::CliEventEmitter;
+use crate::core::cli_helper::CliEventEmitter;
 use crate::core::types::{Args, Commands, ReceiveArgs, SendArgs};
 use crate::{AppHandle, ReceiveOptions, SendOptions};
 use clap::{
