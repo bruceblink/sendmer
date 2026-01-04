@@ -7,8 +7,19 @@ use std::{
 use iroh_blobs::ticket::BlobTicket;
 
 // binary path
-fn sendmer_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_SENDMER")
+fn sendmer_bin() -> String {
+    std::env::var("CARGO_BIN_EXE_SENDMER").unwrap_or_else(|_| {
+        // 如果环境变量不存在，尝试几种可能的路径
+        if cfg!(test) {
+            // 在测试环境中，尝试找到构建的二进制
+            let mut path = std::env::current_dir().unwrap();
+            path.push("target/debug/sendmer");
+            if path.exists() {
+                return path.to_string_lossy().to_string();
+            }
+        }
+        "sendmer".to_string() // 最后回退到在 PATH 中查找
+    })
 }
 
 /// Read `n` lines from `reader`, returning the bytes read including the newlines.
