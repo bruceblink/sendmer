@@ -40,7 +40,7 @@ use walkdir::WalkDir;
 /// - `app_handle`：可选的事件发射器句柄，用于 UI/CLI 上报进度。
 ///
 /// 返回 `SendResult`，其中包含票据、hash、大小以及需要保持存活的 router/store 句柄。
-pub async fn start_share(
+pub async fn send(
     path: PathBuf,
     options: SendOptions,
     app_handle: AppHandle,
