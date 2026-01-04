@@ -57,7 +57,7 @@ pub async fn send(args: SendArgs) -> anyhow::Result<()> {
         Some(Arc::new(CliEventEmitter::new("[send]")))
     };
 
-    let res = crate::start_share(args.path.clone(), opts, app_handle).await?;
+    let res = crate::send(args.path.clone(), opts, app_handle).await?;
 
     println!(
         "imported {} {}, {}, hash {}",
@@ -99,7 +99,7 @@ pub async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         Some(Arc::new(CliEventEmitter::new("[recv]")))
     };
 
-    let res = crate::download(args.ticket.to_string(), opts, app_handle).await?;
+    let res = crate::receive(args.ticket.to_string(), opts, app_handle).await?;
     println!("{} in {:?}", res.message, res.file_path);
     Ok(())
 }

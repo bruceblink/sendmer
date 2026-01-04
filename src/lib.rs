@@ -9,8 +9,8 @@ pub mod cli;
 pub mod core;
 
 pub use core::{
-    receive::download,
-    send::start_share,
+    receiver::receive,
+    sender::send,
     types::{
         AddrInfoOptions, AppHandle, EventEmitter, ReceiveOptions, ReceiveResult, RelayModeOption,
         SendOptions, SendResult,
