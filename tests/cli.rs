@@ -75,7 +75,7 @@ fn send_recv_file() {
         magic_ipv6_addr: None,
     };
     let res = rt
-        .block_on(async { sendmer::download(ticket.to_string(), opts, None).await })
+        .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
         .unwrap();
     assert!(res.message.contains("Downloaded"));
     let tgt_file = tgt_dir.path().join(name);
@@ -132,7 +132,7 @@ fn send_recv_dir() {
         magic_ipv6_addr: None,
     };
     let res = rt
-        .block_on(async { sendmer::download(ticket.to_string(), opts, None).await })
+        .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
         .unwrap();
     assert!(res.message.contains("Downloaded"));
     // validate directory structure

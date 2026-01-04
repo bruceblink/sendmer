@@ -33,7 +33,7 @@ use tracing::log::trace;
 /// - `options`：接收选项（输出目录、转发模式等）。
 /// - `app_handle`：可选的事件发射器句柄，用于 UI/CLI 上报进度与文件名等信息。
 #[allow(clippy::cognitive_complexity)]
-pub async fn download(
+pub async fn receive(
     ticket_str: String,
     options: ReceiveOptions,
     app_handle: AppHandle,
