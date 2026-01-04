@@ -1,5 +1,6 @@
 use crate::core::cli_helper::CliEventEmitter;
 use crate::core::types::{Args, Commands, ReceiveArgs, SendArgs};
+use crate::core::{receiver, sender};
 use crate::{AppHandle, ReceiveOptions, SendOptions};
 use clap::{
     CommandFactory, Parser,
@@ -57,7 +58,7 @@ pub async fn send(args: SendArgs) -> anyhow::Result<()> {
         Some(Arc::new(CliEventEmitter::new("[send]")))
     };
 
-    let res = crate::send(args.path.clone(), opts, app_handle).await?;
+    let res = sender::send(args.path.clone(), opts, app_handle).await?;
 
     println!(
         "imported {} {}, {}, hash {}",
@@ -99,7 +100,7 @@ pub async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         Some(Arc::new(CliEventEmitter::new("[recv]")))
     };
 
-    let res = crate::receive(args.ticket.to_string(), opts, app_handle).await?;
+    let res = receiver::receive(args.ticket.to_string(), opts, app_handle).await?;
     println!("{} in {:?}", res.message, res.file_path);
     Ok(())
 }
