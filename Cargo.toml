@@ -19,7 +19,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "sendmer"
-path = "src/bin/sendme.rs"
+path = "src/bin/sendmer.rs"
 
 [dependencies]
 anyhow = "1.0.75"
