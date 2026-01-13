@@ -99,14 +99,14 @@ sendmer receive <ticket> --no-progress
 ### Use as a library (Rust)
 
 You can embed `sendmer` in other Rust programs by calling the exported
-library functions `start_share` and `download`:
+library functions `send` and `receive`:
 
 ```rust
-use sendmer::{start_share, download, SendOptions, ReceiveOptions};
+use sendmer::{send, receive, SendOptions, ReceiveOptions};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-	// start_share(path, SendOptions { ... }, Some(event_emitter)).await?;
-	// download(ticket, ReceiveOptions { ... }, Some(event_emitter)).await?;
+	// send(path, SendOptions { ... }, Some(event_emitter)).await?;
+	// receive(ticket, ReceiveOptions { ... }, Some(event_emitter)).await?;
 	Ok(())
 }
 ```
