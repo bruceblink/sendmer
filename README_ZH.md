@@ -23,10 +23,68 @@ Crate 地址: https://crates.io/crates/sendmer
 文档: https://docs.rs/sendmer
 
 
-## 安装
+# 安装
+
+
+## Windows（PowerShell）
+
+```powershell
+# 安装最新版本
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
+
+# 或指定版本安装
+$env:SENDMER_VERSION="v0.3.0"
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
+```
+
+默认安装路径：
 
 ```
-cargo install sendmer
+C:\Users\<用户名>\.sendmer\bin\sendmer.exe
+```
+
+* 如果 `$InstallDir` 未自动添加到 PATH，需要手动添加。
+* 安装完成后，重启终端并运行：
+
+```powershell
+sendmer --help
+```
+
+## Linux / macOS（Bash / Shell）
+
+```bash
+# 安装最新版本
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+
+# 或指定版本安装
+SENDMER_VERSION=v0.3.0 \
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+```
+
+默认安装路径：
+
+```
+~/.sendmer/bin/sendmer
+```
+
+* 如果路径未添加到 PATH，需要手动添加：
+
+```bash
+  export PATH="$HOME/.sendmer/bin:$PATH"
+```
+
+* 安装完成后，运行验证命令：
+
+```bash
+  sendmer --help
+```
+
+## Cargo（可选）
+
+如果已安装 Rust，可以直接使用 Cargo 安装：
+
+```bash
+  cargo install sendmer --locked
 ```
 
 ## 用法
