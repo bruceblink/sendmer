@@ -26,8 +26,61 @@ TLS.
 
 # Installation
 
+## Windows (PowerShell)
+
+```powershell
+# Install latest release
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
+
+# Or specify a version
+$env:SENDMER_VERSION="v0.3.0"
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
-cargo install sendmer
+Default installation path:
+C:\Users\<username>\.sendmer\bin\sendmer.exe
+
+- Add `$InstallDir` to your PATH if not automatically added.
+- Restart the terminal and run:
+
+```powershell
+ sendmer --help
+```
+
+## Linux / macOS (Bash / Shell)
+
+```bash
+ # Install latest release
+ curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+
+ # Or specify a version
+ SENDMER_VERSION=v0.3.0 \
+ curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+```
+
+- Default installation path:
+
+```
+~/.sendmer/bin/sendmer
+```
+
+- Add to PATH if not already present:
+
+```bash
+  export PATH="$HOME/.sendmer/bin:$PATH"
+```
+
+- Verify installation:
+
+```bash
+  sendmer --help
+```
+
+## Cargo (optional)
+
+If you have Rust installed:
+
+```bash
+  cargo install sendmer --locked
 ```
 
 # Usage
