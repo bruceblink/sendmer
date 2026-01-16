@@ -53,6 +53,6 @@ if ($UserPath -notlike "*$InstallDir*") {
 }
 
 Write-Host ""
-Write-Host "✅ sendmer $Version installed successfully!"
+Write-Host "sendmer $Version installed successfully!"
 Write-Host "Restart your terminal and run:"
 Write-Host "  sendmer --help"
