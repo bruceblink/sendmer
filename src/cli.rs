@@ -44,7 +44,7 @@ pub async fn run() -> anyhow::Result<()> {
 /// 启动分享并在完成后清理临时资源。
 ///
 /// 该函数主要用于命令行程序，不作为库 API 的一部分使用。
-pub async fn send(args: SendArgs) -> anyhow::Result<()> {
+async fn send(args: SendArgs) -> anyhow::Result<()> {
     let opts = SendOptions {
         relay_mode: args.common.relay,
         ticket_type: args.ticket_type,
@@ -86,7 +86,7 @@ pub async fn send(args: SendArgs) -> anyhow::Result<()> {
 ///
 /// 与 `send` 类似，`receive` 在命令行模式下决定是否创建 `CliEventEmitter`，
 /// 调用 `download` 并将结果消息输出到 stdout。
-pub async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
+async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
     let opts = ReceiveOptions {
         output_dir: Option::from(std::env::current_dir()?),
         relay_mode: args.common.relay,
