@@ -142,12 +142,6 @@ sendmer receive <ticket>
 By default the data is downloaded into the current directory using a
 temporary `.sendmer-...` folder and moved into place when complete.
 
-### Disable progress output
-
-```bash
-sendmer send ./file --no-progress
-sendmer receive <ticket> --no-progress
-```
 
 ### Use as a library (Rust)
 
@@ -163,6 +157,18 @@ async fn main() -> anyhow::Result<()> {
 	Ok(())
 }
 ```
+
+## License
+
+[MIT](LICENSE)
+
+[![Sponsor](https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/bruceblink) [![Buy Me Coffee](https://img.shields.io/badge/Buy%20Me%20Coffee-FF5A5F?style=for-the-badge&logo=coffee&logoColor=FFFFFF)](https://buymeacoffee.com/bruceblink)
+
+## Contributors
+
+<a href="https://github.com/bruceblink/sendmer/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=bruceblink/sendmer"  alt="bruceblink/sendmer"/>
+</a>
 
 [img_crates]: https://img.shields.io/crates/v/sendmer.svg
 [img_doc]: https://img.shields.io/badge/rust-documentation-blue.svg
