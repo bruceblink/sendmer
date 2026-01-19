@@ -136,13 +136,6 @@ sendmer receive <ticket>
 
 默认将数据下载到当前目录，先写入以 `.sendmer-` 开头的临时目录，完成后再移动到最终位置。
 
-### 关闭进度输出
-
-```bash
-sendmer send ./file --no-progress
-sendmer receive <ticket> --no-progress
-```
-
 ### 作为库在 Rust 程序中使用
 
 可以通过调用导出的库函数 `start_share` 和 `download` 在其他 Rust 程序中嵌入 `sendmer` 的功能：
@@ -156,6 +149,18 @@ async fn main() -> anyhow::Result<()> {
 	Ok(())
 }
 ```
+
+## License
+
+[MIT](LICENSE)
+
+[![Sponsor](https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/bruceblink) [![Buy Me Coffee](https://img.shields.io/badge/Buy%20Me%20Coffee-FF5A5F?style=for-the-badge&logo=coffee&logoColor=FFFFFF)](https://buymeacoffee.com/bruceblink)
+
+## Contributors
+
+<a href="https://github.com/bruceblink/sendmer/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=bruceblink/sendmer"  alt="bruceblink/sendmer"/>
+</a>
 
 [img_crates]: https://img.shields.io/crates/v/sendmer.svg
 [img_doc]: https://img.shields.io/badge/rust-documentation-blue.svg
