@@ -37,7 +37,7 @@ $env:SENDMER_VERSION="v0.3.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 Default installation path:
-C:\Users\\<username>\\.sendmer\bin\sendmer.exe
+C:\Users\$username\.sendmer\bin\sendmer.exe
 
 - Add `$InstallDir` to your PATH if not automatically added.
 - Restart the terminal and run:
