@@ -2,10 +2,10 @@
 //!
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
-use crate::core::types::{
-    AddrInfoOptions, AppHandle, Role, SendOptions, SendResult, TransferEvent, apply_options,
-    emit_event, get_or_create_secret,
-};
+use crate::core::events::{AppHandle, Role, TransferEvent, emit_event};
+use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
+use crate::core::results::SendResult;
+use crate::core::args::get_or_create_secret;
 use anyhow::Context;
 use data_encoding::HEXLOWER;
 use iroh::{Endpoint, RelayMode, discovery::pkarr::PkarrPublisher};
@@ -83,7 +83,7 @@ pub async fn send(
     let (progress_tx, progress_rx) = mpsc::channel(32);
     let app_handle_clone = app_handle.clone();
     let entry_type = if path.is_file() { "file" } else { "directory" };
-    let entry_type_for_progress = entry_type.to_string();
+    let entry_type_enum = if path.is_file() { crate::core::types::EntryType::File } else { crate::core::types::EntryType::Directory };
 
     let setup = async move {
         let t0 = Instant::now();
@@ -113,7 +113,7 @@ pub async fn send(
             progress_rx,
             app_handle_clone,
             size,
-            entry_type_for_progress,
+            entry_type_enum,
         ));
 
         let router = iroh::protocol::Router::builder(endpoint)
@@ -153,10 +153,10 @@ pub async fn send(
     let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
 
     Ok(SendResult {
-        ticket: ticket.to_string(),
-        hash: hash.to_hex(),
+        ticket,
+        hash,
         size,
-        entry_type: entry_type.to_string(),
+        entry_type: entry_type_enum,
         router,
         temp_tag,
         blobs_data_dir,
@@ -286,7 +286,7 @@ async fn show_provide_progress_with_logging(
     mut recv: mpsc::Receiver<iroh_blobs::provider::events::ProviderMessage>,
     app_handle: AppHandle,
     total_file_size: u64,
-    entry_type: String,
+    entry_type: crate::core::types::EntryType,
 ) -> anyhow::Result<()> {
     use n0_future::FuturesUnordered;
     use std::sync::Arc;
@@ -338,7 +338,7 @@ async fn show_provide_progress_with_logging(
                         let has_emitted_started_task = has_emitted_started.clone();
                         let has_any_transfer_task = has_any_transfer.clone();
                         let last_request_time_task = last_request_time.clone();
-                        let entry_type_task = entry_type.clone();
+                        let entry_type_task = entry_type;
 
                         let mut rx = msg.rx;
                         tasks.push(async move {
@@ -400,7 +400,7 @@ async fn show_provide_progress_with_logging(
 
                                             // For directories, require at least 2 completed requests
                                             // to avoid false completion from metadata transfer
-                                            let min_required = if entry_type_task == "directory" { 2 } else { 1 };
+                                            let min_required = entry_type_task.min_required_transfers();
 
                                             if completed >= active
                                                 && completed >= min_required
@@ -458,7 +458,7 @@ async fn show_provide_progress_with_logging(
 
                                 // For directories, require at least 2 completed requests
                                 // to avoid false completion from metadata transfer
-                                let min_required = if entry_type_task == "directory" { 2 } else { 1 };
+                                let min_required = entry_type_task.min_required_transfers();
 
                                 if completed >= active
                                     && completed >= min_required
@@ -510,7 +510,7 @@ async fn show_provide_progress_with_logging(
 
         // For directories, require at least 2 completed requests
         // to avoid false completion from metadata transfer
-        let min_required = if entry_type == "directory" { 2 } else { 1 };
+        let min_required = entry_type.min_required_transfers();
 
         if completed >= active && completed >= min_required && completed > 0 {
             emit_event(

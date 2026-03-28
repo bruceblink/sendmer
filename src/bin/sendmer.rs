@@ -8,7 +8,7 @@ use console::style;
 use indicatif::HumanBytes;
 use n0_future::StreamExt;
 use sendmer::core::cli_helper::CliEventEmitter;
-use sendmer::core::types::{Args, Commands, ReceiveArgs, SendArgs};
+use sendmer::core::args::{Args, Commands, ReceiveArgs, SendArgs};
 use sendmer::core::{receiver, sender};
 use sendmer::{AppHandle, ReceiveOptions, SendOptions};
 use std::sync::Arc;
@@ -89,7 +89,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     println!("to get this data, use");
     println!("sendmer receive {}", res.ticket);
     #[cfg(feature = "clipboard")]
-    handle_key_press(args.clipboard, res.ticket);
+    handle_key_press(args.clipboard, res.ticket.to_string());
     tokio::signal::ctrl_c().await?;
 
     drop(res.temp_tag);
