@@ -2,9 +2,10 @@
 //!
 //! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
 
-use crate::core::types::{
-    AppHandle, ReceiveOptions, ReceiveResult, Role, TransferEvent, emit_event, get_or_create_secret,
-};
+use crate::core::events::{AppHandle, Role, TransferEvent, emit_event};
+use crate::core::options::ReceiveOptions;
+use crate::core::results::ReceiveResult;
+use crate::core::args::get_or_create_secret;
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
 use iroh_blobs::{
     api::{
@@ -261,6 +262,13 @@ fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
         validate_path_component(part)?;
         path.push(part);
     }
+
+    // Ensure the final path is still within the root directory
+    anyhow::ensure!(
+        path.starts_with(root),
+        "final path must be within the root directory"
+    );
+
     Ok(path)
 }
 
@@ -412,9 +420,31 @@ where
 
 /// 验证单个路径组件是否合法（不应包含分隔符 `/`）。
 fn validate_path_component(component: &str) -> anyhow::Result<()> {
+    // Check for empty components
+    anyhow::ensure!(!component.is_empty(), "path component cannot be empty");
+
+    // Check for path separators
     anyhow::ensure!(
-        !component.contains('/'),
-        "path components must not contain the only correct path separator, /"
+        !component.contains('/') && !component.contains('\\'),
+        "path components must not contain path separators"
     );
+
+    // Check for path traversal attempts
+    anyhow::ensure!(component != "..", "path traversal not allowed: '..'");
+    anyhow::ensure!(component != ".", "relative path not allowed: '.'");
+
+    // Check for absolute paths
+    anyhow::ensure!(
+        !component.starts_with('/'),
+        "absolute path components not allowed"
+    );
+
+    // Optional: Check for hidden files (starting with '.')
+    // Uncomment if you want to restrict hidden files
+    // anyhow::ensure!(
+    //     !component.starts_with('.') || component.len() == 1,
+    //     "hidden files not allowed"
+    // );
+
     Ok(())
 }
