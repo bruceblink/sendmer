@@ -4,7 +4,7 @@
 //! 以及一个命令行环境下的事件发射器实现 `CliEventEmitter`，
 //! 用于在控制台显示文件传输进度条。
 
-use crate::core::types::{EventEmitter, TransferEvent};
+use crate::core::events::{EventEmitter, TransferEvent};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

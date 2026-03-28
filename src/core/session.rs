@@ -1,4 +1,4 @@
-use crate::core::types::{AppHandle, Role, TransferEvent};
+use crate::core::events::{AppHandle, Role, TransferEvent};
 use crate::core::progress::ProgressTracker;
 
 pub struct TransferSession {
