@@ -7,8 +7,8 @@ use crate::core::events::AppHandle;
 use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
 use crate::core::progress::{SenderProgressReporter, TransferId};
 use crate::core::results::SendResult;
+use crate::core::storage::{load_fs_store, unique_temp_dir};
 use anyhow::Context;
-use data_encoding::HEXLOWER;
 use iroh::{Endpoint, discovery::pkarr::PkarrPublisher};
 use iroh_blobs::{
     BlobFormat, BlobsProtocol,
@@ -23,7 +23,6 @@ use iroh_blobs::{
 };
 use n0_future::StreamExt;
 use n0_future::{BufferedStreamExt, task::AbortOnDropHandle};
-use rand::Rng;
 use std::{
     path::{Component, Path, PathBuf},
     time::Duration,
@@ -47,18 +46,7 @@ async fn prepare_endpoint(options: &SendOptions) -> anyhow::Result<Endpoint> {
 
 /// Prepare temporary directory for blob storage
 fn prepare_temp_directory() -> anyhow::Result<PathBuf> {
-    let suffix = rand::rng().random::<[u8; 16]>();
-    let temp_base = std::env::temp_dir();
-    let blobs_data_dir = temp_base.join(format!(".sendmer-send-{}", HEXLOWER.encode(&suffix)));
-
-    if blobs_data_dir.exists() {
-        anyhow::bail!(
-            "can not share twice from the same directory: {}",
-            temp_base.display(),
-        );
-    }
-
-    Ok(blobs_data_dir)
+    unique_temp_dir(".sendmer-send-")
 }
 
 /// Validate the path to be shared
@@ -80,9 +68,7 @@ async fn setup_data_sharing(
     let (progress_tx, progress_rx) = mpsc::channel(32);
 
     let setup_future = async move {
-        tokio::fs::create_dir_all(&blobs_data_dir).await?;
-
-        let store = FsStore::load(&blobs_data_dir).await?;
+        let store = load_fs_store(&blobs_data_dir).await?;
 
         let blobs = BlobsProtocol::new(&store, Some(create_event_sender(progress_tx)));
 
