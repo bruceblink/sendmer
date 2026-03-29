@@ -4,7 +4,7 @@
 
 use crate::core::args::get_or_create_secret;
 use crate::core::events::AppHandle;
-use crate::core::options::ReceiveOptions;
+use crate::core::options::{ReceiveOptions, apply_bind_addrs};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
@@ -351,12 +351,7 @@ async fn prepare_env(
     if ticket.addr().relay_urls().next().is_none() && ticket.addr().ip_addrs().next().is_none() {
         builder = builder.discovery(DnsDiscovery::n0_dns());
     }
-    if let Some(addr) = options.magic_ipv4_addr {
-        builder = builder.bind_addr_v4(addr);
-    }
-    if let Some(addr) = options.magic_ipv6_addr {
-        builder = builder.bind_addr_v6(addr);
-    }
+    builder = apply_bind_addrs(builder, options);
     let endpoint = builder.bind().await?;
 
     // temp dir

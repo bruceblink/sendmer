@@ -4,7 +4,7 @@
 
 use crate::core::args::get_or_create_secret;
 use crate::core::events::AppHandle;
-use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
+use crate::core::options::{AddrInfoOptions, SendOptions, apply_bind_addrs, apply_options};
 use crate::core::progress::{SenderProgressReporter, TransferId};
 use crate::core::results::SendResult;
 use anyhow::Context;
@@ -47,12 +47,7 @@ async fn prepare_endpoint(options: &SendOptions) -> anyhow::Result<Endpoint> {
     if options.ticket_type == AddrInfoOptions::Id {
         builder = builder.discovery(PkarrPublisher::n0_dns());
     }
-    if let Some(addr) = options.magic_ipv4_addr {
-        builder = builder.bind_addr_v4(addr);
-    }
-    if let Some(addr) = options.magic_ipv6_addr {
-        builder = builder.bind_addr_v6(addr);
-    }
+    builder = apply_bind_addrs(builder, options);
 
     builder.bind().await.map_err(Into::into)
 }

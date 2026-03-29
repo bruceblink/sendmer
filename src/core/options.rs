@@ -21,6 +21,44 @@ pub struct ReceiveOptions {
     pub magic_ipv6_addr: Option<SocketAddrV6>,
 }
 
+pub trait BindAddressOptions {
+    fn magic_ipv4_addr(&self) -> Option<SocketAddrV4>;
+    fn magic_ipv6_addr(&self) -> Option<SocketAddrV6>;
+}
+
+impl BindAddressOptions for SendOptions {
+    fn magic_ipv4_addr(&self) -> Option<SocketAddrV4> {
+        self.magic_ipv4_addr
+    }
+
+    fn magic_ipv6_addr(&self) -> Option<SocketAddrV6> {
+        self.magic_ipv6_addr
+    }
+}
+
+impl BindAddressOptions for ReceiveOptions {
+    fn magic_ipv4_addr(&self) -> Option<SocketAddrV4> {
+        self.magic_ipv4_addr
+    }
+
+    fn magic_ipv6_addr(&self) -> Option<SocketAddrV6> {
+        self.magic_ipv6_addr
+    }
+}
+
+pub fn apply_bind_addrs<T: BindAddressOptions>(
+    mut builder: iroh::endpoint::Builder,
+    options: &T,
+) -> iroh::endpoint::Builder {
+    if let Some(addr) = options.magic_ipv4_addr() {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = options.magic_ipv6_addr() {
+        builder = builder.bind_addr_v6(addr);
+    }
+    builder
+}
+
 #[derive(Clone, Debug, Default)]
 pub enum RelayModeOption {
     Disabled,
