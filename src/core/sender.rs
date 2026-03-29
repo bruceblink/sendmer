@@ -440,8 +440,10 @@ async fn show_provide_progress_with_provider_tracker(
 
 #[cfg(test)]
 mod tests {
+    use super::canonicalized_path_to_string;
     use crate::core::options::{AddrInfoOptions, apply_options};
     use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
+    use std::path::Path;
     use std::str::FromStr;
 
     fn sample_addr() -> iroh::EndpointAddr {
@@ -489,5 +491,26 @@ mod tests {
             crate::core::options::RelayModeOption::Disabled
         );
         assert!(!wait_for_online);
+    }
+
+    #[test]
+    fn canonicalized_relative_path_uses_forward_slashes() {
+        let path = Path::new("folder").join("nested").join("file.txt");
+        let value = canonicalized_path_to_string(&path, true).expect("path should convert");
+        assert_eq!(value, "folder/nested/file.txt");
+    }
+
+    #[test]
+    fn canonicalized_absolute_path_keeps_leading_slash_when_allowed() {
+        let value = canonicalized_path_to_string(Path::new("/folder/file.txt"), false)
+            .expect("absolute path should convert");
+        assert_eq!(value, "/folder/file.txt");
+    }
+
+    #[test]
+    fn canonicalized_absolute_path_is_rejected_when_relative_required() {
+        let err = canonicalized_path_to_string(Path::new("/folder/file.txt"), true)
+            .expect_err("absolute path should be rejected");
+        assert!(err.to_string().contains("invalid path component"));
     }
 }
