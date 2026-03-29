@@ -9,10 +9,10 @@ pub mod core;
 mod transfer;
 
 pub use core::{
+    args::{Args, Commands, ReceiveArgs, SendArgs},
     events::{AppHandle, EventEmitter, Role, TransferEvent, emit_event},
     options::{AddrInfoOptions, ReceiveOptions, RelayModeOption, SendOptions, apply_options},
     receiver::receive,
     results::{ReceiveResult, SendResult},
     sender::send,
-    types::{Args, Commands, ReceiveArgs, SendArgs},
 };
