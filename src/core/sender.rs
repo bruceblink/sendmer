@@ -88,13 +88,7 @@ async fn setup_data_sharing(
     blobs_data_dir: PathBuf,
     share_request: ShareRequest,
     wait_for_online: bool,
-) -> anyhow::Result<(
-    iroh::protocol::Router,
-    (TempTag, u64, Collection),
-    PathBuf,
-    FsStore,
-    n0_future::task::AbortOnDropHandle<anyhow::Result<()>>,
-)> {
+) -> anyhow::Result<SharingSetup> {
     let (progress_tx, progress_rx) = mpsc::channel(32);
 
     let setup_future = async move {
@@ -119,13 +113,13 @@ async fn setup_data_sharing(
 
         wait_until_endpoint_is_online(router.endpoint(), wait_for_online).await?;
 
-        anyhow::Ok((
+        anyhow::Ok(SharingSetup {
             router,
             import_result,
             blobs_data_dir,
             store,
             progress_handle,
-        ))
+        })
     };
 
     setup_future.await
@@ -135,6 +129,13 @@ struct ShareRequest {
     path: PathBuf,
     entry_type: crate::core::types::EntryType,
     app_handle: AppHandle,
+}
+
+struct SharePlan {
+    entry_type: crate::core::types::EntryType,
+    wait_for_online: bool,
+    blobs_data_dir: PathBuf,
+    ticket_type: AddrInfoOptions,
 }
 
 struct ImportedSource {
@@ -199,6 +200,36 @@ struct SendArtifacts {
     progress_handle: AbortOnDropHandle<anyhow::Result<()>>,
 }
 
+struct SharingSetup {
+    router: iroh::protocol::Router,
+    import_result: (TempTag, u64, Collection),
+    blobs_data_dir: PathBuf,
+    store: FsStore,
+    progress_handle: AbortOnDropHandle<anyhow::Result<()>>,
+}
+
+impl SharePlan {
+    fn new(path: &Path, options: &SendOptions) -> anyhow::Result<Self> {
+        Ok(Self {
+            entry_type: detect_entry_type(path),
+            wait_for_online: !matches!(
+                options.relay_mode,
+                crate::core::options::RelayModeOption::Disabled
+            ),
+            blobs_data_dir: prepare_temp_directory()?,
+            ticket_type: options.ticket_type,
+        })
+    }
+
+    fn build_request(&self, path: PathBuf, app_handle: AppHandle) -> ShareRequest {
+        ShareRequest {
+            path,
+            entry_type: self.entry_type,
+            app_handle,
+        }
+    }
+}
+
 fn create_send_result(
     artifacts: SendArtifacts,
     ticket_type: AddrInfoOptions,
@@ -246,21 +277,17 @@ pub async fn send(
 ) -> anyhow::Result<SendResult> {
     validate_share_path(&path)?;
 
-    let entry_type = detect_entry_type(&path);
-    let wait_for_online = !matches!(
-        options.relay_mode,
-        crate::core::options::RelayModeOption::Disabled
-    );
+    let plan = SharePlan::new(&path, &options)?;
     let endpoint = prepare_endpoint(&options).await?;
-    let blobs_data_dir = prepare_temp_directory()?;
-    let share_request = ShareRequest {
-        path,
-        entry_type,
-        app_handle,
-    };
+    let share_request = plan.build_request(path, app_handle);
 
-    let (router, (temp_tag, size, _collection), _blobs_data_dir, store, progress_handle) = select! {
-        x = setup_data_sharing(endpoint, blobs_data_dir, share_request, wait_for_online) => x?,
+    let setup = select! {
+        x = setup_data_sharing(
+            endpoint,
+            plan.blobs_data_dir.clone(),
+            share_request,
+            plan.wait_for_online
+        ) => x?,
         _ = tokio::signal::ctrl_c() => {
             anyhow::bail!("Operation cancelled");
         }
@@ -268,15 +295,15 @@ pub async fn send(
 
     create_send_result(
         SendArtifacts {
-            router,
-            temp_tag,
-            size,
-            entry_type,
-            blobs_data_dir: _blobs_data_dir,
-            store,
-            progress_handle,
+            router: setup.router,
+            temp_tag: setup.import_result.0,
+            size: setup.import_result.1,
+            entry_type: plan.entry_type,
+            blobs_data_dir: setup.blobs_data_dir,
+            store: setup.store,
+            progress_handle: setup.progress_handle,
         },
-        options.ticket_type,
+        plan.ticket_type,
     )
 }
 
