@@ -88,7 +88,7 @@ impl ProgressTracker {
         }
     }
 
-    pub fn set_total(&mut self, total: u64) {
+    pub const fn set_total(&mut self, total: u64) {
         self.total = total;
     }
 
@@ -124,7 +124,7 @@ pub struct TransferId {
 }
 
 impl TransferId {
-    pub fn new(connection: u64, request: u64) -> Self {
+    pub const fn new(connection: u64, request: u64) -> Self {
         Self {
             connection,
             request,
@@ -147,11 +147,11 @@ pub struct CompletionDetector {
 }
 
 impl CompletionDetector {
-    pub fn new(entry_type: EntryType) -> Self {
+    pub const fn new(entry_type: EntryType) -> Self {
         Self { entry_type }
     }
 
-    pub fn min_required(&self) -> usize {
+    pub const fn min_required(&self) -> usize {
         match self.entry_type {
             EntryType::File => 1,
             EntryType::Directory => 2,
@@ -309,11 +309,11 @@ impl ProviderProgressTracker {
         }
     }
 
-    pub fn completion_quiet_period(&self) -> Duration {
+    pub const fn completion_quiet_period(&self) -> Duration {
         self.completion_quiet_period
     }
 
-    fn can_finish_once_quiet(&self) -> bool {
+    const fn can_finish_once_quiet(&self) -> bool {
         !self.completed_emitted
             && self.has_any_transfer
             && self.completed_requests >= self.completion_detector.min_required()

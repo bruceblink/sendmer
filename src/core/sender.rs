@@ -178,16 +178,29 @@ async fn wait_until_endpoint_is_online(
 }
 
 /// Create the final send result with ticket
-fn create_send_result(
+struct SendArtifacts {
     router: iroh::protocol::Router,
     temp_tag: TempTag,
     size: u64,
     entry_type: crate::core::types::EntryType,
     blobs_data_dir: PathBuf,
     store: FsStore,
-    progress_handle: n0_future::task::AbortOnDropHandle<anyhow::Result<()>>,
+    progress_handle: AbortOnDropHandle<anyhow::Result<()>>,
+}
+
+fn create_send_result(
+    artifacts: SendArtifacts,
     ticket_type: AddrInfoOptions,
 ) -> anyhow::Result<SendResult> {
+    let SendArtifacts {
+        router,
+        temp_tag,
+        size,
+        entry_type,
+        blobs_data_dir,
+        store,
+        progress_handle,
+    } = artifacts;
     let hash = temp_tag.hash();
 
     let mut addr = router.endpoint().addr();
@@ -243,13 +256,15 @@ pub async fn send(
     };
 
     create_send_result(
-        router,
-        temp_tag,
-        size,
-        entry_type,
-        _blobs_data_dir,
-        store,
-        progress_handle,
+        SendArtifacts {
+            router,
+            temp_tag,
+            size,
+            entry_type,
+            blobs_data_dir: _blobs_data_dir,
+            store,
+            progress_handle,
+        },
         options.ticket_type,
     )
 }
