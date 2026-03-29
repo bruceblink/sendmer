@@ -3,11 +3,9 @@
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
 use crate::core::args::get_or_create_secret;
-use crate::core::events::{AppHandle, Role};
+use crate::core::events::AppHandle;
 use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
-use crate::core::progress::{
-    CompletionStatus, ProviderProgressTracker, TransferEventEmitter, TransferId,
-};
+use crate::core::progress::{SenderProgressReporter, TransferId};
 use crate::core::results::SendResult;
 use anyhow::Context;
 use data_encoding::HEXLOWER;
@@ -28,10 +26,8 @@ use n0_future::{BufferedStreamExt, task::AbortOnDropHandle};
 use rand::Rng;
 use std::{
     path::{Component, Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
-use tokio::sync::Mutex;
 use tokio::{select, sync::mpsc};
 use tracing::trace;
 use walkdir::WalkDir;
@@ -388,10 +384,7 @@ async fn show_provide_progress_with_provider_tracker(
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
 ) -> anyhow::Result<()> {
-    let tracker: Arc<Mutex<ProviderProgressTracker>> =
-        Arc::new(Mutex::new(ProviderProgressTracker::new(entry_type)));
-    let emitter = TransferEventEmitter::new(app_handle, Role::Sender);
-    let mut has_emitted_started = false;
+    let reporter = SenderProgressReporter::new(app_handle, entry_type);
 
     while let Some(item) = recv.recv().await {
         match item {
@@ -399,23 +392,15 @@ async fn show_provide_progress_with_provider_tracker(
             iroh_blobs::provider::events::ProviderMessage::ConnectionClosed(_msg) => {}
             iroh_blobs::provider::events::ProviderMessage::GetRequestReceivedNotify(msg) => {
                 let transfer_id = TransferId::new(msg.connection_id, msg.request_id);
-                {
-                    let mut tracker = tracker.lock().await;
-                    tracker.on_request_started(transfer_id, total_file_size);
-                }
+                reporter
+                    .on_request_received(transfer_id, total_file_size)
+                    .await;
 
-                if !has_emitted_started {
-                    emitter.emit_started();
-                    has_emitted_started = true;
-                }
-
-                let emitter_clone = emitter.clone();
-                let tracker_clone = Arc::clone(&tracker);
+                let reporter_clone = reporter.clone();
                 let mut rx = msg.rx;
                 tokio::spawn(async move {
                     while let Ok(Some(update)) = rx.recv().await {
-                        handle_request_update(update, transfer_id, &tracker_clone, &emitter_clone)
-                            .await;
+                        reporter_clone.on_request_update(transfer_id, update).await;
                     }
                 });
             }
@@ -426,58 +411,6 @@ async fn show_provide_progress_with_provider_tracker(
     }
 
     Ok(())
-}
-
-async fn handle_request_update(
-    update: iroh_blobs::provider::events::RequestUpdate,
-    transfer_id: TransferId,
-    tracker: &Arc<Mutex<ProviderProgressTracker>>,
-    emitter: &TransferEventEmitter,
-) {
-    match update {
-        iroh_blobs::provider::events::RequestUpdate::Started(_) => {}
-        iroh_blobs::provider::events::RequestUpdate::Progress(m) => {
-            let mut tracker = tracker.lock().await;
-            if let Some((processed, total, speed)) = tracker.on_progress(transfer_id, m.end_offset)
-            {
-                emitter.emit_progress(processed, total, speed);
-            }
-        }
-        iroh_blobs::provider::events::RequestUpdate::Completed(_) => {
-            let quiet_period = {
-                let mut tracker = tracker.lock().await;
-                match tracker.on_request_completed(transfer_id) {
-                    CompletionStatus::Completed => {
-                        emitter.emit_completed();
-                        None
-                    }
-                    CompletionStatus::InProgress => None,
-                    CompletionStatus::MoreRequestsArrivingSoon => {
-                        Some(tracker.completion_quiet_period())
-                    }
-                }
-            };
-
-            if let Some(quiet_period) = quiet_period {
-                tokio::time::sleep(quiet_period).await;
-
-                let mut tracker = tracker.lock().await;
-                if matches!(tracker.evaluate_completion(), CompletionStatus::Completed) {
-                    emitter.emit_completed();
-                }
-            }
-        }
-        iroh_blobs::provider::events::RequestUpdate::Aborted(_) => {
-            let should_emit_failed = {
-                let mut tracker = tracker.lock().await;
-                tracker.on_request_aborted(transfer_id)
-            };
-
-            if should_emit_failed {
-                emitter.emit_failed("transfer aborted");
-            }
-        }
-    }
 }
 
 #[cfg(test)]

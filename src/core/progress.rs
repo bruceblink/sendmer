@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::core::events::{AppHandle, Role, TransferEvent, emit_event};
 use crate::core::types::EntryType;
+use tokio::sync::Mutex;
 
 pub struct ProgressTracker {
     start: Instant,
@@ -327,11 +329,160 @@ pub enum CompletionStatus {
     MoreRequestsArrivingSoon,
 }
 
+#[derive(Clone)]
+pub struct SenderProgressReporter {
+    emitter: TransferEventEmitter,
+    state: Arc<Mutex<SenderProgressState>>,
+}
+
+struct SenderProgressState {
+    tracker: ProviderProgressTracker,
+    has_emitted_started: bool,
+}
+
+impl SenderProgressReporter {
+    pub fn new(app_handle: AppHandle, entry_type: EntryType) -> Self {
+        Self {
+            emitter: TransferEventEmitter::new(app_handle, Role::Sender),
+            state: Arc::new(Mutex::new(SenderProgressState {
+                tracker: ProviderProgressTracker::new(entry_type),
+                has_emitted_started: false,
+            })),
+        }
+    }
+
+    pub async fn on_request_received(&self, transfer_id: TransferId, total_file_size: u64) {
+        let mut state = self.state.lock().await;
+        state
+            .tracker
+            .on_request_started(transfer_id, total_file_size);
+        if !state.has_emitted_started {
+            self.emitter.emit_started();
+            state.has_emitted_started = true;
+        }
+    }
+
+    pub async fn on_request_update(
+        &self,
+        transfer_id: TransferId,
+        update: iroh_blobs::provider::events::RequestUpdate,
+    ) {
+        match update {
+            iroh_blobs::provider::events::RequestUpdate::Started(_) => {}
+            iroh_blobs::provider::events::RequestUpdate::Progress(m) => {
+                let mut state = self.state.lock().await;
+                if let Some((processed, total, speed)) =
+                    state.tracker.on_progress(transfer_id, m.end_offset)
+                {
+                    self.emitter.emit_progress(processed, total, speed);
+                }
+            }
+            iroh_blobs::provider::events::RequestUpdate::Completed(_) => {
+                let quiet_period = {
+                    let mut state = self.state.lock().await;
+                    match state.tracker.on_request_completed(transfer_id) {
+                        CompletionStatus::Completed => {
+                            self.emitter.emit_completed();
+                            None
+                        }
+                        CompletionStatus::InProgress => None,
+                        CompletionStatus::MoreRequestsArrivingSoon => {
+                            Some(state.tracker.completion_quiet_period())
+                        }
+                    }
+                };
+
+                if let Some(quiet_period) = quiet_period {
+                    tokio::time::sleep(quiet_period).await;
+
+                    let mut state = self.state.lock().await;
+                    if matches!(
+                        state.tracker.evaluate_completion(),
+                        CompletionStatus::Completed
+                    ) {
+                        self.emitter.emit_completed();
+                    }
+                }
+            }
+            iroh_blobs::provider::events::RequestUpdate::Aborted(_) => {
+                let should_emit_failed = {
+                    let mut state = self.state.lock().await;
+                    state.tracker.on_request_aborted(transfer_id)
+                };
+
+                if should_emit_failed {
+                    self.emitter.emit_failed("transfer aborted");
+                }
+            }
+        }
+    }
+}
+
+pub struct ReceiverProgressReporter {
+    tracker: ProgressTracker,
+    emitter: TransferEventEmitter,
+}
+
+impl ReceiverProgressReporter {
+    pub fn new(app_handle: AppHandle, total: u64) -> Self {
+        let mut tracker = ProgressTracker::new();
+        tracker.set_total(total);
+        Self {
+            tracker,
+            emitter: TransferEventEmitter::new(app_handle, Role::Receiver),
+        }
+    }
+
+    pub fn emit_initial_progress(&self) {
+        self.emitter.emit_progress(0, self.tracker.total, 0.0);
+    }
+
+    pub fn on_progress(&mut self, current: u64) {
+        if let Some(snapshot) = self.tracker.update(current) {
+            self.emitter
+                .emit_progress(snapshot.current, snapshot.total, snapshot.speed);
+        }
+    }
+
+    pub fn emit_completed_progress(&mut self) {
+        self.tracker.current = self.tracker.total;
+        let elapsed = self.tracker.start.elapsed().as_secs_f64();
+        let speed = if elapsed > 0.0 {
+            self.tracker.total as f64 / elapsed
+        } else {
+            0.0
+        };
+        self.emitter
+            .emit_progress(self.tracker.total, self.tracker.total, speed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CompletionStatus, ProviderProgressTracker, TransferId};
+    use super::{CompletionStatus, ProviderProgressTracker, SenderProgressReporter, TransferId};
+    use crate::core::events::{EventEmitter, Role, TransferEvent};
     use crate::core::types::EntryType;
+    use iroh_blobs::provider::{TransferStats, events::TransferCompleted};
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::thread::sleep;
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: StdMutex<Vec<TransferEvent>>,
+    }
+
+    impl RecordingEmitter {
+        fn events(&self) -> Vec<TransferEvent> {
+            self.events.lock().expect("events lock").clone()
+        }
+    }
+
+    impl EventEmitter for RecordingEmitter {
+        fn emit(&self, event: &TransferEvent) {
+            self.events.lock().expect("events lock").push(event.clone());
+        }
+    }
 
     #[test]
     fn file_transfer_completes_after_quiet_period() {
@@ -420,43 +571,38 @@ mod tests {
             CompletionStatus::InProgress
         ));
     }
-}
 
-pub struct ReceiverProgressReporter {
-    tracker: ProgressTracker,
-    emitter: TransferEventEmitter,
-}
+    #[tokio::test]
+    async fn sender_progress_reporter_emits_started_and_completed() {
+        let sink = Arc::new(RecordingEmitter::default());
+        let reporter = SenderProgressReporter::new(Some(sink.clone()), EntryType::File);
+        let id = TransferId::new(10, 1);
 
-impl ReceiverProgressReporter {
-    pub fn new(app_handle: AppHandle, total: u64) -> Self {
-        let mut tracker = ProgressTracker::new();
-        tracker.set_total(total);
-        Self {
-            tracker,
-            emitter: TransferEventEmitter::new(app_handle, Role::Receiver),
-        }
-    }
+        reporter.on_request_received(id, 128).await;
+        reporter
+            .on_request_update(
+                id,
+                iroh_blobs::provider::events::RequestUpdate::Completed(TransferCompleted {
+                    stats: Box::new(TransferStats {
+                        payload_bytes_sent: 128,
+                        other_bytes_sent: 0,
+                        other_bytes_read: 0,
+                        duration: Duration::from_millis(100),
+                    }),
+                }),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(550)).await;
 
-    pub fn emit_initial_progress(&self) {
-        self.emitter.emit_progress(0, self.tracker.total, 0.0);
-    }
-
-    pub fn on_progress(&mut self, current: u64) {
-        if let Some(snapshot) = self.tracker.update(current) {
-            self.emitter
-                .emit_progress(snapshot.current, snapshot.total, snapshot.speed);
-        }
-    }
-
-    pub fn emit_completed_progress(&mut self) {
-        self.tracker.current = self.tracker.total;
-        let elapsed = self.tracker.start.elapsed().as_secs_f64();
-        let speed = if elapsed > 0.0 {
-            self.tracker.total as f64 / elapsed
-        } else {
-            0.0
-        };
-        self.emitter
-            .emit_progress(self.tracker.total, self.tracker.total, speed);
+        let events = sink.events();
+        assert!(matches!(
+            events.first(),
+            Some(TransferEvent::Started { role: Role::Sender })
+        ));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, TransferEvent::Completed { role: Role::Sender }))
+        );
     }
 }
