@@ -21,9 +21,19 @@ pub struct ReceiveOptions {
     pub magic_ipv6_addr: Option<SocketAddrV6>,
 }
 
+pub trait EndpointOptions: BindAddressOptions {
+    fn relay_mode(&self) -> RelayModeOption;
+}
+
 pub trait BindAddressOptions {
     fn magic_ipv4_addr(&self) -> Option<SocketAddrV4>;
     fn magic_ipv6_addr(&self) -> Option<SocketAddrV6>;
+}
+
+impl EndpointOptions for SendOptions {
+    fn relay_mode(&self) -> RelayModeOption {
+        self.relay_mode.clone()
+    }
 }
 
 impl BindAddressOptions for SendOptions {
@@ -33,6 +43,12 @@ impl BindAddressOptions for SendOptions {
 
     fn magic_ipv6_addr(&self) -> Option<SocketAddrV6> {
         self.magic_ipv6_addr
+    }
+}
+
+impl EndpointOptions for ReceiveOptions {
+    fn relay_mode(&self) -> RelayModeOption {
+        self.relay_mode.clone()
     }
 }
 

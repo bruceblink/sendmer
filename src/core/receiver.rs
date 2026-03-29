@@ -2,9 +2,9 @@
 //!
 //! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
 
-use crate::core::args::get_or_create_secret;
+use crate::core::endpoint::base_endpoint_builder;
 use crate::core::events::AppHandle;
-use crate::core::options::{ReceiveOptions, apply_bind_addrs};
+use crate::core::options::ReceiveOptions;
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
@@ -342,16 +342,11 @@ async fn prepare_env(
     ticket: &BlobTicket,
     options: &ReceiveOptions,
 ) -> anyhow::Result<(Endpoint, PathBuf, Store)> {
-    let secret_key = get_or_create_secret()?;
-    let mut builder = Endpoint::builder()
-        .alpns(vec![])
-        .secret_key(secret_key)
-        .relay_mode(options.relay_mode.clone().into());
+    let mut builder = base_endpoint_builder(options, vec![])?;
 
     if ticket.addr().relay_urls().next().is_none() && ticket.addr().ip_addrs().next().is_none() {
         builder = builder.discovery(DnsDiscovery::n0_dns());
     }
-    builder = apply_bind_addrs(builder, options);
     let endpoint = builder.bind().await?;
 
     // temp dir

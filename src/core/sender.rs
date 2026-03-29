@@ -2,14 +2,14 @@
 //!
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
-use crate::core::args::get_or_create_secret;
+use crate::core::endpoint::base_endpoint_builder;
 use crate::core::events::AppHandle;
-use crate::core::options::{AddrInfoOptions, SendOptions, apply_bind_addrs, apply_options};
+use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
 use crate::core::progress::{SenderProgressReporter, TransferId};
 use crate::core::results::SendResult;
 use anyhow::Context;
 use data_encoding::HEXLOWER;
-use iroh::{Endpoint, RelayMode, discovery::pkarr::PkarrPublisher};
+use iroh::{Endpoint, discovery::pkarr::PkarrPublisher};
 use iroh_blobs::{
     BlobFormat, BlobsProtocol,
     api::{
@@ -36,18 +36,11 @@ use walkdir::WalkDir;
 
 /// Prepare endpoint with the given options
 async fn prepare_endpoint(options: &SendOptions) -> anyhow::Result<Endpoint> {
-    let secret_key = get_or_create_secret()?;
-    let relay_mode: RelayMode = options.relay_mode.clone().into();
-
-    let mut builder = Endpoint::builder()
-        .alpns(vec![iroh_blobs::protocol::ALPN.to_vec()])
-        .secret_key(secret_key)
-        .relay_mode(relay_mode);
+    let mut builder = base_endpoint_builder(options, vec![iroh_blobs::protocol::ALPN.to_vec()])?;
 
     if options.ticket_type == AddrInfoOptions::Id {
         builder = builder.discovery(PkarrPublisher::n0_dns());
     }
-    builder = apply_bind_addrs(builder, options);
 
     builder.bind().await.map_err(Into::into)
 }
