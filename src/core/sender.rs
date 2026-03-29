@@ -137,6 +137,17 @@ struct ShareRequest {
     app_handle: AppHandle,
 }
 
+struct ImportedSource {
+    name: String,
+    path: PathBuf,
+}
+
+struct ImportedBlob {
+    name: String,
+    temp_tag: TempTag,
+    size: u64,
+}
+
 fn create_event_sender(
     progress_tx: mpsc::Sender<iroh_blobs::provider::events::ProviderMessage>,
 ) -> EventSender {
@@ -280,70 +291,96 @@ fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {
 /// 将 `path`（文件或目录）导入到给定的 `Store`，并返回临时标签、总字节数和集合信息。
 async fn import(path: PathBuf, db: &Store) -> anyhow::Result<(TempTag, u64, Collection)> {
     let parallelism = num_cpus::get();
+    let sources = collect_import_sources(path)?;
+    let imported = import_sources(db, sources, parallelism).await?;
+    build_collection_from_imports(db, imported).await
+}
+
+fn collect_import_sources(path: PathBuf) -> anyhow::Result<Vec<ImportedSource>> {
     let path = path.canonicalize()?;
     anyhow::ensure!(path.exists(), "path {} does not exist", path.display());
     let root = path.parent().context("context get parent")?;
-    let files = WalkDir::new(path.clone()).into_iter();
-    let data_sources: Vec<(String, PathBuf)> = files
+
+    WalkDir::new(path.clone())
+        .into_iter()
         .map(|entry| {
             let entry = entry?;
             if !entry.file_type().is_file() {
                 return Ok(None);
             }
+
             let path = entry.into_path();
             let relative = path.strip_prefix(root)?;
             let name = canonicalized_path_to_string(relative, true)?;
-            anyhow::Ok(Some((name, path)))
+            anyhow::Ok(Some(ImportedSource { name, path }))
         })
         .filter_map(Result::transpose)
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<anyhow::Result<Vec<_>>>()
+}
 
-    let mut names_and_tags = n0_future::stream::iter(data_sources)
-        .map(|(name, path)| {
+async fn import_sources(
+    db: &Store,
+    sources: Vec<ImportedSource>,
+    parallelism: usize,
+) -> anyhow::Result<Vec<ImportedBlob>> {
+    n0_future::stream::iter(sources)
+        .map(|source| {
             let db = db.clone();
-            async move {
-                let import = db.add_path_with_opts(AddPathOptions {
-                    path,
-                    mode: ImportMode::TryReference,
-                    format: BlobFormat::Raw,
-                });
-                let mut stream = import.stream().await;
-                let mut item_size = 0;
-                let temp_tag = loop {
-                    let item = stream
-                        .next()
-                        .await
-                        .context("import stream ended without a tag")?;
-                    trace!("importing {name} {item:?}");
-                    match item {
-                        iroh_blobs::api::blobs::AddProgressItem::Size(size) => {
-                            item_size = size;
-                        }
-                        iroh_blobs::api::blobs::AddProgressItem::CopyProgress(_) => {}
-                        iroh_blobs::api::blobs::AddProgressItem::CopyDone => {}
-                        iroh_blobs::api::blobs::AddProgressItem::OutboardProgress(_) => {}
-                        iroh_blobs::api::blobs::AddProgressItem::Error(cause) => {
-                            anyhow::bail!("error importing {}: {}", name, cause);
-                        }
-                        iroh_blobs::api::blobs::AddProgressItem::Done(tt) => {
-                            break tt;
-                        }
-                    }
-                };
-                anyhow::Ok((name, temp_tag, item_size))
-            }
+            async move { import_source(&db, source).await }
         })
         .buffered_unordered(parallelism)
         .collect::<Vec<_>>()
         .await
         .into_iter()
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<anyhow::Result<Vec<_>>>()
+}
 
-    names_and_tags.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
-    let size = names_and_tags.iter().map(|(_, _, size)| *size).sum::<u64>();
-    let (collection, tags) = names_and_tags
+async fn import_source(db: &Store, source: ImportedSource) -> anyhow::Result<ImportedBlob> {
+    let import = db.add_path_with_opts(AddPathOptions {
+        path: source.path,
+        mode: ImportMode::TryReference,
+        format: BlobFormat::Raw,
+    });
+    let mut stream = import.stream().await;
+    let mut item_size = 0;
+    let temp_tag = loop {
+        let item = stream
+            .next()
+            .await
+            .context("import stream ended without a tag")?;
+        trace!("importing {} {item:?}", source.name);
+        match item {
+            iroh_blobs::api::blobs::AddProgressItem::Size(size) => {
+                item_size = size;
+            }
+            iroh_blobs::api::blobs::AddProgressItem::CopyProgress(_) => {}
+            iroh_blobs::api::blobs::AddProgressItem::CopyDone => {}
+            iroh_blobs::api::blobs::AddProgressItem::OutboardProgress(_) => {}
+            iroh_blobs::api::blobs::AddProgressItem::Error(cause) => {
+                anyhow::bail!("error importing {}: {}", source.name, cause);
+            }
+            iroh_blobs::api::blobs::AddProgressItem::Done(tt) => {
+                break tt;
+            }
+        }
+    };
+
+    Ok(ImportedBlob {
+        name: source.name,
+        temp_tag,
+        size: item_size,
+    })
+}
+
+async fn build_collection_from_imports(
+    db: &Store,
+    mut imported: Vec<ImportedBlob>,
+) -> anyhow::Result<(TempTag, u64, Collection)> {
+    imported.sort_by(|a, b| a.name.cmp(&b.name));
+    let size = imported.iter().map(|item| item.size).sum::<u64>();
+    let (collection, tags) = imported
         .into_iter()
-        .map(|(name, tag, _)| ((name, tag.hash()), tag))
+        .map(|item| ((item.name, item.temp_tag.hash()), item.temp_tag))
         .unzip::<_, _, Collection, Vec<_>>();
     let temp_tag = collection.clone().store(db).await?;
     drop(tags);
@@ -430,8 +467,9 @@ async fn show_provide_progress_with_provider_tracker(
 
 #[cfg(test)]
 mod tests {
-    use super::canonicalized_path_to_string;
+    use super::{canonicalized_path_to_string, collect_import_sources, detect_entry_type};
     use crate::core::options::{AddrInfoOptions, apply_options};
+    use crate::core::types::EntryType;
     use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
     use std::path::Path;
     use std::str::FromStr;
@@ -506,5 +544,34 @@ mod tests {
         let err = canonicalized_path_to_string(Path::new("/folder/file.txt"), true)
             .expect_err("absolute path should be rejected");
         assert!(err.to_string().contains("invalid path component"));
+    }
+
+    #[test]
+    fn detect_entry_type_distinguishes_file_and_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let file_path = temp_dir.path().join("demo.txt");
+        std::fs::write(&file_path, b"demo").expect("write file");
+
+        assert_eq!(detect_entry_type(&file_path), EntryType::File);
+        assert_eq!(detect_entry_type(temp_dir.path()), EntryType::Directory);
+    }
+
+    #[test]
+    fn collect_import_sources_returns_relative_sorted_names_after_sorting() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("data");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).expect("create dirs");
+        std::fs::write(root.join("alpha.txt"), b"a").expect("write alpha");
+        std::fs::write(nested.join("beta.txt"), b"b").expect("write beta");
+
+        let mut names = collect_import_sources(root)
+            .expect("sources")
+            .into_iter()
+            .map(|source| source.name)
+            .collect::<Vec<_>>();
+        names.sort();
+
+        assert_eq!(names, vec!["data/alpha.txt", "data/nested/beta.txt"]);
     }
 }
