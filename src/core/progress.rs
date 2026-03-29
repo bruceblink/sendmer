@@ -92,6 +92,21 @@ impl ProgressTracker {
         self.total = total;
     }
 
+    pub fn snapshot(&self) -> ProgressSnapshot {
+        let elapsed = self.start.elapsed().as_secs_f64();
+        let speed = if elapsed > 0.0 {
+            self.current as f64 / elapsed
+        } else {
+            0.0
+        };
+
+        ProgressSnapshot {
+            current: self.current,
+            total: self.total,
+            speed,
+        }
+    }
+
     pub fn update(&mut self, current: u64) -> Option<ProgressSnapshot> {
         self.current = current;
 
@@ -101,18 +116,7 @@ impl ProgressTracker {
 
         self.last_emit = Instant::now();
 
-        let elapsed = self.start.elapsed().as_secs_f64();
-        let speed = if elapsed > 0.0 {
-            self.current as f64 / elapsed
-        } else {
-            0.0
-        };
-
-        Some(ProgressSnapshot {
-            current: self.current,
-            total: self.total,
-            speed,
-        })
+        Some(self.snapshot())
     }
 }
 
@@ -446,14 +450,9 @@ impl ReceiverProgressReporter {
 
     pub fn emit_completed_progress(&mut self) {
         self.tracker.current = self.tracker.total;
-        let elapsed = self.tracker.start.elapsed().as_secs_f64();
-        let speed = if elapsed > 0.0 {
-            self.tracker.total as f64 / elapsed
-        } else {
-            0.0
-        };
+        let snapshot = self.tracker.snapshot();
         self.emitter
-            .emit_progress(self.tracker.total, self.tracker.total, speed);
+            .emit_progress(snapshot.current, snapshot.total, snapshot.speed);
     }
 }
 
