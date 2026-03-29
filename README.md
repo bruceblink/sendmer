@@ -2,163 +2,164 @@
 
 English | [中文](README_ZH.md)
 
-This project is based on [n0-computer/sendme v0.31.0](https://github.com/n0-computer/sendme/commit/6e50167a8a4d45736179cce3d8d5fd803c87c24e)
+Sendmer is a small CLI and reusable Rust library for sending files and directories over the internet with [iroh](https://crates.io/crates/iroh) and [iroh-blobs](https://crates.io/crates/iroh-blobs).
 
-It is an example application using [iroh](https://crates.io/crates/iroh) with
-the [iroh-blobs](https://crates.io/crates/iroh-blobs) protocol to send files and
-directories over the internet.
+It is based on [n0-computer/sendme v0.31.0](https://github.com/n0-computer/sendme/commit/6e50167a8a4d45736179cce3d8d5fd803c87c24e), with a codebase that has been gradually reorganized into a clearer library + CLI structure.
 
-This repository serves two purposes: it provides a command-line application
-(CLI) for end users, and it also exposes library APIs so other Rust projects
-can reuse the iroh-based transfer functionality.
+## Features
 
-It is also useful as a standalone tool for quick copy jobs.
+- Send a file or an entire directory with a single command
+- NAT traversal and hole punching via iroh, with relay fallback when needed
+- Verified streaming with blake3 through `iroh-blobs`
+- Reusable Rust API via exported `send` and `receive` functions
+- Optional CLI progress output and clipboard helper
 
-Iroh will take care of hole punching and NAT traversal whenever possible,
-and fall back to a relay if hole punching does not succeed.
+sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses change during a session. Connections are encrypted with TLS.
 
-Iroh-blobs will take care of [blake3](https://crates.io/crates/blake3) verified
-streaming, including resuming interrupted downloads.
+## Installation
 
-sendmer works with 256 bit node ids and is, therefore, location transparent. A ticket
-will remain valid if the IP address changes. Connections are encrypted using
-TLS.
-
-# Installation
-
-## Windows (PowerShell)
+### Windows (PowerShell)
 
 ```powershell
 # Install latest release
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 
-# Or specify a version
+# Or install a specific version
 $env:SENDMER_VERSION="v0.3.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
-Default installation path:
-```powershell 
+
+Default install path:
+
+```powershell
 C:\Users\<username>\.sendmer\bin\sendmer.exe
 ```
 
-- Add `$InstallDir` to your PATH if not automatically added.
-- Restart the terminal and run:
+After installation:
 
-```powershell
- sendmer --help
-```
+- Add `$InstallDir` to `PATH` if needed
+- Restart your terminal
+- Run `sendmer --help`
 
-## Linux / macOS (Bash / Shell)
+### Linux / macOS
 
 ```bash
- # Install latest release
- curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+# Install latest release
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 
- # Or specify a version
- SENDMER_VERSION=v0.3.0 \
- curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+# Or install a specific version
+SENDMER_VERSION=v0.3.0 \
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
-- Default installation path:
+Default install path:
 
-```
+```bash
 ~/.sendmer/bin/sendmer
 ```
 
-- Add to PATH if not already present:
+If needed, add it to your shell profile:
 
 ```bash
-  export PATH="$HOME/.sendmer/bin:$PATH"
+export PATH="$HOME/.sendmer/bin:$PATH"
 ```
 
-- Verify installation:
+Then verify:
 
 ```bash
-  sendmer --help
+sendmer --help
 ```
 
-## Cargo (optional)
-
-If you have Rust installed:
+### Cargo
 
 ```bash
-  cargo install sendmer --locked
+cargo install sendmer --locked
 ```
 
-# Usage
+## Usage
 
-## Send side
-
-```
-sendmer send <file or directory>
-```
-
-This will create a temporary [iroh](https://crates.io/crates/iroh) node that
-serves the content in the given file or directory. It will output a ticket that
-can be used to get the data.
-
-The provider will run until it is terminated using `Control-C`. On termination, it
-will delete the temporary directory.
-
-This currently will create a temporary directory in the current directory. In
-the future this won't be needed anymore.
-
-### Receive side
-
-```
-sendmer receive <ticket>
-```
-
-This will download the data and create a file or directory named like the source
-in the **current directory**.
-
-It will create a temporary directory in the current directory, download the data
-(single file or directory), and only then move these files to the target
-directory.
-
-On completion, it will delete the temp directory.
-
-All temp directories start with `.sendmer-`.
-
-develop guid: [DEVELOPMENT.md](DEVELOPMENT.md)
-
-## Examples
-
-### Basic send
+### Send
 
 ```bash
-# publish a directory
+sendmer send <file-or-directory>
+```
+
+This starts a temporary iroh provider, imports the selected file or directory, and prints a receive command with a ticket.
+
+Example:
+
+```bash
 sendmer send ./my-folder
 ```
 
-The command prints a ticket you can share. Keep the provider running until
-the receiver finishes (Ctrl-C to stop).
+Typical output:
 
-### Basic receive
+```text
+imported directory my-folder, 12.3 MiB, hash <hash>
+to get this data, use
+sendmer receive blob:...
+```
+
+The sender keeps running until you stop it with `Ctrl+C`. When it stops, it shuts down the temporary provider and removes its temporary blob store under the system temp directory.
+
+### Receive
 
 ```bash
-# download using a ticket
 sendmer receive <ticket>
 ```
 
-By default the data is downloaded into the current directory using a
-temporary `.sendmer-...` folder and moved into place when complete.
+This downloads the data and writes it into the current working directory by default.
 
+Example:
 
-### Use as a library (Rust)
+```bash
+sendmer receive <ticket>
+```
 
-You can embed `sendmer` in other Rust programs by calling the exported
-library functions `send` and `receive`:
+Receive-side data is staged in a temporary directory under the system temp directory and cleaned up after completion.
+
+## Useful Options
+
+Common options are available on both `send` and `receive`:
+
+- `--no-progress`: disable CLI progress output
+- `-v` / `-vv`: increase log verbosity
+- `--relay <default|disabled|url>`: control relay usage
+- `--magic-ipv4-addr <addr>`: bind a fixed IPv4 address
+- `--magic-ipv6-addr <addr>`: bind a fixed IPv6 address
+- `--show-secret`: print the secret key used for the current process
+
+Send-specific options:
+
+- `--ticket-type <id|relay-and-addresses|relay|addresses>`: control how much addressing information is embedded in the ticket
+- `--format <hex|cid>`: choose how the imported hash is printed
+- `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard
+
+## Library Usage
+
+The crate also exposes a small library API:
 
 ```rust
-use sendmer::{send, receive, SendOptions, ReceiveOptions};
+use sendmer::{receive, send, ReceiveOptions, SendOptions};
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-	// send(path, SendOptions { ... }, Some(event_emitter)).await?;
-	// receive(ticket, ReceiveOptions { ... }, Some(event_emitter)).await?;
-	Ok(())
+    // let send_result = send(path, SendOptions::default(), None).await?;
+    // let receive_result = receive(ticket, ReceiveOptions::default(), None).await?;
+    Ok(())
 }
 ```
+
+The library re-exports:
+
+- argument and option types
+- transfer event types and `EventEmitter`
+- `send` and `receive`
+- `SendResult` and `ReceiveResult`
+
+## Development
+
+[DEVELOPMENT.md](DEVELOPMENT.md)
 
 ## License
 
@@ -169,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
 ## Contributors
 
 <a href="https://github.com/bruceblink/sendmer/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=bruceblink/sendmer"  alt="bruceblink/sendmer"/>
+  <img src="https://contrib.rocks/image?repo=bruceblink/sendmer" alt="bruceblink/sendmer"/>
 </a>
 
 [img_crates]: https://img.shields.io/crates/v/sendmer.svg
