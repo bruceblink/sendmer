@@ -1,6 +1,9 @@
 {
     "cSpell.words": [
+        "addrs",
+        "Dwarnings",
         "HEXLOWER",
-        "pkarr"
+        "pkarr",
+        "RUSTFLAGS"
     ]
 }
