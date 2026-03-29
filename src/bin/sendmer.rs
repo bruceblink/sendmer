@@ -63,18 +63,8 @@ pub async fn run() -> anyhow::Result<()> {
 ///
 /// 该函数主要用于命令行程序，不作为库 API 的一部分使用。
 async fn send(args: SendArgs) -> anyhow::Result<()> {
-    let opts = SendOptions {
-        relay_mode: args.common.relay,
-        ticket_type: args.ticket_type,
-        magic_ipv4_addr: args.common.magic_ipv4_addr,
-        magic_ipv6_addr: args.common.magic_ipv6_addr,
-    };
-
-    let app_handle: AppHandle = if args.common.no_progress {
-        None
-    } else {
-        Some(Arc::new(CliEventEmitter::new("[send]")))
-    };
+    let opts = send_options(&args);
+    let app_handle = cli_app_handle("[send]", args.common.no_progress);
 
     let res = sender::send(args.path.clone(), opts, app_handle).await?;
 
@@ -105,22 +95,38 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
 /// 与 `send` 类似，`receive` 在命令行模式下决定是否创建 `CliEventEmitter`，
 /// 调用 `download` 并将结果消息输出到 stdout。
 async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
-    let opts = ReceiveOptions {
-        output_dir: Option::from(std::env::current_dir()?),
-        relay_mode: args.common.relay,
-        magic_ipv4_addr: args.common.magic_ipv4_addr,
-        magic_ipv6_addr: args.common.magic_ipv6_addr,
-    };
-
-    let app_handle: AppHandle = if args.common.no_progress {
-        None
-    } else {
-        Some(Arc::new(CliEventEmitter::new("[recv]")))
-    };
+    let opts = receive_options(&args)?;
+    let app_handle = cli_app_handle("[recv]", args.common.no_progress);
 
     let res = receiver::receive(args.ticket.to_string(), opts, app_handle).await?;
     println!("{} in {:?}", res.message, res.file_path);
     Ok(())
+}
+
+fn send_options(args: &SendArgs) -> SendOptions {
+    SendOptions {
+        relay_mode: args.common.relay.clone(),
+        ticket_type: args.ticket_type,
+        magic_ipv4_addr: args.common.magic_ipv4_addr,
+        magic_ipv6_addr: args.common.magic_ipv6_addr,
+    }
+}
+
+fn receive_options(args: &ReceiveArgs) -> anyhow::Result<ReceiveOptions> {
+    Ok(ReceiveOptions {
+        output_dir: Some(std::env::current_dir()?),
+        relay_mode: args.common.relay.clone(),
+        magic_ipv4_addr: args.common.magic_ipv4_addr,
+        magic_ipv6_addr: args.common.magic_ipv6_addr,
+    })
+}
+
+fn cli_app_handle(prefix: &'static str, no_progress: bool) -> AppHandle {
+    if no_progress {
+        None
+    } else {
+        Some(Arc::new(CliEventEmitter::new(prefix)))
+    }
 }
 
 #[cfg(feature = "clipboard")]

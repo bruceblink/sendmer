@@ -144,52 +144,6 @@ pub struct TransferInfo {
     pub last_progress_emit: Instant,
 }
 
-/// Completion detection logic
-#[derive(Debug)]
-pub struct CompletionDetector {
-    entry_type: EntryType,
-}
-
-impl CompletionDetector {
-    pub const fn new(entry_type: EntryType) -> Self {
-        Self { entry_type }
-    }
-
-    pub const fn min_required(&self) -> usize {
-        match self.entry_type {
-            EntryType::File => 1,
-            EntryType::Directory => 2,
-        }
-    }
-
-    pub fn is_complete(
-        &self,
-        completed: usize,
-        active: usize,
-        has_transfers: bool,
-        transfer_states: &HashMap<TransferId, TransferInfo>,
-        last_request_time: Instant,
-    ) -> bool {
-        let min_required = self.min_required();
-
-        if completed < min_required || !has_transfers {
-            return false;
-        }
-
-        if completed < active {
-            return false;
-        }
-
-        // Check if there have been recent requests (within 500ms)
-        if last_request_time.elapsed() < Duration::from_millis(500) {
-            return false;
-        }
-
-        // Check if there are any active transfers
-        transfer_states.is_empty()
-    }
-}
-
 /// Provider-side progress tracker for managing multiple concurrent transfers
 pub struct ProviderProgressTracker {
     transfer_states: HashMap<TransferId, TransferInfo>,
@@ -197,7 +151,7 @@ pub struct ProviderProgressTracker {
     completed_requests: usize,
     has_any_transfer: bool,
     last_request_time: Option<Instant>,
-    completion_detector: CompletionDetector,
+    entry_type: EntryType,
     progress_throttle: Duration,
     completion_quiet_period: Duration,
     completed_emitted: bool,
@@ -211,7 +165,7 @@ impl ProviderProgressTracker {
             completed_requests: 0,
             has_any_transfer: false,
             last_request_time: None,
-            completion_detector: CompletionDetector::new(entry_type),
+            entry_type,
             progress_throttle: Duration::from_millis(250),
             completion_quiet_period: Duration::from_millis(500),
             completed_emitted: false,
@@ -299,13 +253,7 @@ impl ProviderProgressTracker {
             return CompletionStatus::MoreRequestsArrivingSoon;
         }
 
-        if self.completion_detector.is_complete(
-            self.completed_requests,
-            self.active_requests,
-            self.has_any_transfer,
-            &self.transfer_states,
-            last_request_time,
-        ) {
+        if self.is_complete(last_request_time) {
             self.completed_emitted = true;
             CompletionStatus::Completed
         } else {
@@ -320,8 +268,23 @@ impl ProviderProgressTracker {
     const fn can_finish_once_quiet(&self) -> bool {
         !self.completed_emitted
             && self.has_any_transfer
-            && self.completed_requests >= self.completion_detector.min_required()
+            && self.completed_requests >= self.entry_type.min_required_transfers()
             && self.completed_requests >= self.active_requests
+    }
+
+    fn is_complete(&self, last_request_time: Instant) -> bool {
+        if self.completed_requests < self.entry_type.min_required_transfers()
+            || !self.has_any_transfer
+            || self.completed_requests < self.active_requests
+        {
+            return false;
+        }
+
+        if last_request_time.elapsed() < self.completion_quiet_period {
+            return false;
+        }
+
+        self.transfer_states.is_empty()
     }
 }
 

@@ -28,6 +28,10 @@ use tracing::log::trace;
 
 // event helpers provided by `core::progress`
 
+const SIZE_FETCH_RETRY_LIMIT: u32 = 3;
+const SIZE_FETCH_CHUNK_SIZE: u64 = 1024 * 1024 * 32;
+const SIZE_FETCH_BACKOFF_MS: u64 = 250;
+
 /// 下载并导出由 `ticket_str` 指定的数据到本地目录。
 ///
 /// - `ticket_str`：连接票据字符串。
@@ -227,7 +231,7 @@ async fn download_missing_data(
 }
 
 const fn completed_local_total_files(children: u64) -> u64 {
-    children - 1
+    children.saturating_sub(1)
 }
 
 async fn execute_download(
@@ -255,6 +259,10 @@ fn collect_file_names(collection: &Collection) -> Vec<String> {
 fn resolve_output_dir(output_dir: Option<PathBuf>) -> PathBuf {
     output_dir
         .unwrap_or_else(|| dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap()))
+}
+
+fn size_fetch_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(SIZE_FETCH_BACKOFF_MS * u64::from(attempt))
 }
 
 /// 将 `GetError` 打印到日志并原样返回，便于上层处理。
@@ -360,55 +368,49 @@ async fn prepare_env(
 }
 
 // Helper: get sizes with retries and reconnects
-#[allow(clippy::cognitive_complexity)]
 async fn get_sizes_with_retries(
     endpoint: &Endpoint,
     addr: &iroh::EndpointAddr,
     hash: &iroh_blobs::Hash,
 ) -> anyhow::Result<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> {
-    // Try to get sizes with retries to handle transient connection resets
-    let mut sizes_opt: Option<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> = None;
     let mut last_err: Option<GetError> = None;
     let mut connection = endpoint
         .connect(addr.clone(), iroh_blobs::protocol::ALPN)
         .await?;
-    for attempt in 1..=3 {
-        let sizes_result = get_hash_seq_and_sizes(&connection, hash, 1024 * 1024 * 32, None).await;
-        match sizes_result {
-            Ok((hash_seq, sizes)) => {
-                sizes_opt = Some((hash_seq, sizes));
-                break;
-            }
+    for attempt in 1..=SIZE_FETCH_RETRY_LIMIT {
+        match get_hash_seq_and_sizes(&connection, hash, SIZE_FETCH_CHUNK_SIZE, None).await {
+            Ok(result) => return Ok(result),
             Err(e) => {
                 tracing::error!("Attempt {attempt} to get sizes failed: {e:?}");
                 last_err = Some(e);
-                if attempt < 3 {
-                    let backoff = std::time::Duration::from_millis(250 * attempt as u64);
-                    tokio::time::sleep(backoff).await;
-                    match endpoint
-                        .connect(addr.clone(), iroh_blobs::protocol::ALPN)
-                        .await
-                    {
-                        Ok(new_conn) => connection = new_conn,
-                        Err(conn_err) => tracing::error!("reconnect failed: {conn_err}"),
-                    }
-                    continue;
+                if attempt < SIZE_FETCH_RETRY_LIMIT {
+                    tokio::time::sleep(size_fetch_backoff(attempt)).await;
+                    reconnect(endpoint, addr, &mut connection).await;
                 }
             }
         }
     }
 
-    match sizes_opt {
-        Some((hash_seq, sizes)) => Ok((hash_seq, sizes)),
-        None => {
-            if let Some(e) = last_err {
-                tracing::error!("Failed to get sizes after retries: {:?}", e);
-                tracing::error!("Error type: {}", std::any::type_name_of_val(&e));
-                Err(show_get_error(e).into())
-            } else {
-                anyhow::bail!("unknown error getting sizes")
-            }
-        }
+    if let Some(e) = last_err {
+        tracing::error!("Failed to get sizes after retries: {:?}", e);
+        tracing::error!("Error type: {}", std::any::type_name_of_val(&e));
+        Err(show_get_error(e).into())
+    } else {
+        anyhow::bail!("unknown error getting sizes")
+    }
+}
+
+async fn reconnect(
+    endpoint: &Endpoint,
+    addr: &iroh::EndpointAddr,
+    connection: &mut iroh::endpoint::Connection,
+) {
+    match endpoint
+        .connect(addr.clone(), iroh_blobs::protocol::ALPN)
+        .await
+    {
+        Ok(new_connection) => *connection = new_connection,
+        Err(conn_err) => tracing::error!("reconnect failed: {conn_err}"),
     }
 }
 
@@ -477,7 +479,7 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_export_path, validate_path_component};
+    use super::{completed_local_total_files, get_export_path, validate_path_component};
     use std::path::Path;
 
     #[test]
@@ -526,5 +528,12 @@ mod tests {
         let root = Path::new("downloads");
         let err = get_export_path(root, "dir//file.txt").expect_err("empty component should fail");
         assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn completed_local_total_files_handles_empty_collection() {
+        assert_eq!(completed_local_total_files(0), 0);
+        assert_eq!(completed_local_total_files(1), 0);
+        assert_eq!(completed_local_total_files(3), 2);
     }
 }
