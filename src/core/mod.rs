@@ -4,6 +4,7 @@
 //! 并提供给上层 crate 使用的库 API（见 `src/lib.rs` 的 pub re-export）。
 pub mod args;
 pub mod cli_helper;
+mod endpoint;
 pub mod events;
 pub mod options;
 mod progress;
