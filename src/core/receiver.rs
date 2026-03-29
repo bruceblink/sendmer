@@ -448,3 +448,54 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{get_export_path, validate_path_component};
+    use std::path::Path;
+
+    #[test]
+    fn validate_path_component_accepts_normal_name() {
+        validate_path_component("report.txt").expect("regular filename should be allowed");
+    }
+
+    #[test]
+    fn validate_path_component_rejects_empty_name() {
+        let err = validate_path_component("").expect_err("empty component should fail");
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn validate_path_component_rejects_path_traversal() {
+        let err = validate_path_component("..").expect_err("parent traversal should fail");
+        assert!(err.to_string().contains("path traversal"));
+    }
+
+    #[test]
+    fn validate_path_component_rejects_path_separator() {
+        let err = validate_path_component("dir/file").expect_err("separator should fail");
+        assert!(err.to_string().contains("must not contain path separators"));
+    }
+
+    #[test]
+    fn get_export_path_joins_nested_relative_path() {
+        let root = Path::new("downloads");
+        let export_path = get_export_path(root, "dir/subdir/file.bin")
+            .expect("nested relative path should be accepted");
+        assert_eq!(export_path, root.join("dir").join("subdir").join("file.bin"));
+    }
+
+    #[test]
+    fn get_export_path_rejects_traversal_component() {
+        let root = Path::new("downloads");
+        let err = get_export_path(root, "../secret.txt").expect_err("traversal should fail");
+        assert!(err.to_string().contains("path traversal"));
+    }
+
+    #[test]
+    fn get_export_path_rejects_empty_component() {
+        let root = Path::new("downloads");
+        let err = get_export_path(root, "dir//file.txt").expect_err("empty component should fail");
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+}
