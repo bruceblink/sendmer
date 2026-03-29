@@ -14,6 +14,7 @@ use sendmer::core::args::{
 use sendmer::core::cli_helper::CliEventEmitter;
 use sendmer::core::{receiver, sender};
 use sendmer::{AppHandle, ReceiveOptions, SendOptions};
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -83,7 +84,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     println!("to get this data, use");
     println!("sendmer receive {}", res.ticket);
     #[cfg(feature = "clipboard")]
-    handle_key_press(args.clipboard, res.ticket.to_string());
+    maybe_handle_key_press(args.clipboard, res.ticket.to_string());
     tokio::signal::ctrl_c().await?;
     res.shutdown().await
 }
@@ -155,6 +156,14 @@ fn maybe_show_secret(common: &CommonArgs) -> anyhow::Result<()> {
         eprintln!("Secret: {}", HEXLOWER.encode(&secret.to_bytes()));
     }
     Ok(())
+}
+
+#[cfg(feature = "clipboard")]
+fn maybe_handle_key_press(set_clipboard: bool, ticket: String) {
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        return;
+    }
+    handle_key_press(set_clipboard, ticket);
 }
 
 #[cfg(feature = "clipboard")]

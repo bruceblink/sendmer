@@ -68,16 +68,25 @@ impl RunningSend {
             .current_dir(cwd)
             .env_remove("RUST_LOG")
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
         Ok(Self { child })
     }
 
     fn read_ticket(&mut self) -> BlobTicket {
         let stdout = self.child.stdout.as_mut().expect("send stdout");
-        for _ in 0..8 {
+        let mut seen_output = String::new();
+        for _ in 0..32 {
             let output = read_ascii_lines(1, stdout).expect("send output line");
+            if output.is_empty() {
+                let status = self.child.try_wait().expect("send status check");
+                let stderr = self.read_stderr();
+                panic!(
+                    "send exited before printing a valid ticket; status={status:?}, stdout={seen_output:?}, stderr={stderr:?}"
+                );
+            }
             let output = String::from_utf8(output).expect("utf-8 send output");
+            seen_output.push_str(&output);
             if let Some(ticket) = output
                 .split_ascii_whitespace()
                 .find_map(|token| BlobTicket::from_str(token).ok())
@@ -85,12 +94,21 @@ impl RunningSend {
                 return ticket;
             }
         }
-        panic!("valid ticket not found in send output");
+        let stderr = self.read_stderr();
+        panic!("valid ticket not found in send output; stdout={seen_output:?}, stderr={stderr:?}");
     }
 
     fn cleanup(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    fn read_stderr(&mut self) -> String {
+        let mut stderr = String::new();
+        if let Some(mut pipe) = self.child.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        stderr
     }
 }
 
