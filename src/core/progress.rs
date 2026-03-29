@@ -29,7 +29,10 @@ impl TransferEventEmitter {
     }
 
     pub fn emit_started(&self) {
-        emit_event(&self.app_handle, &TransferEvent::Started { role: self.role });
+        emit_event(
+            &self.app_handle,
+            &TransferEvent::Started { role: self.role },
+        );
     }
 
     pub fn emit_progress(&self, processed: u64, total: u64, speed: f64) {
@@ -45,7 +48,10 @@ impl TransferEventEmitter {
     }
 
     pub fn emit_completed(&self) {
-        emit_event(&self.app_handle, &TransferEvent::Completed { role: self.role });
+        emit_event(
+            &self.app_handle,
+            &TransferEvent::Completed { role: self.role },
+        );
     }
 
     pub fn emit_failed(&self, message: impl Into<String>) {
@@ -117,7 +123,10 @@ pub struct TransferId {
 
 impl TransferId {
     pub fn new(connection: u64, request: u64) -> Self {
-        Self { connection, request }
+        Self {
+            connection,
+            request,
+        }
     }
 }
 
@@ -230,7 +239,11 @@ impl ProviderProgressTracker {
         let processed = offset;
         let total = info.total_size;
         let elapsed = info.start_time.elapsed().as_secs_f64();
-        let speed = if elapsed > 0.0 { processed as f64 / elapsed } else { 0.0 };
+        let speed = if elapsed > 0.0 {
+            processed as f64 / elapsed
+        } else {
+            0.0
+        };
 
         Some((processed, total, speed))
     }
@@ -304,7 +317,6 @@ impl ProviderProgressTracker {
             && self.completed_requests >= self.completion_detector.min_required()
             && self.completed_requests >= self.active_requests
     }
-
 }
 
 /// Completion status after processing a request

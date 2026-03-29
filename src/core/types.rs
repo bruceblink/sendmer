@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 // Re-export from events.rs to avoid duplication
-pub use crate::core::events::{EventEmitter, TransferEvent, Role, AppHandle, emit_event};
+pub use crate::core::events::{AppHandle, EventEmitter, Role, TransferEvent, emit_event};
 
 /// Entry type for transfers (file or directory)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

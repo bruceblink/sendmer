@@ -2,11 +2,13 @@
 //!
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
+use crate::core::args::get_or_create_secret;
 use crate::core::events::{AppHandle, Role};
 use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
-use crate::core::progress::{CompletionStatus, ProviderProgressTracker, TransferEventEmitter, TransferId};
+use crate::core::progress::{
+    CompletionStatus, ProviderProgressTracker, TransferEventEmitter, TransferId,
+};
 use crate::core::results::SendResult;
-use crate::core::args::get_or_create_secret;
 use anyhow::Context;
 use data_encoding::HEXLOWER;
 use iroh::{Endpoint, RelayMode, discovery::pkarr::PkarrPublisher};
@@ -90,7 +92,13 @@ async fn setup_data_sharing(
     blobs_data_dir: PathBuf,
     share_request: ShareRequest,
     wait_for_online: bool,
-) -> anyhow::Result<(iroh::protocol::Router, (TempTag, u64, Collection), PathBuf, FsStore, n0_future::task::AbortOnDropHandle<anyhow::Result<()>>)> {
+) -> anyhow::Result<(
+    iroh::protocol::Router,
+    (TempTag, u64, Collection),
+    PathBuf,
+    FsStore,
+    n0_future::task::AbortOnDropHandle<anyhow::Result<()>>,
+)> {
     let (progress_tx, progress_rx) = mpsc::channel(32);
 
     let setup_future = async move {
@@ -98,10 +106,7 @@ async fn setup_data_sharing(
 
         let store = FsStore::load(&blobs_data_dir).await?;
 
-        let blobs = BlobsProtocol::new(
-            &store,
-            Some(create_event_sender(progress_tx)),
-        );
+        let blobs = BlobsProtocol::new(&store, Some(create_event_sender(progress_tx)));
 
         let import_result = import(share_request.path, blobs.store()).await?;
         let (ref _temp_tag, size, ref _collection) = import_result;
@@ -222,7 +227,10 @@ pub async fn send(
     validate_share_path(&path)?;
 
     let entry_type = detect_entry_type(&path);
-    let wait_for_online = !matches!(options.relay_mode, crate::core::options::RelayModeOption::Disabled);
+    let wait_for_online = !matches!(
+        options.relay_mode,
+        crate::core::options::RelayModeOption::Disabled
+    );
     let endpoint = prepare_endpoint(&options).await?;
     let blobs_data_dir = prepare_temp_directory()?;
     let share_request = ShareRequest {
@@ -380,7 +388,8 @@ async fn show_provide_progress_with_provider_tracker(
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
 ) -> anyhow::Result<()> {
-    let tracker: Arc<Mutex<ProviderProgressTracker>> = Arc::new(Mutex::new(ProviderProgressTracker::new(entry_type)));
+    let tracker: Arc<Mutex<ProviderProgressTracker>> =
+        Arc::new(Mutex::new(ProviderProgressTracker::new(entry_type)));
     let emitter = TransferEventEmitter::new(app_handle, Role::Sender);
     let mut has_emitted_started = false;
 
@@ -405,7 +414,8 @@ async fn show_provide_progress_with_provider_tracker(
                 let mut rx = msg.rx;
                 tokio::spawn(async move {
                     while let Ok(Some(update)) = rx.recv().await {
-                        handle_request_update(update, transfer_id, &tracker_clone, &emitter_clone).await;
+                        handle_request_update(update, transfer_id, &tracker_clone, &emitter_clone)
+                            .await;
                     }
                 });
             }
@@ -428,7 +438,8 @@ async fn handle_request_update(
         iroh_blobs::provider::events::RequestUpdate::Started(_) => {}
         iroh_blobs::provider::events::RequestUpdate::Progress(m) => {
             let mut tracker = tracker.lock().await;
-            if let Some((processed, total, speed)) = tracker.on_progress(transfer_id, m.end_offset) {
+            if let Some((processed, total, speed)) = tracker.on_progress(transfer_id, m.end_offset)
+            {
                 emitter.emit_progress(processed, total, speed);
             }
         }
@@ -441,7 +452,9 @@ async fn handle_request_update(
                         None
                     }
                     CompletionStatus::InProgress => None,
-                    CompletionStatus::MoreRequestsArrivingSoon => Some(tracker.completion_quiet_period()),
+                    CompletionStatus::MoreRequestsArrivingSoon => {
+                        Some(tracker.completion_quiet_period())
+                    }
                 }
             };
 
@@ -494,18 +507,22 @@ mod tests {
 
         let mut relay_only = base.clone();
         apply_options(&mut relay_only, AddrInfoOptions::Relay);
-        assert!(relay_only
-            .addrs
-            .iter()
-            .all(|addr| matches!(addr, TransportAddr::Relay(_))));
+        assert!(
+            relay_only
+                .addrs
+                .iter()
+                .all(|addr| matches!(addr, TransportAddr::Relay(_)))
+        );
         assert!(!relay_only.addrs.is_empty());
 
         let mut ip_only = base.clone();
         apply_options(&mut ip_only, AddrInfoOptions::Addresses);
-        assert!(ip_only
-            .addrs
-            .iter()
-            .all(|addr| matches!(addr, TransportAddr::Ip(_))));
+        assert!(
+            ip_only
+                .addrs
+                .iter()
+                .all(|addr| matches!(addr, TransportAddr::Ip(_)))
+        );
         assert!(!ip_only.addrs.is_empty());
 
         let mut full = base.clone();
