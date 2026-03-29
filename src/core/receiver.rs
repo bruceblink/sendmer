@@ -49,8 +49,7 @@ pub async fn receive(
         TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
     let fut = async move {
         let hash_and_format = context.ticket.hash_and_format();
-        let (stats, total_files, payload_size) =
-            download_missing_data(&context, app_handle.clone()).await?;
+        let download = download_missing_data(&context, app_handle.clone()).await?;
 
         let collection = Collection::load(hash_and_format.hash, &context.db).await?;
         let file_names = collect_file_names(&collection);
@@ -63,9 +62,9 @@ pub async fn receive(
         event_emitter.emit_completed();
 
         anyhow::Ok((
-            total_files,
-            payload_size,
-            stats,
+            download.total_files,
+            download.payload_size,
+            download.stats,
             output_dir,
             context.iroh_data_dir,
         ))
@@ -141,6 +140,12 @@ struct ReceiveContext {
     db: Store,
 }
 
+struct DownloadOutcome {
+    stats: Stats,
+    total_files: u64,
+    payload_size: u64,
+}
+
 async fn prepare_receive_context(
     ticket: BlobTicket,
     options: &ReceiveOptions,
@@ -159,7 +164,7 @@ async fn prepare_receive_context(
 async fn download_missing_data(
     context: &ReceiveContext,
     app_handle: AppHandle,
-) -> anyhow::Result<(Stats, u64, u64)> {
+) -> anyhow::Result<DownloadOutcome> {
     let emitter =
         TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
     let hash_and_format = context.ticket.hash_and_format();
@@ -167,8 +172,11 @@ async fn download_missing_data(
     if local.is_complete() {
         let total_files = local.children().unwrap() - 1;
         emitter.emit_started();
-        emitter.emit_completed();
-        return Ok((Stats::default(), total_files, 0));
+        return Ok(DownloadOutcome {
+            stats: Stats::default(),
+            total_files,
+            payload_size: 0,
+        });
     }
 
     emitter.emit_started();
@@ -185,7 +193,11 @@ async fn download_missing_data(
     let mut stream = get.stream();
     let stats = process_get_stream(&mut stream, payload_size, &app_handle).await?;
 
-    Ok((stats, total_files, payload_size))
+    Ok(DownloadOutcome {
+        stats,
+        total_files,
+        payload_size,
+    })
 }
 
 fn collect_file_names(collection: &Collection) -> Vec<String> {
