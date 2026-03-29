@@ -78,7 +78,7 @@ impl EventEmitter for CliEventEmitter {
                 if let Some(pb) = guard.as_ref() {
                     pb.set_length(*total);
                     pb.set_position(*processed);
-                    pb.set_message(format!("{}/s", humantime_bytes_per_sec(*speed)));
+                    pb.set_message(human_bytes_per_sec(*speed));
                 }
             }
 
@@ -103,9 +103,8 @@ impl EventEmitter for CliEventEmitter {
     }
 }
 
-/// 将内部的速率整数（约定为 speed * 1000）格式化为人类可读的速率字符串。
-fn humantime_bytes_per_sec(speed_milli: f64) -> String {
-    let speed = speed_milli / 1000.0;
+/// 将字节每秒速率格式化为人类可读的字符串。
+fn human_bytes_per_sec(speed: f64) -> String {
     if speed <= 0.0 {
         return "0 B/s".to_string();
     }
@@ -117,4 +116,19 @@ fn humantime_bytes_per_sec(speed_milli: f64) -> String {
         idx += 1;
     }
     format!("{:.1} {}", val, units[idx])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_bytes_per_sec;
+
+    #[test]
+    fn human_bytes_per_sec_formats_zero() {
+        assert_eq!(human_bytes_per_sec(0.0), "0 B/s");
+    }
+
+    #[test]
+    fn human_bytes_per_sec_formats_kilobytes_once() {
+        assert_eq!(human_bytes_per_sec(2048.0), "2.0 KB/s");
+    }
 }

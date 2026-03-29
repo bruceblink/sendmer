@@ -62,7 +62,7 @@ pub async fn receive(
         }
     };
 
-    finish_receive(artifacts).await
+    finish_receive(&context, artifacts).await
 }
 
 /// 将集合中的各个 blob 导出到 `output_dir`。
@@ -115,7 +115,6 @@ struct ReceiveArtifacts {
     total_files: u64,
     payload_size: u64,
     output_dir: PathBuf,
-    iroh_data_dir: PathBuf,
 }
 
 struct DownloadOutcome {
@@ -178,7 +177,6 @@ async fn receive_once(
         total_files: download.total_files,
         payload_size: download.payload_size,
         output_dir: output_dir.to_path_buf(),
-        iroh_data_dir: context.iroh_data_dir.clone(),
     })
 }
 
@@ -191,11 +189,16 @@ fn emit_collection_file_names(emitter: &TransferEventEmitter, collection: &Colle
 
 async fn cleanup_failed_receive(context: &ReceiveContext) -> anyhow::Result<()> {
     context.db.shutdown().await?;
+    remove_temp_receive_dir(&context.iroh_data_dir).await?;
     Ok(())
 }
 
-async fn finish_receive(artifacts: ReceiveArtifacts) -> anyhow::Result<ReceiveResult> {
-    tokio::fs::remove_dir_all(&artifacts.iroh_data_dir).await?;
+async fn finish_receive(
+    context: &ReceiveContext,
+    artifacts: ReceiveArtifacts,
+) -> anyhow::Result<ReceiveResult> {
+    context.db.shutdown().await?;
+    remove_temp_receive_dir(&context.iroh_data_dir).await?;
 
     Ok(ReceiveResult {
         message: format!(
@@ -204,6 +207,14 @@ async fn finish_receive(artifacts: ReceiveArtifacts) -> anyhow::Result<ReceiveRe
         ),
         file_path: artifacts.output_dir,
     })
+}
+
+async fn remove_temp_receive_dir(path: &Path) -> anyhow::Result<()> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 async fn download_missing_data(
