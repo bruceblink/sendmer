@@ -98,8 +98,8 @@ async fn setup_data_sharing(
 
         let blobs = BlobsProtocol::new(&store, Some(create_event_sender(progress_tx)));
 
-        let import_result = import(share_request.path, blobs.store()).await?;
-        let (ref _temp_tag, size, ref _collection) = import_result;
+        let imported = import(share_request.path, blobs.store()).await?;
+        let size = imported.size;
         let progress_handle = spawn_provider_progress_task(
             progress_rx,
             share_request.app_handle,
@@ -115,7 +115,7 @@ async fn setup_data_sharing(
 
         anyhow::Ok(SharingSetup {
             router,
-            import_result,
+            imported,
             blobs_data_dir,
             store,
             progress_handle,
@@ -202,10 +202,16 @@ struct SendArtifacts {
 
 struct SharingSetup {
     router: iroh::protocol::Router,
-    import_result: (TempTag, u64, Collection),
+    imported: ImportedCollection,
     blobs_data_dir: PathBuf,
     store: FsStore,
     progress_handle: AbortOnDropHandle<anyhow::Result<()>>,
+}
+
+struct ImportedCollection {
+    temp_tag: TempTag,
+    size: u64,
+    _collection: Collection,
 }
 
 impl SharePlan {
@@ -296,8 +302,8 @@ pub async fn send(
     create_send_result(
         SendArtifacts {
             router: setup.router,
-            temp_tag: setup.import_result.0,
-            size: setup.import_result.1,
+            temp_tag: setup.imported.temp_tag,
+            size: setup.imported.size,
             entry_type: plan.entry_type,
             blobs_data_dir: setup.blobs_data_dir,
             store: setup.store,
@@ -315,8 +321,8 @@ fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {
     }
 }
 
-/// 将 `path`（文件或目录）导入到给定的 `Store`，并返回临时标签、总字节数和集合信息。
-async fn import(path: PathBuf, db: &Store) -> anyhow::Result<(TempTag, u64, Collection)> {
+/// 将 `path`（文件或目录）导入到给定的 `Store`，并返回导入后的集合信息。
+async fn import(path: PathBuf, db: &Store) -> anyhow::Result<ImportedCollection> {
     let parallelism = num_cpus::get();
     let sources = collect_import_sources(path)?;
     let imported = import_sources(db, sources, parallelism).await?;
@@ -402,7 +408,7 @@ async fn import_source(db: &Store, source: ImportedSource) -> anyhow::Result<Imp
 async fn build_collection_from_imports(
     db: &Store,
     mut imported: Vec<ImportedBlob>,
-) -> anyhow::Result<(TempTag, u64, Collection)> {
+) -> anyhow::Result<ImportedCollection> {
     imported.sort_by(|a, b| a.name.cmp(&b.name));
     let size = imported.iter().map(|item| item.size).sum::<u64>();
     let (collection, tags) = imported
@@ -411,7 +417,11 @@ async fn build_collection_from_imports(
         .unzip::<_, _, Collection, Vec<_>>();
     let temp_tag = collection.clone().store(db).await?;
     drop(tags);
-    Ok((temp_tag, size, collection))
+    Ok(ImportedCollection {
+        temp_tag,
+        size,
+        _collection: collection,
+    })
 }
 
 /// 将已经标准化的路径转换为库内部使用的字符串表示，路径分隔使用 `/`。
