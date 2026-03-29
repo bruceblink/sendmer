@@ -2,8 +2,9 @@
 //!
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
-use crate::core::events::{AppHandle, Role, TransferEvent, emit_event};
+use crate::core::events::{AppHandle, Role};
 use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
+use crate::core::progress::{CompletionStatus, ProviderProgressTracker, TransferEventEmitter, TransferId};
 use crate::core::results::SendResult;
 use crate::core::args::get_or_create_secret;
 use anyhow::Context;
@@ -87,9 +88,7 @@ fn validate_share_path(path: &Path) -> anyhow::Result<()> {
 async fn setup_data_sharing(
     endpoint: Endpoint,
     blobs_data_dir: PathBuf,
-    path: PathBuf,
-    entry_type: crate::core::types::EntryType,
-    app_handle: AppHandle,
+    share_request: ShareRequest,
     wait_for_online: bool,
 ) -> anyhow::Result<(iroh::protocol::Router, (TempTag, u64, Collection), PathBuf, FsStore, n0_future::task::AbortOnDropHandle<anyhow::Result<()>>)> {
     let (progress_tx, progress_rx) = mpsc::channel(32);
@@ -101,36 +100,23 @@ async fn setup_data_sharing(
 
         let blobs = BlobsProtocol::new(
             &store,
-            Some(EventSender::new(
-                progress_tx,
-                EventMask {
-                    connected: ConnectMode::Notify,
-                    get: RequestMode::NotifyLog,
-                    ..EventMask::DEFAULT
-                },
-            )),
+            Some(create_event_sender(progress_tx)),
         );
 
-        let import_result = import(path, blobs.store()).await?;
+        let import_result = import(share_request.path, blobs.store()).await?;
         let (ref _temp_tag, size, ref _collection) = import_result;
-        let progress_handle = AbortOnDropHandle::new(tokio::spawn(show_provide_progress_with_provider_tracker(
+        let progress_handle = spawn_provider_progress_task(
             progress_rx,
-            app_handle,
+            share_request.app_handle,
             size,
-            entry_type,
-        )));
+            share_request.entry_type,
+        );
 
         let router = iroh::protocol::Router::builder(endpoint)
             .accept(iroh_blobs::protocol::ALPN, blobs.clone())
             .spawn();
 
-        let ep = router.endpoint();
-        if wait_for_online {
-            tokio::time::timeout(Duration::from_secs(30), async move {
-                let _ = ep.online().await;
-            })
-            .await?;
-        }
+        wait_until_endpoint_is_online(router.endpoint(), wait_for_online).await?;
 
         anyhow::Ok((
             router,
@@ -142,6 +128,52 @@ async fn setup_data_sharing(
     };
 
     setup_future.await
+}
+
+struct ShareRequest {
+    path: PathBuf,
+    entry_type: crate::core::types::EntryType,
+    app_handle: AppHandle,
+}
+
+fn create_event_sender(
+    progress_tx: mpsc::Sender<iroh_blobs::provider::events::ProviderMessage>,
+) -> EventSender {
+    EventSender::new(
+        progress_tx,
+        EventMask {
+            connected: ConnectMode::Notify,
+            get: RequestMode::NotifyLog,
+            ..EventMask::DEFAULT
+        },
+    )
+}
+
+fn spawn_provider_progress_task(
+    progress_rx: mpsc::Receiver<iroh_blobs::provider::events::ProviderMessage>,
+    app_handle: AppHandle,
+    total_file_size: u64,
+    entry_type: crate::core::types::EntryType,
+) -> AbortOnDropHandle<anyhow::Result<()>> {
+    AbortOnDropHandle::new(tokio::spawn(show_provide_progress_with_provider_tracker(
+        progress_rx,
+        app_handle,
+        total_file_size,
+        entry_type,
+    )))
+}
+
+async fn wait_until_endpoint_is_online(
+    endpoint: &iroh::Endpoint,
+    wait_for_online: bool,
+) -> anyhow::Result<()> {
+    if wait_for_online {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            let _ = endpoint.online().await;
+        })
+        .await?;
+    }
+    Ok(())
 }
 
 /// Create the final send result with ticket
@@ -187,32 +219,25 @@ pub async fn send(
     options: SendOptions,
     app_handle: AppHandle,
 ) -> anyhow::Result<SendResult> {
-    // Validate the path to be shared
     validate_share_path(&path)?;
 
-    // Determine entry type
-    let entry_type = if path.is_file() {
-        crate::core::types::EntryType::File
-    } else {
-        crate::core::types::EntryType::Directory
-    };
+    let entry_type = detect_entry_type(&path);
     let wait_for_online = !matches!(options.relay_mode, crate::core::options::RelayModeOption::Disabled);
-
-    // Prepare endpoint
     let endpoint = prepare_endpoint(&options).await?;
-
-    // Prepare temporary directory
     let blobs_data_dir = prepare_temp_directory()?;
+    let share_request = ShareRequest {
+        path,
+        entry_type,
+        app_handle,
+    };
 
-    // Setup data sharing with progress tracking
     let (router, (temp_tag, size, _collection), _blobs_data_dir, store, progress_handle) = select! {
-        x = setup_data_sharing(endpoint, blobs_data_dir, path, entry_type, app_handle, wait_for_online) => x?,
+        x = setup_data_sharing(endpoint, blobs_data_dir, share_request, wait_for_online) => x?,
         _ = tokio::signal::ctrl_c() => {
             anyhow::bail!("Operation cancelled");
         }
     };
 
-    // Create the final send result
     create_send_result(
         router,
         temp_tag,
@@ -223,6 +248,14 @@ pub async fn send(
         progress_handle,
         options.ticket_type,
     )
+}
+
+fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {
+    if path.is_file() {
+        crate::core::types::EntryType::File
+    } else {
+        crate::core::types::EntryType::Directory
+    }
 }
 
 /// 将 `path`（文件或目录）导入到给定的 `Store`，并返回临时标签、总字节数和集合信息。
@@ -347,9 +380,8 @@ async fn show_provide_progress_with_provider_tracker(
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
 ) -> anyhow::Result<()> {
-    use crate::core::progress::{ProviderProgressTracker, TransferId, CompletionStatus};
-
     let tracker: Arc<Mutex<ProviderProgressTracker>> = Arc::new(Mutex::new(ProviderProgressTracker::new(entry_type)));
+    let emitter = TransferEventEmitter::new(app_handle, Role::Sender);
     let mut has_emitted_started = false;
 
     while let Some(item) = recv.recv().await {
@@ -364,68 +396,16 @@ async fn show_provide_progress_with_provider_tracker(
                 }
 
                 if !has_emitted_started {
-                    emit_event(&app_handle, &TransferEvent::Started { role: Role::Sender });
+                    emitter.emit_started();
                     has_emitted_started = true;
                 }
 
-                let app_handle_clone = app_handle.clone();
+                let emitter_clone = emitter.clone();
                 let tracker_clone = Arc::clone(&tracker);
                 let mut rx = msg.rx;
                 tokio::spawn(async move {
                     while let Ok(Some(update)) = rx.recv().await {
-                        match update {
-                            iroh_blobs::provider::events::RequestUpdate::Started(_) => {
-                                // Transfer started - already handled above
-                            }
-                            iroh_blobs::provider::events::RequestUpdate::Progress(m) => {
-                                let mut tracker = tracker_clone.lock().await;
-                                if let Some((processed, total, speed)) = tracker.on_progress(transfer_id, m.end_offset) {
-                                    emit_event(&app_handle_clone, &TransferEvent::Progress {
-                                        role: Role::Sender,
-                                        processed,
-                                        total,
-                                        speed,
-                                    });
-                                }
-                            }
-                            iroh_blobs::provider::events::RequestUpdate::Completed(_) => {
-                                let quiet_period = {
-                                    let mut tracker = tracker_clone.lock().await;
-                                    match tracker.on_request_completed(transfer_id) {
-                                        CompletionStatus::Completed => {
-                                            emit_event(&app_handle_clone, &TransferEvent::Completed { role: Role::Sender });
-                                            None
-                                        }
-                                        CompletionStatus::InProgress => None,
-                                        CompletionStatus::MoreRequestsArrivingSoon => {
-                                            Some(tracker.completion_quiet_period())
-                                        }
-                                    }
-                                };
-
-                                if let Some(quiet_period) = quiet_period {
-                                    tokio::time::sleep(quiet_period).await;
-
-                                    let mut tracker = tracker_clone.lock().await;
-                                    if matches!(tracker.evaluate_completion(), CompletionStatus::Completed) {
-                                        emit_event(&app_handle_clone, &TransferEvent::Completed { role: Role::Sender });
-                                    }
-                                }
-                            }
-                            iroh_blobs::provider::events::RequestUpdate::Aborted(_) => {
-                                let should_emit_failed = {
-                                    let mut tracker = tracker_clone.lock().await;
-                                    tracker.on_request_aborted(transfer_id)
-                                };
-
-                                if should_emit_failed {
-                                    emit_event(&app_handle_clone, &TransferEvent::Failed {
-                                        role: Role::Sender,
-                                        message: "transfer aborted".to_string()
-                                    });
-                                }
-                            }
-                        }
+                        handle_request_update(update, transfer_id, &tracker_clone, &emitter_clone).await;
                     }
                 });
             }
@@ -436,6 +416,55 @@ async fn show_provide_progress_with_provider_tracker(
     }
 
     Ok(())
+}
+
+async fn handle_request_update(
+    update: iroh_blobs::provider::events::RequestUpdate,
+    transfer_id: TransferId,
+    tracker: &Arc<Mutex<ProviderProgressTracker>>,
+    emitter: &TransferEventEmitter,
+) {
+    match update {
+        iroh_blobs::provider::events::RequestUpdate::Started(_) => {}
+        iroh_blobs::provider::events::RequestUpdate::Progress(m) => {
+            let mut tracker = tracker.lock().await;
+            if let Some((processed, total, speed)) = tracker.on_progress(transfer_id, m.end_offset) {
+                emitter.emit_progress(processed, total, speed);
+            }
+        }
+        iroh_blobs::provider::events::RequestUpdate::Completed(_) => {
+            let quiet_period = {
+                let mut tracker = tracker.lock().await;
+                match tracker.on_request_completed(transfer_id) {
+                    CompletionStatus::Completed => {
+                        emitter.emit_completed();
+                        None
+                    }
+                    CompletionStatus::InProgress => None,
+                    CompletionStatus::MoreRequestsArrivingSoon => Some(tracker.completion_quiet_period()),
+                }
+            };
+
+            if let Some(quiet_period) = quiet_period {
+                tokio::time::sleep(quiet_period).await;
+
+                let mut tracker = tracker.lock().await;
+                if matches!(tracker.evaluate_completion(), CompletionStatus::Completed) {
+                    emitter.emit_completed();
+                }
+            }
+        }
+        iroh_blobs::provider::events::RequestUpdate::Aborted(_) => {
+            let should_emit_failed = {
+                let mut tracker = tracker.lock().await;
+                tracker.on_request_aborted(transfer_id)
+            };
+
+            if should_emit_failed {
+                emitter.emit_failed("transfer aborted");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
