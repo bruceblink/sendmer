@@ -16,7 +16,7 @@ use iroh_blobs::{
         remote::GetProgressItem,
     },
     format::collection::Collection,
-    get::{GetError, Stats, request::get_hash_seq_and_sizes},
+    get::{GetError, request::get_hash_seq_and_sizes},
     ticket::BlobTicket,
 };
 use n0_future::StreamExt;
@@ -37,68 +37,32 @@ const SIZE_FETCH_BACKOFF_MS: u64 = 250;
 /// - `ticket_str`：连接票据字符串。
 /// - `options`：接收选项（输出目录、转发模式等）。
 /// - `app_handle`：可选的事件发射器句柄，用于 UI/CLI 上报进度与文件名等信息。
-#[allow(clippy::cognitive_complexity)]
 pub async fn receive(
     ticket_str: String,
     options: ReceiveOptions,
     app_handle: AppHandle,
 ) -> anyhow::Result<ReceiveResult> {
     let ticket = BlobTicket::from_str(&ticket_str)?;
-    let context = prepare_receive_context(ticket, &options).await?;
-    let db_for_cleanup = context.db.clone();
+    let context = ReceiveContext::prepare(ticket, &options).await?;
+    let output_dir = resolve_output_dir(options.output_dir);
 
-    trace!("load done!");
-
-    let event_emitter =
-        TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
-    let fut = async move {
-        let download = download_missing_data(&context, app_handle.clone()).await?;
-        let collection = context.load_collection().await?;
-        let file_names = collect_file_names(&collection);
-        if !file_names.is_empty() {
-            event_emitter.emit_file_names(file_names);
-        }
-
-        let output_dir = resolve_output_dir(options.output_dir);
-        export(&context.db, collection, &output_dir).await?;
-        event_emitter.emit_completed();
-
-        let _stats = download.stats;
-        anyhow::Ok(ReceiveArtifacts {
-            total_files: download.total_files,
-            payload_size: download.payload_size,
-            output_dir,
-            iroh_data_dir: context.iroh_data_dir,
-        })
-    };
-
-    let ReceiveArtifacts {
-        total_files,
-        payload_size,
-        output_dir,
-        iroh_data_dir,
-    } = select! {
-        x = fut => match x {
-            Ok(x) => x,
-            Err(e) => {
-                tracing::error!("Download operation failed: {}", e);
-                db_for_cleanup.shutdown().await?;
-                anyhow::bail!("error: {e}");
+    let artifacts = select! {
+        x = receive_once(&context, &output_dir, app_handle) => match x {
+            Ok(artifacts) => artifacts,
+            Err(error) => {
+                tracing::error!("Download operation failed: {}", error);
+                cleanup_failed_receive(&context).await?;
+                anyhow::bail!("error: {error}");
             }
         },
         _ = tokio::signal::ctrl_c() => {
             tracing::warn!("Operation cancelled by user");
-            db_for_cleanup.shutdown().await?;
+            cleanup_failed_receive(&context).await?;
             anyhow::bail!("Operation cancelled");
         }
     };
 
-    tokio::fs::remove_dir_all(&iroh_data_dir).await?;
-
-    Ok(ReceiveResult {
-        message: format!("Downloaded {} files, {} bytes", total_files, payload_size),
-        file_path: output_dir,
-    })
+    finish_receive(artifacts).await
 }
 
 /// 将集合中的各个 blob 导出到 `output_dir`。
@@ -155,7 +119,6 @@ struct ReceiveArtifacts {
 }
 
 struct DownloadOutcome {
-    stats: Stats,
     total_files: u64,
     payload_size: u64,
 }
@@ -166,6 +129,18 @@ struct DownloadPlan {
 }
 
 impl ReceiveContext {
+    async fn prepare(ticket: BlobTicket, options: &ReceiveOptions) -> anyhow::Result<Self> {
+        let addr = ticket.addr().clone();
+        let (endpoint, iroh_data_dir, db) = prepare_env(&ticket, options).await?;
+        Ok(Self {
+            ticket,
+            addr,
+            endpoint,
+            iroh_data_dir,
+            db,
+        })
+    }
+
     fn hash_and_format(&self) -> iroh_blobs::HashAndFormat {
         self.ticket.hash_and_format()
     }
@@ -184,18 +159,50 @@ impl DownloadPlan {
     }
 }
 
-async fn prepare_receive_context(
-    ticket: BlobTicket,
-    options: &ReceiveOptions,
-) -> anyhow::Result<ReceiveContext> {
-    let addr = ticket.addr().clone();
-    let (endpoint, iroh_data_dir, db) = prepare_env(&ticket, options).await?;
-    Ok(ReceiveContext {
-        ticket,
-        addr,
-        endpoint,
-        iroh_data_dir,
-        db,
+async fn receive_once(
+    context: &ReceiveContext,
+    output_dir: &Path,
+    app_handle: AppHandle,
+) -> anyhow::Result<ReceiveArtifacts> {
+    trace!("load done!");
+
+    let event_emitter =
+        TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
+    let download = download_missing_data(context, app_handle).await?;
+    let collection = context.load_collection().await?;
+    emit_collection_file_names(&event_emitter, &collection);
+    export(&context.db, collection, output_dir).await?;
+    event_emitter.emit_completed();
+
+    Ok(ReceiveArtifacts {
+        total_files: download.total_files,
+        payload_size: download.payload_size,
+        output_dir: output_dir.to_path_buf(),
+        iroh_data_dir: context.iroh_data_dir.clone(),
+    })
+}
+
+fn emit_collection_file_names(emitter: &TransferEventEmitter, collection: &Collection) {
+    let file_names = collect_file_names(collection);
+    if !file_names.is_empty() {
+        emitter.emit_file_names(file_names);
+    }
+}
+
+async fn cleanup_failed_receive(context: &ReceiveContext) -> anyhow::Result<()> {
+    context.db.shutdown().await?;
+    Ok(())
+}
+
+async fn finish_receive(artifacts: ReceiveArtifacts) -> anyhow::Result<ReceiveResult> {
+    tokio::fs::remove_dir_all(&artifacts.iroh_data_dir).await?;
+
+    Ok(ReceiveResult {
+        message: format!(
+            "Downloaded {} files, {} bytes",
+            artifacts.total_files, artifacts.payload_size
+        ),
+        file_path: artifacts.output_dir,
     })
 }
 
@@ -211,7 +218,6 @@ async fn download_missing_data(
         let total_files = completed_local_total_files(local.children().unwrap());
         emitter.emit_started();
         return Ok(DownloadOutcome {
-            stats: Stats::default(),
             total_files,
             payload_size: 0,
         });
@@ -221,10 +227,9 @@ async fn download_missing_data(
     let (_hash_seq, sizes) =
         get_sizes_with_retries(&context.endpoint, &context.addr, &context.ticket.hash()).await?;
     let plan = DownloadPlan::from_sizes(&sizes);
-    let stats = execute_download(context, local.missing(), &plan, &app_handle).await?;
+    execute_download(context, local.missing(), &plan, &app_handle).await?;
 
     Ok(DownloadOutcome {
-        stats,
         total_files: plan.total_files,
         payload_size: plan.payload_size,
     })
@@ -239,7 +244,7 @@ async fn execute_download(
     missing: iroh_blobs::protocol::GetRequest,
     plan: &DownloadPlan,
     app_handle: &AppHandle,
-) -> anyhow::Result<Stats> {
+) -> anyhow::Result<()> {
     let connection = context
         .endpoint
         .connect(context.addr.clone(), iroh_blobs::protocol::ALPN)
@@ -406,13 +411,12 @@ async fn process_get_stream<S>(
     stream: &mut S,
     payload_size: u64,
     app_handle: &AppHandle,
-) -> anyhow::Result<Stats>
+) -> anyhow::Result<()>
 where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
 {
     let mut reporter = ReceiverProgressReporter::new(app_handle.clone(), payload_size);
     reporter.emit_initial_progress();
-    let mut stats = Stats::default();
     while let Some(item) = stream.next().await {
         trace!("got item {item:?}");
         match item {
@@ -420,7 +424,7 @@ where
                 reporter.on_progress(offset);
             }
             GetProgressItem::Done(value) => {
-                stats = value;
+                let _stats = value;
                 reporter.emit_completed_progress();
                 break;
             }
@@ -430,7 +434,7 @@ where
             }
         }
     }
-    Ok(stats)
+    Ok(())
 }
 
 /// 验证单个路径组件是否合法（不应包含分隔符 `/`）。
