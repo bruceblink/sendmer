@@ -2,8 +2,9 @@
 //!
 //! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
 
-use crate::core::events::{AppHandle, Role, TransferEvent, emit_event};
+use crate::core::events::AppHandle;
 use crate::core::options::ReceiveOptions;
+use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
 use crate::core::args::get_or_create_secret;
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
@@ -22,7 +23,6 @@ use n0_future::StreamExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc as StdArc;
-use std::time::Instant;
 use tokio::select;
 use tracing::log::trace;
 
@@ -39,117 +39,43 @@ pub async fn receive(
     options: ReceiveOptions,
     app_handle: AppHandle,
 ) -> anyhow::Result<ReceiveResult> {
-    // Prepare environment: ticket, addr, endpoint, db, temp dir
     let ticket = BlobTicket::from_str(&ticket_str)?;
-    let addr = ticket.addr().clone();
-    let (endpoint, iroh_data_dir, db) = prepare_env(&ticket, &options).await?;
-    let db2 = db.clone();
+    let context = prepare_receive_context(ticket, &options).await?;
+    let db_for_cleanup = context.db.clone();
 
     trace!("load done!");
 
+    let event_emitter = TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
     let fut = async move {
-        let hash_and_format = ticket.hash_and_format();
-        let local = db.remote().local(hash_and_format).await?;
+        let hash_and_format = context.ticket.hash_and_format();
+        let (stats, total_files, payload_size) =
+            download_missing_data(&context, app_handle.clone()).await?;
 
-        let (stats, total_files, payload_size) = if !local.is_complete() {
-            emit_event(
-                &app_handle,
-                &TransferEvent::Started {
-                    role: Role::Receiver,
-                },
-            );
-
-            // connect and get sizes with retries
-            let (_hash_seq, sizes) =
-                get_sizes_with_retries(&endpoint, &addr, &hash_and_format.hash).await?;
-
-            let _total_size = sizes.iter().copied().sum::<u64>();
-            let payload_size = sizes.iter().skip(1).copied().sum::<u64>();
-            let total_files = sizes.len().saturating_sub(1) as u64;
-
-            emit_event(
-                &app_handle,
-                &TransferEvent::Progress {
-                    role: Role::Receiver,
-                    processed: 0,
-                    total: payload_size,
-                    speed: 0.0,
-                },
-            );
-
-            let connection = endpoint
-                .connect(addr.clone(), iroh_blobs::protocol::ALPN)
-                .await?;
-
-            let get = db.remote().execute_get(connection, local.missing());
-            let mut stream = get.stream();
-            let stats = process_get_stream(&mut stream, payload_size, &app_handle).await?;
-
-            (stats, total_files, payload_size)
-        } else {
-            let total_files = local.children().unwrap() - 1;
-            let payload_bytes = 0;
-            emit_event(
-                &app_handle,
-                &TransferEvent::Started {
-                    role: Role::Receiver,
-                },
-            );
-            emit_event(
-                &app_handle,
-                &TransferEvent::Completed {
-                    role: Role::Receiver,
-                },
-            );
-            (Stats::default(), total_files, payload_bytes)
-        };
-
-        let collection = Collection::load(hash_and_format.hash, &db).await?;
-
-        // Extract file names
-        let mut file_names: Vec<String> = Vec::new();
-        for (name, _hash) in collection.iter() {
-            file_names.push(name.to_string());
-        }
-
+        let collection = Collection::load(hash_and_format.hash, &context.db).await?;
+        let file_names = collect_file_names(&collection);
         if !file_names.is_empty() {
-            emit_event(
-                &app_handle,
-                &TransferEvent::FileNames {
-                    role: Role::Receiver,
-                    file_names,
-                },
-            );
+            event_emitter.emit_file_names(file_names);
         }
 
-        let output_dir = options.output_dir.unwrap_or_else(|| {
-            dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap())
-        });
+        let output_dir = resolve_output_dir(options.output_dir);
+        export(&context.db, collection, &output_dir).await?;
+        event_emitter.emit_completed();
 
-        export(&db, collection, &output_dir).await?;
-
-        emit_event(
-            &app_handle,
-            &TransferEvent::Completed {
-                role: Role::Receiver,
-            },
-        );
-
-        anyhow::Ok((total_files, payload_size, stats, output_dir))
+        anyhow::Ok((total_files, payload_size, stats, output_dir, context.iroh_data_dir))
     };
 
-    let (total_files, payload_size, _stats, output_dir) = select! {
+    let (total_files, payload_size, _stats, output_dir, iroh_data_dir) = select! {
         x = fut => match x {
             Ok(x) => x,
             Err(e) => {
                 tracing::error!("Download operation failed: {}", e);
-                db2.shutdown().await?;
+                db_for_cleanup.shutdown().await?;
                 anyhow::bail!("error: {e}");
             }
         },
         _ = tokio::signal::ctrl_c() => {
             tracing::warn!("Operation cancelled by user");
-            db2.shutdown().await?;
+            db_for_cleanup.shutdown().await?;
             anyhow::bail!("Operation cancelled");
         }
     };
@@ -198,6 +124,70 @@ async fn export(db: &Store, collection: Collection, output_dir: &Path) -> anyhow
         }
     }
     Ok(())
+}
+
+struct ReceiveContext {
+    ticket: BlobTicket,
+    addr: iroh::EndpointAddr,
+    endpoint: Endpoint,
+    iroh_data_dir: PathBuf,
+    db: Store,
+}
+
+async fn prepare_receive_context(
+    ticket: BlobTicket,
+    options: &ReceiveOptions,
+) -> anyhow::Result<ReceiveContext> {
+    let addr = ticket.addr().clone();
+    let (endpoint, iroh_data_dir, db) = prepare_env(&ticket, options).await?;
+    Ok(ReceiveContext {
+        ticket,
+        addr,
+        endpoint,
+        iroh_data_dir,
+        db,
+    })
+}
+
+async fn download_missing_data(
+    context: &ReceiveContext,
+    app_handle: AppHandle,
+) -> anyhow::Result<(Stats, u64, u64)> {
+    let emitter = TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
+    let hash_and_format = context.ticket.hash_and_format();
+    let local = context.db.remote().local(hash_and_format).await?;
+    if local.is_complete() {
+        let total_files = local.children().unwrap() - 1;
+        emitter.emit_started();
+        emitter.emit_completed();
+        return Ok((Stats::default(), total_files, 0));
+    }
+
+    emitter.emit_started();
+    let (_hash_seq, sizes) =
+        get_sizes_with_retries(&context.endpoint, &context.addr, &context.ticket.hash()).await?;
+    let payload_size = sizes.iter().skip(1).copied().sum::<u64>();
+    let total_files = sizes.len().saturating_sub(1) as u64;
+
+    let connection = context
+        .endpoint
+        .connect(context.addr.clone(), iroh_blobs::protocol::ALPN)
+        .await?;
+    let get = context.db.remote().execute_get(connection, local.missing());
+    let mut stream = get.stream();
+    let stats = process_get_stream(&mut stream, payload_size, &app_handle).await?;
+
+    Ok((stats, total_files, payload_size))
+}
+
+fn collect_file_names(collection: &Collection) -> Vec<String> {
+    collection.iter().map(|(name, _hash)| name.to_string()).collect()
+}
+
+fn resolve_output_dir(output_dir: Option<PathBuf>) -> PathBuf {
+    output_dir.unwrap_or_else(|| {
+        dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap())
+    })
 }
 
 /// 将 `GetError` 打印到日志并原样返回，便于上层处理。
@@ -364,49 +354,18 @@ async fn process_get_stream<S>(
 where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
 {
-    let mut last_log_offset = 0u64;
-    let transfer_start_time = Instant::now();
+    let mut reporter = ReceiverProgressReporter::new(app_handle.clone(), payload_size);
+    reporter.emit_initial_progress();
     let mut stats = Stats::default();
     while let Some(item) = stream.next().await {
         trace!("got item {item:?}");
         match item {
             GetProgressItem::Progress(offset) => {
-                if offset - last_log_offset > 1_000_000 {
-                    last_log_offset = offset;
-                    let elapsed = transfer_start_time.elapsed().as_secs_f64();
-                    let speed_bps = if elapsed > 0.0 {
-                        offset as f64 / elapsed
-                    } else {
-                        0.0
-                    };
-                    emit_event(
-                        app_handle,
-                        &TransferEvent::Progress {
-                            role: Role::Receiver,
-                            processed: offset,
-                            total: payload_size,
-                            speed: speed_bps,
-                        },
-                    );
-                }
+                reporter.on_progress(offset);
             }
             GetProgressItem::Done(value) => {
                 stats = value;
-                let elapsed = transfer_start_time.elapsed().as_secs_f64();
-                let speed_bps = if elapsed > 0.0 {
-                    payload_size as f64 / elapsed
-                } else {
-                    0.0
-                };
-                emit_event(
-                    app_handle,
-                    &TransferEvent::Progress {
-                        role: Role::Receiver,
-                        processed: payload_size,
-                        total: payload_size,
-                        speed: speed_bps,
-                    },
-                );
+                reporter.emit_completed_progress();
                 break;
             }
             GetProgressItem::Error(cause) => {

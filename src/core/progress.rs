@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use crate::core::events::{AppHandle, Role, TransferEvent, emit_event};
 use crate::core::types::EntryType;
 
 pub struct ProgressTracker {
@@ -14,6 +15,58 @@ pub struct ProgressSnapshot {
     pub current: u64,
     pub total: u64,
     pub speed: f64,
+}
+
+#[derive(Clone)]
+pub struct TransferEventEmitter {
+    app_handle: AppHandle,
+    role: Role,
+}
+
+impl TransferEventEmitter {
+    pub fn new(app_handle: AppHandle, role: Role) -> Self {
+        Self { app_handle, role }
+    }
+
+    pub fn emit_started(&self) {
+        emit_event(&self.app_handle, &TransferEvent::Started { role: self.role });
+    }
+
+    pub fn emit_progress(&self, processed: u64, total: u64, speed: f64) {
+        emit_event(
+            &self.app_handle,
+            &TransferEvent::Progress {
+                role: self.role,
+                processed,
+                total,
+                speed,
+            },
+        );
+    }
+
+    pub fn emit_completed(&self) {
+        emit_event(&self.app_handle, &TransferEvent::Completed { role: self.role });
+    }
+
+    pub fn emit_failed(&self, message: impl Into<String>) {
+        emit_event(
+            &self.app_handle,
+            &TransferEvent::Failed {
+                role: self.role,
+                message: message.into(),
+            },
+        );
+    }
+
+    pub fn emit_file_names(&self, file_names: Vec<String>) {
+        emit_event(
+            &self.app_handle,
+            &TransferEvent::FileNames {
+                role: self.role,
+                file_names,
+            },
+        );
+    }
 }
 
 impl ProgressTracker {
@@ -354,5 +407,44 @@ mod tests {
             tracker.evaluate_completion(),
             CompletionStatus::InProgress
         ));
+    }
+}
+
+pub struct ReceiverProgressReporter {
+    tracker: ProgressTracker,
+    emitter: TransferEventEmitter,
+}
+
+impl ReceiverProgressReporter {
+    pub fn new(app_handle: AppHandle, total: u64) -> Self {
+        let mut tracker = ProgressTracker::new();
+        tracker.set_total(total);
+        Self {
+            tracker,
+            emitter: TransferEventEmitter::new(app_handle, Role::Receiver),
+        }
+    }
+
+    pub fn emit_initial_progress(&self) {
+        self.emitter.emit_progress(0, self.tracker.total, 0.0);
+    }
+
+    pub fn on_progress(&mut self, current: u64) {
+        if let Some(snapshot) = self.tracker.update(current) {
+            self.emitter
+                .emit_progress(snapshot.current, snapshot.total, snapshot.speed);
+        }
+    }
+
+    pub fn emit_completed_progress(&mut self) {
+        self.tracker.current = self.tracker.total;
+        let elapsed = self.tracker.start.elapsed().as_secs_f64();
+        let speed = if elapsed > 0.0 {
+            self.tracker.total as f64 / elapsed
+        } else {
+            0.0
+        };
+        self.emitter
+            .emit_progress(self.tracker.total, self.tracker.total, speed);
     }
 }
