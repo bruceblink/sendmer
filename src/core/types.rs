@@ -24,14 +24,14 @@ pub enum EntryType {
 }
 
 impl EntryType {
-    pub fn min_required_transfers(&self) -> usize {
+    pub const fn min_required_transfers(&self) -> usize {
         match self {
             Self::File => 1,
             Self::Directory => 2,
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::File => "file",
             Self::Directory => "directory",

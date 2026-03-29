@@ -26,7 +26,7 @@ impl TransferSession {
         self.emit(TransferEvent::Started { role: self.role });
     }
 
-    pub fn set_total(&mut self, total: u64) {
+    pub const fn set_total(&mut self, total: u64) {
         self.progress.set_total(total);
     }
 
