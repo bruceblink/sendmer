@@ -81,13 +81,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     #[cfg(feature = "clipboard")]
     handle_key_press(args.clipboard, res.ticket.to_string());
     tokio::signal::ctrl_c().await?;
-
-    drop(res.temp_tag);
-    tokio::time::timeout(std::time::Duration::from_secs(2), res.router.shutdown()).await??;
-    tokio::fs::remove_dir_all(res.blobs_data_dir).await?;
-    drop(res.router);
-
-    Ok(())
+    res.shutdown().await
 }
 
 /// CLI wrapper: call library `download` and print the result message.
