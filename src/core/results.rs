@@ -2,9 +2,9 @@
 //!
 //! 本文件定义：SendResult, ReceiveResult。
 
+use crate::core::types::EntryType;
 use iroh_blobs::{Hash, ticket::BlobTicket};
 use std::path::PathBuf;
-use crate::core::types::EntryType;
 
 /// 发送结果结构体。
 pub struct SendResult {

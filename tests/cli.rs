@@ -50,7 +50,10 @@ fn read_ascii_lines(mut n: usize, reader: &mut impl Read) -> io::Result<Vec<u8>>
 fn read_ascii_lines_reads_only_requested_lines() {
     let mut input = io::Cursor::new(b"first line\nsecond line\nthird line\n".to_vec());
     let output = read_ascii_lines(2, &mut input).unwrap();
-    assert_eq!(String::from_utf8(output).unwrap(), "first line\nsecond line\n");
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "first line\nsecond line\n"
+    );
 }
 
 // fn wait2() -> Arc<Barrier> {

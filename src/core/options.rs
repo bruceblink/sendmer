@@ -2,7 +2,7 @@
 //!
 //! 本文件定义：SendOptions, ReceiveOptions, RelayModeOption, AddrInfoOptions。
 
-use iroh::{RelayUrl};
+use iroh::RelayUrl;
 use std::net::{SocketAddrV4, SocketAddrV6};
 
 #[derive(Debug, Default)]

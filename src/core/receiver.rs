@@ -2,11 +2,11 @@
 //!
 //! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
 
+use crate::core::args::get_or_create_secret;
 use crate::core::events::AppHandle;
 use crate::core::options::ReceiveOptions;
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
-use crate::core::args::get_or_create_secret;
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
 use iroh_blobs::{
     api::{
@@ -45,7 +45,8 @@ pub async fn receive(
 
     trace!("load done!");
 
-    let event_emitter = TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
+    let event_emitter =
+        TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
     let fut = async move {
         let hash_and_format = context.ticket.hash_and_format();
         let (stats, total_files, payload_size) =
@@ -61,7 +62,13 @@ pub async fn receive(
         export(&context.db, collection, &output_dir).await?;
         event_emitter.emit_completed();
 
-        anyhow::Ok((total_files, payload_size, stats, output_dir, context.iroh_data_dir))
+        anyhow::Ok((
+            total_files,
+            payload_size,
+            stats,
+            output_dir,
+            context.iroh_data_dir,
+        ))
     };
 
     let (total_files, payload_size, _stats, output_dir, iroh_data_dir) = select! {
@@ -153,7 +160,8 @@ async fn download_missing_data(
     context: &ReceiveContext,
     app_handle: AppHandle,
 ) -> anyhow::Result<(Stats, u64, u64)> {
-    let emitter = TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
+    let emitter =
+        TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
     let hash_and_format = context.ticket.hash_and_format();
     let local = context.db.remote().local(hash_and_format).await?;
     if local.is_complete() {
@@ -181,13 +189,15 @@ async fn download_missing_data(
 }
 
 fn collect_file_names(collection: &Collection) -> Vec<String> {
-    collection.iter().map(|(name, _hash)| name.to_string()).collect()
+    collection
+        .iter()
+        .map(|(name, _hash)| name.to_string())
+        .collect()
 }
 
 fn resolve_output_dir(output_dir: Option<PathBuf>) -> PathBuf {
-    output_dir.unwrap_or_else(|| {
-        dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap())
-    })
+    output_dir
+        .unwrap_or_else(|| dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap()))
 }
 
 /// 将 `GetError` 打印到日志并原样返回，便于上层处理。
@@ -441,7 +451,10 @@ mod tests {
         let root = Path::new("downloads");
         let export_path = get_export_path(root, "dir/subdir/file.bin")
             .expect("nested relative path should be accepted");
-        assert_eq!(export_path, root.join("dir").join("subdir").join("file.bin"));
+        assert_eq!(
+            export_path,
+            root.join("dir").join("subdir").join("file.bin")
+        );
     }
 
     #[test]
