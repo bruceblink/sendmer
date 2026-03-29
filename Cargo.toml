@@ -54,7 +54,6 @@ libc = { version = "0.2", optional = true }
 windows-sys = { version = "0.61", features = ["Win32_System_Console"], optional = true }
 
 [dev-dependencies]
-duct = "1.1"
 rand = "0.9"
 tempfile = "3.23"
 

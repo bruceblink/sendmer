@@ -5,9 +5,12 @@
 use clap::error::{ContextKind, ErrorKind};
 use clap::{CommandFactory, Parser};
 use console::style;
+use data_encoding::HEXLOWER;
 use indicatif::HumanBytes;
 use n0_future::StreamExt;
-use sendmer::core::args::{Args, Commands, ReceiveArgs, SendArgs};
+use sendmer::core::args::{
+    Args, Commands, CommonArgs, ReceiveArgs, SendArgs, get_or_create_secret, print_hash,
+};
 use sendmer::core::cli_helper::CliEventEmitter;
 use sendmer::core::{receiver, sender};
 use sendmer::{AppHandle, ReceiveOptions, SendOptions};
@@ -15,8 +18,6 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
-
     let res = run().await;
 
     if let Err(e) = &res {
@@ -49,6 +50,9 @@ pub async fn run() -> anyhow::Result<()> {
         )
     });
 
+    init_tracing(common_args(&args.command).verbose)?;
+    maybe_show_secret(common_args(&args.command))?;
+
     match args.command {
         Commands::Send(args) => send(args).await,
         Commands::Receive(args) => receive(args).await,
@@ -73,7 +77,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
         res.entry_type,
         args.path.display(),
         HumanBytes(res.size),
-        res.hash
+        print_hash(&res.hash, args.common.format)
     );
 
     println!("to get this data, use");
@@ -121,6 +125,36 @@ fn cli_app_handle(prefix: &'static str, no_progress: bool) -> AppHandle {
     } else {
         Some(Arc::new(CliEventEmitter::new(prefix)))
     }
+}
+
+fn common_args(command: &Commands) -> &CommonArgs {
+    match command {
+        Commands::Send(args) => &args.common,
+        Commands::Receive(args) => &args.common,
+    }
+}
+
+fn init_tracing(verbose: u8) -> anyhow::Result<()> {
+    let default_filter = match verbose {
+        0 => "info",
+        1 => "debug",
+        _ => "trace",
+    };
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .or_else(|_| tracing_subscriber::EnvFilter::try_new(default_filter))?;
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .try_init();
+    Ok(())
+}
+
+fn maybe_show_secret(common: &CommonArgs) -> anyhow::Result<()> {
+    if common.show_secret {
+        let secret = get_or_create_secret()?;
+        eprintln!("Secret: {}", HEXLOWER.encode(&secret.to_bytes()));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "clipboard")]
