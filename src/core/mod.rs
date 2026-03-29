@@ -10,5 +10,4 @@ mod progress;
 pub mod receiver;
 pub mod results;
 pub mod sender;
-pub mod session;
 pub mod types;
