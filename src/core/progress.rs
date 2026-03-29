@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::core::types::EntryType;
@@ -126,22 +125,28 @@ impl CompletionDetector {
 /// Provider-side progress tracker for managing multiple concurrent transfers
 pub struct ProviderProgressTracker {
     transfer_states: HashMap<TransferId, TransferInfo>,
-    completed_count: AtomicUsize,
-    active_count: AtomicUsize,
+    active_requests: usize,
+    completed_requests: usize,
+    has_any_transfer: bool,
+    last_request_time: Option<Instant>,
     completion_detector: CompletionDetector,
-    last_completion_check: Instant,
     progress_throttle: Duration,
+    completion_quiet_period: Duration,
+    completed_emitted: bool,
 }
 
 impl ProviderProgressTracker {
     pub fn new(entry_type: EntryType) -> Self {
         Self {
             transfer_states: HashMap::new(),
-            completed_count: AtomicUsize::new(0),
-            active_count: AtomicUsize::new(0),
+            active_requests: 0,
+            completed_requests: 0,
+            has_any_transfer: false,
+            last_request_time: None,
             completion_detector: CompletionDetector::new(entry_type),
-            last_completion_check: Instant::now(),
-            progress_throttle: Duration::from_millis(250), // Default throttle
+            progress_throttle: Duration::from_millis(250),
+            completion_quiet_period: Duration::from_millis(500),
+            completed_emitted: false,
         }
     }
 
@@ -153,7 +158,9 @@ impl ProviderProgressTracker {
             last_progress_emit: Instant::now(),
         };
         self.transfer_states.insert(id, info);
-        self.active_count.fetch_add(1, Ordering::SeqCst);
+        self.active_requests += 1;
+        self.has_any_transfer = true;
+        self.last_request_time = Some(Instant::now());
     }
 
     /// Update progress for a transfer, potentially returning progress event data
@@ -175,37 +182,17 @@ impl ProviderProgressTracker {
         Some((processed, total, speed))
     }
 
-    /// Record that a request has completed, returning completion status
+    /// Record that a request has completed.
+    ///
+    /// Returns the current completion status. When `MoreRequestsArrivingSoon`
+    /// is returned, the caller should wait for the quiet period and re-check.
     pub fn on_request_completed(&mut self, id: TransferId) -> CompletionStatus {
         if self.transfer_states.remove(&id).is_some() {
-            self.completed_count.fetch_add(1, Ordering::SeqCst);
-            self.active_count.fetch_sub(1, Ordering::SeqCst);
+            self.completed_requests += 1;
+            self.active_requests = self.active_requests.saturating_sub(1);
         }
 
-        // Check completion periodically, not on every event
-        if self.last_completion_check.elapsed() < Duration::from_millis(100) {
-            return CompletionStatus::InProgress;
-        }
-
-        self.last_completion_check = Instant::now();
-
-        let completed = self.completed_count.load(Ordering::SeqCst);
-        let active = self.active_count.load(Ordering::SeqCst);
-        let has_transfers = !self.transfer_states.is_empty();
-        let last_request_time = self.transfer_states.values()
-            .map(|info| info.start_time)
-            .max()
-            .unwrap_or_else(Instant::now);
-
-        if self.completion_detector.is_complete(
-            completed,
-            active,
-            has_transfers,
-            &self.transfer_states,
-            last_request_time,
-        ) {
-            CompletionStatus::Completed
-        } else if has_transfers {
+        if !self.can_finish_once_quiet() {
             CompletionStatus::InProgress
         } else {
             CompletionStatus::MoreRequestsArrivingSoon
@@ -215,21 +202,56 @@ impl ProviderProgressTracker {
     /// Record that a request was aborted
     pub fn on_request_aborted(&mut self, id: TransferId) -> bool {
         if self.transfer_states.remove(&id).is_some() {
-            self.active_count.fetch_sub(1, Ordering::SeqCst);
+            self.active_requests = self.active_requests.saturating_sub(1);
             true
         } else {
             false
         }
     }
 
-    /// Get current statistics
-    pub fn stats(&self) -> ProgressStats {
-        ProgressStats {
-            active: self.active_count.load(Ordering::SeqCst),
-            completed: self.completed_count.load(Ordering::SeqCst),
-            total_transfers: self.transfer_states.len(),
+    /// Evaluate whether completion may now be emitted after a quiet period.
+    pub fn evaluate_completion(&mut self) -> CompletionStatus {
+        if self.completed_emitted {
+            return CompletionStatus::InProgress;
+        }
+
+        if !self.can_finish_once_quiet() {
+            return CompletionStatus::InProgress;
+        }
+
+        let Some(last_request_time) = self.last_request_time else {
+            return CompletionStatus::InProgress;
+        };
+
+        if last_request_time.elapsed() < self.completion_quiet_period {
+            return CompletionStatus::MoreRequestsArrivingSoon;
+        }
+
+        if self.completion_detector.is_complete(
+            self.completed_requests,
+            self.active_requests,
+            self.has_any_transfer,
+            &self.transfer_states,
+            last_request_time,
+        ) {
+            self.completed_emitted = true;
+            CompletionStatus::Completed
+        } else {
+            CompletionStatus::InProgress
         }
     }
+
+    pub fn completion_quiet_period(&self) -> Duration {
+        self.completion_quiet_period
+    }
+
+    fn can_finish_once_quiet(&self) -> bool {
+        !self.completed_emitted
+            && self.has_any_transfer
+            && self.completed_requests >= self.completion_detector.min_required()
+            && self.completed_requests >= self.active_requests
+    }
+
 }
 
 /// Completion status after processing a request
@@ -240,10 +262,97 @@ pub enum CompletionStatus {
     MoreRequestsArrivingSoon,
 }
 
-/// Current progress statistics
-#[derive(Debug, Clone)]
-pub struct ProgressStats {
-    pub active: usize,
-    pub completed: usize,
-    pub total_transfers: usize,
+#[cfg(test)]
+mod tests {
+    use super::{CompletionStatus, ProviderProgressTracker, TransferId};
+    use crate::core::types::EntryType;
+    use std::thread::sleep;
+
+    #[test]
+    fn file_transfer_completes_after_quiet_period() {
+        let mut tracker = ProviderProgressTracker::new(EntryType::File);
+        let id = TransferId::new(1, 1);
+
+        tracker.on_request_started(id, 128);
+        assert!(matches!(
+            tracker.on_request_completed(id),
+            CompletionStatus::MoreRequestsArrivingSoon
+        ));
+        assert!(matches!(
+            tracker.evaluate_completion(),
+            CompletionStatus::MoreRequestsArrivingSoon
+        ));
+
+        sleep(tracker.completion_quiet_period());
+
+        assert!(matches!(
+            tracker.evaluate_completion(),
+            CompletionStatus::Completed
+        ));
+        assert!(matches!(
+            tracker.evaluate_completion(),
+            CompletionStatus::InProgress
+        ));
+    }
+
+    #[test]
+    fn directory_metadata_only_does_not_complete() {
+        let mut tracker = ProviderProgressTracker::new(EntryType::Directory);
+        let id = TransferId::new(2, 1);
+
+        tracker.on_request_started(id, 64);
+        assert!(matches!(
+            tracker.on_request_completed(id),
+            CompletionStatus::InProgress
+        ));
+
+        sleep(tracker.completion_quiet_period());
+
+        assert!(matches!(
+            tracker.evaluate_completion(),
+            CompletionStatus::InProgress
+        ));
+    }
+
+    #[test]
+    fn directory_transfer_waits_for_second_request() {
+        let mut tracker = ProviderProgressTracker::new(EntryType::Directory);
+        let first = TransferId::new(3, 1);
+        let second = TransferId::new(3, 2);
+
+        tracker.on_request_started(first, 256);
+        assert!(matches!(
+            tracker.on_request_completed(first),
+            CompletionStatus::InProgress
+        ));
+
+        tracker.on_request_started(second, 256);
+        assert!(matches!(
+            tracker.on_request_completed(second),
+            CompletionStatus::MoreRequestsArrivingSoon
+        ));
+
+        sleep(tracker.completion_quiet_period());
+
+        assert!(matches!(
+            tracker.evaluate_completion(),
+            CompletionStatus::Completed
+        ));
+    }
+
+    #[test]
+    fn aborted_request_does_not_trigger_completion() {
+        let mut tracker = ProviderProgressTracker::new(EntryType::File);
+        let id = TransferId::new(4, 1);
+
+        tracker.on_request_started(id, 512);
+        assert!(tracker.on_request_aborted(id));
+
+        sleep(tracker.completion_quiet_period());
+
+        assert!(matches!(
+            tracker.evaluate_completion(),
+            CompletionStatus::InProgress
+        ));
+    }
 }
