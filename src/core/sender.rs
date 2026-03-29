@@ -163,17 +163,6 @@ async fn wait_until_endpoint_is_online(
     Ok(())
 }
 
-/// Create the final send result with ticket
-struct SendArtifacts {
-    router: iroh::protocol::Router,
-    temp_tag: TempTag,
-    size: u64,
-    entry_type: crate::core::types::EntryType,
-    blobs_data_dir: PathBuf,
-    store: FsStore,
-    progress_handle: AbortOnDropHandle<anyhow::Result<()>>,
-}
-
 struct SharingSetup {
     router: iroh::protocol::Router,
     imported: ImportedCollection,
@@ -210,37 +199,39 @@ impl SharePlan {
     }
 }
 
-fn create_send_result(
-    artifacts: SendArtifacts,
-    ticket_type: AddrInfoOptions,
-) -> anyhow::Result<SendResult> {
-    let SendArtifacts {
-        router,
-        temp_tag,
-        size,
-        entry_type,
-        blobs_data_dir,
-        store,
-        progress_handle,
-    } = artifacts;
-    let hash = temp_tag.hash();
+impl SharingSetup {
+    fn into_send_result(
+        self,
+        entry_type: crate::core::types::EntryType,
+        ticket_type: AddrInfoOptions,
+    ) -> anyhow::Result<SendResult> {
+        let Self {
+            router,
+            imported,
+            blobs_data_dir,
+            store,
+            progress_handle,
+        } = self;
+        let ImportedCollection { temp_tag, size, .. } = imported;
+        let hash = temp_tag.hash();
 
-    let mut addr = router.endpoint().addr();
-    apply_options(&mut addr, ticket_type);
+        let mut addr = router.endpoint().addr();
+        apply_options(&mut addr, ticket_type);
 
-    let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
+        let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
 
-    Ok(SendResult {
-        ticket,
-        hash,
-        size,
-        entry_type,
-        router,
-        temp_tag,
-        blobs_data_dir,
-        _progress_handle: progress_handle,
-        _store: store,
-    })
+        Ok(SendResult {
+            ticket,
+            hash,
+            size,
+            entry_type,
+            router,
+            temp_tag,
+            blobs_data_dir,
+            _progress_handle: progress_handle,
+            _store: store,
+        })
+    }
 }
 
 /// 开始共享（发送）指定的 `path`（文件或目录）。
@@ -273,18 +264,7 @@ pub async fn send(
         }
     };
 
-    create_send_result(
-        SendArtifacts {
-            router: setup.router,
-            temp_tag: setup.imported.temp_tag,
-            size: setup.imported.size,
-            entry_type: plan.entry_type,
-            blobs_data_dir: setup.blobs_data_dir,
-            store: setup.store,
-            progress_handle: setup.progress_handle,
-        },
-        plan.ticket_type,
-    )
+    setup.into_send_result(plan.entry_type, plan.ticket_type)
 }
 
 fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {
