@@ -3,6 +3,7 @@
         "addrs",
         "Dwarnings",
         "HEXLOWER",
+        "irpc",
         "pkarr",
         "RUSTFLAGS"
     ]

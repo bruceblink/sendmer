@@ -48,10 +48,8 @@ pub async fn receive(
     let event_emitter =
         TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
     let fut = async move {
-        let hash_and_format = context.ticket.hash_and_format();
         let download = download_missing_data(&context, app_handle.clone()).await?;
-
-        let collection = Collection::load(hash_and_format.hash, &context.db).await?;
+        let collection = context.load_collection().await?;
         let file_names = collect_file_names(&collection);
         if !file_names.is_empty() {
             event_emitter.emit_file_names(file_names);
@@ -61,16 +59,21 @@ pub async fn receive(
         export(&context.db, collection, &output_dir).await?;
         event_emitter.emit_completed();
 
-        anyhow::Ok((
-            download.total_files,
-            download.payload_size,
-            download.stats,
+        let _stats = download.stats;
+        anyhow::Ok(ReceiveArtifacts {
+            total_files: download.total_files,
+            payload_size: download.payload_size,
             output_dir,
-            context.iroh_data_dir,
-        ))
+            iroh_data_dir: context.iroh_data_dir,
+        })
     };
 
-    let (total_files, payload_size, _stats, output_dir, iroh_data_dir) = select! {
+    let ReceiveArtifacts {
+        total_files,
+        payload_size,
+        output_dir,
+        iroh_data_dir,
+    } = select! {
         x = fut => match x {
             Ok(x) => x,
             Err(e) => {
@@ -140,10 +143,41 @@ struct ReceiveContext {
     db: Store,
 }
 
+struct ReceiveArtifacts {
+    total_files: u64,
+    payload_size: u64,
+    output_dir: PathBuf,
+    iroh_data_dir: PathBuf,
+}
+
 struct DownloadOutcome {
     stats: Stats,
     total_files: u64,
     payload_size: u64,
+}
+
+struct DownloadPlan {
+    total_files: u64,
+    payload_size: u64,
+}
+
+impl ReceiveContext {
+    fn hash_and_format(&self) -> iroh_blobs::HashAndFormat {
+        self.ticket.hash_and_format()
+    }
+
+    async fn load_collection(&self) -> anyhow::Result<Collection> {
+        Collection::load(self.hash_and_format().hash, &self.db).await
+    }
+}
+
+impl DownloadPlan {
+    fn from_sizes(sizes: &[u64]) -> Self {
+        Self {
+            total_files: sizes.len().saturating_sub(1) as u64,
+            payload_size: sizes.iter().skip(1).copied().sum::<u64>(),
+        }
+    }
 }
 
 async fn prepare_receive_context(
@@ -167,10 +201,10 @@ async fn download_missing_data(
 ) -> anyhow::Result<DownloadOutcome> {
     let emitter =
         TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
-    let hash_and_format = context.ticket.hash_and_format();
+    let hash_and_format = context.hash_and_format();
     let local = context.db.remote().local(hash_and_format).await?;
     if local.is_complete() {
-        let total_files = local.children().unwrap() - 1;
+        let total_files = completed_local_total_files(local.children().unwrap());
         emitter.emit_started();
         return Ok(DownloadOutcome {
             stats: Stats::default(),
@@ -182,22 +216,33 @@ async fn download_missing_data(
     emitter.emit_started();
     let (_hash_seq, sizes) =
         get_sizes_with_retries(&context.endpoint, &context.addr, &context.ticket.hash()).await?;
-    let payload_size = sizes.iter().skip(1).copied().sum::<u64>();
-    let total_files = sizes.len().saturating_sub(1) as u64;
+    let plan = DownloadPlan::from_sizes(&sizes);
+    let stats = execute_download(context, local.missing(), &plan, &app_handle).await?;
 
+    Ok(DownloadOutcome {
+        stats,
+        total_files: plan.total_files,
+        payload_size: plan.payload_size,
+    })
+}
+
+const fn completed_local_total_files(children: u64) -> u64 {
+    children - 1
+}
+
+async fn execute_download(
+    context: &ReceiveContext,
+    missing: iroh_blobs::protocol::GetRequest,
+    plan: &DownloadPlan,
+    app_handle: &AppHandle,
+) -> anyhow::Result<Stats> {
     let connection = context
         .endpoint
         .connect(context.addr.clone(), iroh_blobs::protocol::ALPN)
         .await?;
-    let get = context.db.remote().execute_get(connection, local.missing());
+    let get = context.db.remote().execute_get(connection, missing);
     let mut stream = get.stream();
-    let stats = process_get_stream(&mut stream, payload_size, &app_handle).await?;
-
-    Ok(DownloadOutcome {
-        stats,
-        total_files,
-        payload_size,
-    })
+    process_get_stream(&mut stream, plan.payload_size, app_handle).await
 }
 
 fn collect_file_names(collection: &Collection) -> Vec<String> {
