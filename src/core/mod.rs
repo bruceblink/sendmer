@@ -11,4 +11,5 @@ mod progress;
 pub mod receiver;
 pub mod results;
 pub mod sender;
+mod storage;
 pub mod types;

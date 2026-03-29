@@ -7,6 +7,7 @@ use crate::core::events::AppHandle;
 use crate::core::options::ReceiveOptions;
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
+use crate::core::storage::{load_fs_store, named_temp_dir};
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
 use iroh_blobs::{
     api::{
@@ -16,7 +17,6 @@ use iroh_blobs::{
     },
     format::collection::Collection,
     get::{GetError, Stats, request::get_hash_seq_and_sizes},
-    store::fs::FsStore,
     ticket::BlobTicket,
 };
 use n0_future::StreamExt;
@@ -349,11 +349,8 @@ async fn prepare_env(
     }
     let endpoint = builder.bind().await?;
 
-    // temp dir
-    let dir_name = format!(".sendmer-recv-{}", ticket.hash().to_hex());
-    let temp_base = std::env::temp_dir();
-    let iroh_data_dir = temp_base.join(&dir_name);
-    let db = FsStore::load(&iroh_data_dir).await?;
+    let iroh_data_dir = named_temp_dir(".sendmer-recv-", &ticket.hash().to_hex());
+    let db = load_fs_store(&iroh_data_dir).await?;
     Ok((endpoint, iroh_data_dir, db.into()))
 }
 
