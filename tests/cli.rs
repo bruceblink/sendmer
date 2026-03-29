@@ -1,6 +1,7 @@
 use std::{
     io::{self, Read},
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     str::FromStr,
 };
 
@@ -56,14 +57,48 @@ fn read_ascii_lines_reads_only_requested_lines() {
     );
 }
 
-// fn wait2() -> Arc<Barrier> {
-//     Arc::new(Barrier::new(2))
-// }
+struct RunningSend {
+    child: Child,
+}
 
-// /// generate a random, non privileged port
-// fn random_port() -> u16 {
-//     rand::thread_rng().gen_range(10000u16..60000)
-// }
+impl RunningSend {
+    fn spawn(path: &Path, cwd: &Path) -> io::Result<Self> {
+        let child = Command::new(sendmer_bin())
+            .args(["send", "--no-progress", path.to_str().unwrap()])
+            .current_dir(cwd)
+            .env_remove("RUST_LOG")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        Ok(Self { child })
+    }
+
+    fn read_ticket(&mut self) -> BlobTicket {
+        let stdout = self.child.stdout.as_mut().expect("send stdout");
+        for _ in 0..8 {
+            let output = read_ascii_lines(1, stdout).expect("send output line");
+            let output = String::from_utf8(output).expect("utf-8 send output");
+            if let Some(ticket) = output
+                .split_ascii_whitespace()
+                .find_map(|token| BlobTicket::from_str(token).ok())
+            {
+                return ticket;
+            }
+        }
+        panic!("valid ticket not found in send output");
+    }
+
+    fn cleanup(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for RunningSend {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
 
 #[test]
 fn send_recv_file() {
@@ -74,19 +109,8 @@ fn send_recv_file() {
     let tgt_dir = tempfile::tempdir().unwrap();
     let src_file = src_dir.path().join(name);
     std::fs::write(&src_file, &data).unwrap();
-    let mut send_cmd = duct::cmd(
-        sendmer_bin(),
-        ["send", src_file.as_os_str().to_str().unwrap()],
-    )
-    .dir(src_dir.path())
-    .env_remove("RUST_LOG") // disable tracing
-    .stderr_to_stdout()
-    .reader()
-    .unwrap();
-    let output = read_ascii_lines(3, &mut send_cmd).unwrap();
-    let output = String::from_utf8(output).unwrap();
-    let ticket = output.split_ascii_whitespace().last().unwrap();
-    let ticket = BlobTicket::from_str(ticket).unwrap();
+    let mut send = RunningSend::spawn(&src_file, src_dir.path()).unwrap();
+    let ticket = send.read_ticket();
     // Call library `download` directly to keep tests focused on library API.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let opts = sendmer::ReceiveOptions {
@@ -98,6 +122,7 @@ fn send_recv_file() {
     let res = rt
         .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
         .unwrap();
+    send.cleanup();
     assert!(res.message.contains("Downloaded"));
     let tgt_file = tgt_dir.path().join(name);
     let tgt_data = std::fs::read(tgt_file).unwrap();
@@ -131,19 +156,8 @@ fn send_recv_dir() {
             }
         }
     }
-    let mut send_cmd = duct::cmd(
-        sendmer_bin(),
-        ["send", src_data_dir.as_os_str().to_str().unwrap()],
-    )
-    .dir(src_dir.path())
-    .env_remove("RUST_LOG") // disable tracing
-    .stderr_to_stdout()
-    .reader()
-    .unwrap();
-    let output = read_ascii_lines(3, &mut send_cmd).unwrap();
-    let output = String::from_utf8(output).unwrap();
-    let ticket = output.split_ascii_whitespace().last().unwrap();
-    let ticket = BlobTicket::from_str(ticket).unwrap();
+    let mut send = RunningSend::spawn(&src_data_dir, src_dir.path()).unwrap();
+    let ticket = send.read_ticket();
     // Call library `download` directly to keep tests focused on library API.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let opts = sendmer::ReceiveOptions {
@@ -155,6 +169,7 @@ fn send_recv_dir() {
     let res = rt
         .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
         .unwrap();
+    send.cleanup();
     assert!(res.message.contains("Downloaded"));
     // validate directory structure
     for i in 0..5 {
