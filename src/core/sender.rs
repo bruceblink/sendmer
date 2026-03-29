@@ -3,7 +3,7 @@
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
 use crate::core::events::{AppHandle, Role, TransferEvent, emit_event};
-use crate::core::options::{AddrInfoOptions, SendOptions};
+use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
 use crate::core::results::SendResult;
 use crate::core::args::get_or_create_secret;
 use anyhow::Context;
@@ -26,7 +26,7 @@ use rand::Rng;
 use std::{
     path::{Component, Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::Mutex;
 use tokio::{select, sync::mpsc};
@@ -90,11 +90,11 @@ async fn setup_data_sharing(
     path: PathBuf,
     entry_type: crate::core::types::EntryType,
     app_handle: AppHandle,
+    wait_for_online: bool,
 ) -> anyhow::Result<(iroh::protocol::Router, (TempTag, u64, Collection), PathBuf, FsStore, n0_future::task::AbortOnDropHandle<anyhow::Result<()>>)> {
     let (progress_tx, progress_rx) = mpsc::channel(32);
 
     let setup_future = async move {
-        let t0 = Instant::now();
         tokio::fs::create_dir_all(&blobs_data_dir).await?;
 
         let store = FsStore::load(&blobs_data_dir).await?;
@@ -112,8 +112,6 @@ async fn setup_data_sharing(
         );
 
         let import_result = import(path, blobs.store()).await?;
-        let _dt = t0.elapsed();
-
         let (ref _temp_tag, size, ref _collection) = import_result;
         let progress_handle = AbortOnDropHandle::new(tokio::spawn(show_provide_progress_with_provider_tracker(
             progress_rx,
@@ -127,10 +125,12 @@ async fn setup_data_sharing(
             .spawn();
 
         let ep = router.endpoint();
-        tokio::time::timeout(Duration::from_secs(30), async move {
-            let _ = ep.online().await;
-        })
-        .await?;
+        if wait_for_online {
+            tokio::time::timeout(Duration::from_secs(30), async move {
+                let _ = ep.online().await;
+            })
+            .await?;
+        }
 
         anyhow::Ok((
             router,
@@ -153,10 +153,12 @@ fn create_send_result(
     blobs_data_dir: PathBuf,
     store: FsStore,
     progress_handle: n0_future::task::AbortOnDropHandle<anyhow::Result<()>>,
+    ticket_type: AddrInfoOptions,
 ) -> anyhow::Result<SendResult> {
     let hash = temp_tag.hash();
 
-    let addr = router.endpoint().addr();
+    let mut addr = router.endpoint().addr();
+    apply_options(&mut addr, ticket_type);
 
     let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
 
@@ -194,6 +196,7 @@ pub async fn send(
     } else {
         crate::core::types::EntryType::Directory
     };
+    let wait_for_online = !matches!(options.relay_mode, crate::core::options::RelayModeOption::Disabled);
 
     // Prepare endpoint
     let endpoint = prepare_endpoint(&options).await?;
@@ -203,14 +206,23 @@ pub async fn send(
 
     // Setup data sharing with progress tracking
     let (router, (temp_tag, size, _collection), _blobs_data_dir, store, progress_handle) = select! {
-        x = setup_data_sharing(endpoint, blobs_data_dir, path, entry_type, app_handle) => x?,
+        x = setup_data_sharing(endpoint, blobs_data_dir, path, entry_type, app_handle, wait_for_online) => x?,
         _ = tokio::signal::ctrl_c() => {
             anyhow::bail!("Operation cancelled");
         }
     };
 
     // Create the final send result
-    create_send_result(router, temp_tag, size, entry_type, _blobs_data_dir, store, progress_handle)
+    create_send_result(
+        router,
+        temp_tag,
+        size,
+        entry_type,
+        _blobs_data_dir,
+        store,
+        progress_handle,
+        options.ticket_type,
+    )
 }
 
 /// 将 `path`（文件或目录）导入到给定的 `Store`，并返回临时标签、总字节数和集合信息。
@@ -377,26 +389,41 @@ async fn show_provide_progress_with_provider_tracker(
                                 }
                             }
                             iroh_blobs::provider::events::RequestUpdate::Completed(_) => {
-                                let mut tracker = tracker_clone.lock().await;
-                                match tracker.on_request_completed(transfer_id) {
-                                    CompletionStatus::Completed => {
+                                let quiet_period = {
+                                    let mut tracker = tracker_clone.lock().await;
+                                    match tracker.on_request_completed(transfer_id) {
+                                        CompletionStatus::Completed => {
+                                            emit_event(&app_handle_clone, &TransferEvent::Completed { role: Role::Sender });
+                                            None
+                                        }
+                                        CompletionStatus::InProgress => None,
+                                        CompletionStatus::MoreRequestsArrivingSoon => {
+                                            Some(tracker.completion_quiet_period())
+                                        }
+                                    }
+                                };
+
+                                if let Some(quiet_period) = quiet_period {
+                                    tokio::time::sleep(quiet_period).await;
+
+                                    let mut tracker = tracker_clone.lock().await;
+                                    if matches!(tracker.evaluate_completion(), CompletionStatus::Completed) {
                                         emit_event(&app_handle_clone, &TransferEvent::Completed { role: Role::Sender });
-                                    }
-                                    CompletionStatus::InProgress => {
-                                        // Continue tracking
-                                    }
-                                    CompletionStatus::MoreRequestsArrivingSoon => {
-                                        // Wait for more requests
                                     }
                                 }
                             }
                             iroh_blobs::provider::events::RequestUpdate::Aborted(_) => {
-                                let mut tracker = tracker_clone.lock().await;
-                                tracker.on_request_aborted(transfer_id);
-                                emit_event(&app_handle_clone, &TransferEvent::Failed {
-                                    role: Role::Sender,
-                                    message: "transfer aborted".to_string()
-                                });
+                                let should_emit_failed = {
+                                    let mut tracker = tracker_clone.lock().await;
+                                    tracker.on_request_aborted(transfer_id)
+                                };
+
+                                if should_emit_failed {
+                                    emit_event(&app_handle_clone, &TransferEvent::Failed {
+                                        role: Role::Sender,
+                                        message: "transfer aborted".to_string()
+                                    });
+                                }
                             }
                         }
                     }
@@ -409,4 +436,58 @@ async fn show_provide_progress_with_provider_tracker(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::core::options::{AddrInfoOptions, apply_options};
+    use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
+    use std::str::FromStr;
+
+    fn sample_addr() -> iroh::EndpointAddr {
+        let node_id = SecretKey::generate(&mut rand::rng()).public();
+        let relay = RelayUrl::from_str("https://relay.example").expect("valid relay url");
+        let ip = "127.0.0.1:7777".parse().expect("valid socket addr");
+        EndpointAddr::new(node_id)
+            .with_relay_url(relay)
+            .with_ip_addr(ip)
+    }
+
+    #[test]
+    fn apply_options_matches_ticket_type_semantics() {
+        let base = sample_addr();
+
+        let mut id_only = base.clone();
+        apply_options(&mut id_only, AddrInfoOptions::Id);
+        assert!(id_only.addrs.is_empty());
+
+        let mut relay_only = base.clone();
+        apply_options(&mut relay_only, AddrInfoOptions::Relay);
+        assert!(relay_only
+            .addrs
+            .iter()
+            .all(|addr| matches!(addr, TransportAddr::Relay(_))));
+        assert!(!relay_only.addrs.is_empty());
+
+        let mut ip_only = base.clone();
+        apply_options(&mut ip_only, AddrInfoOptions::Addresses);
+        assert!(ip_only
+            .addrs
+            .iter()
+            .all(|addr| matches!(addr, TransportAddr::Ip(_))));
+        assert!(!ip_only.addrs.is_empty());
+
+        let mut full = base.clone();
+        apply_options(&mut full, AddrInfoOptions::RelayAndAddresses);
+        assert_eq!(full.addrs.len(), base.addrs.len());
+    }
+
+    #[test]
+    fn disabled_relay_skips_online_wait() {
+        let wait_for_online = !matches!(
+            crate::core::options::RelayModeOption::Disabled,
+            crate::core::options::RelayModeOption::Disabled
+        );
+        assert!(!wait_for_online);
+    }
 }
