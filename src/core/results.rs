@@ -21,6 +21,16 @@ pub struct SendResult {
     pub _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
 }
 
+impl SendResult {
+    /// Shut down the active share and remove its temporary blob store.
+    pub async fn shutdown(self) -> anyhow::Result<()> {
+        drop(self.temp_tag);
+        tokio::time::timeout(std::time::Duration::from_secs(2), self.router.shutdown()).await??;
+        tokio::fs::remove_dir_all(self.blobs_data_dir).await?;
+        Ok(())
+    }
+}
+
 /// 接收结果结构体。
 #[derive(Debug)]
 pub struct ReceiveResult {
