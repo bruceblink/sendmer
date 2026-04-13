@@ -200,3 +200,35 @@ fn send_recv_dir() {
         }
     }
 }
+
+#[test]
+fn receive_fails_on_existing_target_and_cleans_temp_dir() {
+    let name = "collision.bin";
+    let data = vec![1u8; 64];
+    let src_dir = tempfile::tempdir().unwrap();
+    let tgt_dir = tempfile::tempdir().unwrap();
+    let src_file = src_dir.path().join(name);
+    std::fs::write(&src_file, &data).unwrap();
+
+    // Pre-create a conflicting target file so export must fail.
+    std::fs::write(tgt_dir.path().join(name), b"existing").unwrap();
+
+    let mut send = RunningSend::spawn(&src_file, src_dir.path()).unwrap();
+    let ticket = send.read_ticket();
+    let recv_temp = std::env::temp_dir().join(format!(".sendmer-recv-{}", ticket.hash().to_hex()));
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let opts = sendmer::ReceiveOptions {
+        output_dir: Some(tgt_dir.path().to_path_buf()),
+        relay_mode: Default::default(),
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+    };
+    let err = rt
+        .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
+        .expect_err("receive should fail when target file already exists");
+    send.cleanup();
+
+    assert!(err.to_string().contains("already exists"));
+    assert!(!recv_temp.exists(), "temporary receive dir should be cleaned");
+}

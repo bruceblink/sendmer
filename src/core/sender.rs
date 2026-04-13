@@ -28,7 +28,7 @@ use std::{
     time::Duration,
 };
 use tokio::{select, sync::mpsc};
-use tracing::trace;
+use tracing::{info, trace};
 use walkdir::WalkDir;
 
 // use helpers from core::progress
@@ -52,7 +52,12 @@ fn prepare_temp_directory() -> anyhow::Result<PathBuf> {
 /// Validate the path to be shared
 fn validate_share_path(path: &Path) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
-    if cwd.join(path) == cwd {
+    let resolved = cwd.join(path);
+    let is_cwd = match (cwd.canonicalize(), resolved.canonicalize()) {
+        (Ok(cwd_canonical), Ok(path_canonical)) => path_canonical == cwd_canonical,
+        _ => resolved == cwd,
+    };
+    if is_cwd {
         anyhow::bail!("can not share from the current directory");
     }
     Ok(())
@@ -246,6 +251,12 @@ pub async fn send(
     options: SendOptions,
     app_handle: AppHandle,
 ) -> anyhow::Result<SendResult> {
+    info!(
+        path = %path.display(),
+        relay_mode = ?options.relay_mode,
+        ticket_type = ?options.ticket_type,
+        "starting send"
+    );
     validate_share_path(&path)?;
 
     let plan = SharePlan::new(&path, &options)?;
@@ -264,7 +275,14 @@ pub async fn send(
         }
     };
 
-    setup.into_send_result(plan.entry_type, plan.ticket_type)
+    let result = setup.into_send_result(plan.entry_type, plan.ticket_type)?;
+    info!(
+        hash = %result.hash,
+        size = result.size,
+        entry_type = %result.entry_type,
+        "send setup complete"
+    );
+    Ok(result)
 }
 
 fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {
@@ -458,7 +476,9 @@ async fn show_provide_progress_with_provider_tracker(
 
 #[cfg(test)]
 mod tests {
-    use super::{canonicalized_path_to_string, collect_import_sources, detect_entry_type};
+    use super::{
+        canonicalized_path_to_string, collect_import_sources, detect_entry_type, validate_share_path,
+    };
     use crate::core::options::{AddrInfoOptions, apply_options};
     use crate::core::types::EntryType;
     use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
@@ -564,5 +584,24 @@ mod tests {
         names.sort();
 
         assert_eq!(names, vec!["data/alpha.txt", "data/nested/beta.txt"]);
+    }
+
+    #[test]
+    fn validate_share_path_rejects_current_directory_aliases() {
+        let dot_err = validate_share_path(Path::new("."))
+            .expect_err("`.` should be treated as current directory");
+        assert!(dot_err.to_string().contains("current directory"));
+
+        let dot_slash_err = validate_share_path(Path::new("./"))
+            .expect_err("`./` should be treated as current directory");
+        assert!(dot_slash_err.to_string().contains("current directory"));
+    }
+
+    #[test]
+    fn validate_share_path_rejects_current_directory_absolute_path() {
+        let cwd = std::env::current_dir().expect("current dir");
+        let err = validate_share_path(&cwd)
+            .expect_err("absolute current directory should be rejected");
+        assert!(err.to_string().contains("current directory"));
     }
 }

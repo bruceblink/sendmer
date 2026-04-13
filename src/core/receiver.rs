@@ -25,6 +25,7 @@ use std::str::FromStr;
 use std::sync::Arc as StdArc;
 use tokio::select;
 use tracing::log::trace;
+use tracing::info;
 
 // event helpers provided by `core::progress`
 
@@ -43,6 +44,12 @@ pub async fn receive(
     app_handle: AppHandle,
 ) -> anyhow::Result<ReceiveResult> {
     let ticket = BlobTicket::from_str(&ticket_str)?;
+    info!(
+        hash = %ticket.hash(),
+        relay_addrs = ticket.addr().relay_urls().count(),
+        ip_addrs = ticket.addr().ip_addrs().count(),
+        "starting receive"
+    );
     let context = ReceiveContext::prepare(ticket, &options).await?;
     let output_dir = resolve_output_dir(options.output_dir);
 
@@ -50,19 +57,21 @@ pub async fn receive(
         x = receive_once(&context, &output_dir, app_handle) => match x {
             Ok(artifacts) => artifacts,
             Err(error) => {
-                tracing::error!("Download operation failed: {}", error);
+                tracing::error!(error = %error, "download operation failed");
                 cleanup_failed_receive(&context).await?;
                 anyhow::bail!("error: {error}");
             }
         },
         _ = tokio::signal::ctrl_c() => {
-            tracing::warn!("Operation cancelled by user");
+            tracing::warn!("operation cancelled by user");
             cleanup_failed_receive(&context).await?;
             anyhow::bail!("Operation cancelled");
         }
     };
 
-    finish_receive(&context, artifacts).await
+    let result = finish_receive(&context, artifacts).await?;
+    info!(output = %result.file_path.display(), message = %result.message, "receive completed");
+    Ok(result)
 }
 
 /// 将集合中的各个 blob 导出到 `output_dir`。
@@ -226,7 +235,7 @@ async fn download_missing_data(
     let hash_and_format = context.hash_and_format();
     let local = context.db.remote().local(hash_and_format).await?;
     if local.is_complete() {
-        let total_files = completed_local_total_files(local.children().unwrap());
+        let total_files = completed_local_total_files_from_children(local.children())?;
         emitter.emit_started();
         return Ok(DownloadOutcome {
             total_files,
@@ -248,6 +257,12 @@ async fn download_missing_data(
 
 const fn completed_local_total_files(children: u64) -> u64 {
     children.saturating_sub(1)
+}
+
+fn completed_local_total_files_from_children(children: Option<u64>) -> anyhow::Result<u64> {
+    children
+        .map(completed_local_total_files)
+        .ok_or_else(|| anyhow::anyhow!("local complete state missing collection children"))
 }
 
 async fn execute_download(
@@ -428,6 +443,7 @@ where
 {
     let mut reporter = ReceiverProgressReporter::new(app_handle.clone(), payload_size);
     reporter.emit_initial_progress();
+    let mut seen_done = false;
     while let Some(item) = stream.next().await {
         trace!("got item {item:?}");
         match item {
@@ -437,6 +453,7 @@ where
             GetProgressItem::Done(value) => {
                 let _stats = value;
                 reporter.emit_completed_progress();
+                seen_done = true;
                 break;
             }
             GetProgressItem::Error(cause) => {
@@ -445,6 +462,7 @@ where
             }
         }
     }
+    anyhow::ensure!(seen_done, "download stream ended before completion");
     Ok(())
 }
 
@@ -481,7 +499,12 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{completed_local_total_files, get_export_path, validate_path_component};
+    use super::{
+        completed_local_total_files, completed_local_total_files_from_children, get_export_path,
+        process_get_stream, validate_path_component,
+    };
+    use iroh_blobs::api::remote::GetProgressItem;
+    use n0_future::stream;
     use std::path::Path;
 
     #[test]
@@ -537,5 +560,21 @@ mod tests {
         assert_eq!(completed_local_total_files(0), 0);
         assert_eq!(completed_local_total_files(1), 0);
         assert_eq!(completed_local_total_files(3), 2);
+    }
+
+    #[test]
+    fn completed_local_total_files_from_children_rejects_missing_children() {
+        let err = completed_local_total_files_from_children(None)
+            .expect_err("missing children should be rejected");
+        assert!(err.to_string().contains("missing collection children"));
+    }
+
+    #[tokio::test]
+    async fn process_get_stream_errors_if_stream_ends_before_done() {
+        let mut s = stream::empty::<GetProgressItem>();
+        let err = process_get_stream(&mut s, 0, &None)
+            .await
+            .expect_err("stream ending early should fail");
+        assert!(err.to_string().contains("ended before completion"));
     }
 }
