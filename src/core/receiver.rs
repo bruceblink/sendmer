@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc as StdArc;
 use tokio::select;
-use tracing::log::trace;
 use tracing::info;
+use tracing::log::trace;
 
 // event helpers provided by `core::progress`
 

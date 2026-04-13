@@ -230,5 +230,8 @@ fn receive_fails_on_existing_target_and_cleans_temp_dir() {
     send.cleanup();
 
     assert!(err.to_string().contains("already exists"));
-    assert!(!recv_temp.exists(), "temporary receive dir should be cleaned");
+    assert!(
+        !recv_temp.exists(),
+        "temporary receive dir should be cleaned"
+    );
 }

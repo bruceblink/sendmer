@@ -477,7 +477,8 @@ async fn show_provide_progress_with_provider_tracker(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalized_path_to_string, collect_import_sources, detect_entry_type, validate_share_path,
+        canonicalized_path_to_string, collect_import_sources, detect_entry_type,
+        validate_share_path,
     };
     use crate::core::options::{AddrInfoOptions, apply_options};
     use crate::core::types::EntryType;
@@ -600,8 +601,8 @@ mod tests {
     #[test]
     fn validate_share_path_rejects_current_directory_absolute_path() {
         let cwd = std::env::current_dir().expect("current dir");
-        let err = validate_share_path(&cwd)
-            .expect_err("absolute current directory should be rejected");
+        let err =
+            validate_share_path(&cwd).expect_err("absolute current directory should be rejected");
         assert!(err.to_string().contains("current directory"));
     }
 }
