@@ -109,6 +109,7 @@ sendmer receive <ticket>
 ```
 
 该命令默认会把数据下载到当前工作目录。
+你也可以用 `--output-dir <path>` 指定下载目标目录。
 
 示例：
 
@@ -128,6 +129,10 @@ sendmer receive <ticket>
 - `--magic-ipv4-addr <addr>`：绑定固定 IPv4 地址
 - `--magic-ipv6-addr <addr>`：绑定固定 IPv6 地址
 - `--show-secret`：打印当前进程使用的 secret key
+
+仅 `receive` 支持：
+
+- `--output-dir <path>`：指定接收文件的输出目录（默认：当前工作目录）
 
 仅 `send` 支持：
 

@@ -109,6 +109,7 @@ sendmer receive <ticket>
 ```
 
 This downloads the data and writes it into the current working directory by default.
+Use `--output-dir <path>` to choose a different destination.
 
 Example:
 
@@ -128,6 +129,10 @@ Common options are available on both `send` and `receive`:
 - `--magic-ipv4-addr <addr>`: bind a fixed IPv4 address
 - `--magic-ipv6-addr <addr>`: bind a fixed IPv6 address
 - `--show-secret`: print the secret key used for the current process
+
+Receive-specific options:
+
+- `--output-dir <path>`: set where received files are written (default: current working directory)
 
 Send-specific options:
 

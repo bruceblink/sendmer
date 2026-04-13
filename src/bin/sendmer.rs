@@ -112,8 +112,12 @@ fn send_options(args: &SendArgs) -> SendOptions {
 }
 
 fn receive_options(args: &ReceiveArgs) -> anyhow::Result<ReceiveOptions> {
+    let output_dir = match &args.output_dir {
+        Some(path) => path.clone(),
+        None => std::env::current_dir()?,
+    };
     Ok(ReceiveOptions {
-        output_dir: Some(std::env::current_dir()?),
+        output_dir: Some(output_dir),
         relay_mode: args.common.relay.clone(),
         magic_ipv4_addr: args.common.magic_ipv4_addr,
         magic_ipv6_addr: args.common.magic_ipv6_addr,

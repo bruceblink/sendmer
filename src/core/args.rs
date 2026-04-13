@@ -106,6 +106,12 @@ pub struct ReceiveArgs {
     /// The ticket to use to connect to the sender.
     pub ticket: BlobTicket,
 
+    /// Output directory for received files.
+    ///
+    /// Defaults to the current working directory when omitted.
+    #[clap(long)]
+    pub output_dir: Option<PathBuf>,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 }
