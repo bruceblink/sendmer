@@ -370,6 +370,13 @@ fn log_get_error_misc(e: &GetError) {
 
 /// 根据集合内的名称生成导出路径，同时验证每个路径组件的合法性。
 fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    if root.exists() {
+        anyhow::ensure!(
+            root.is_dir(),
+            "output root {} is not a directory",
+            root.display()
+        );
+    }
     std::fs::create_dir_all(root)?;
     let canonical_root = root.canonicalize()?;
     let parts = name.split('/');
@@ -594,6 +601,17 @@ mod tests {
         let err = get_export_path(&root, "/etc/passwd")
             .expect_err("absolute-style export name should fail");
         assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn get_export_path_rejects_when_root_is_a_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root_file = temp_dir.path().join("not-a-dir");
+        std::fs::write(&root_file, b"content").expect("write root file");
+
+        let err =
+            get_export_path(&root_file, "dir/file.txt").expect_err("file root should be rejected");
+        assert!(err.to_string().contains("is not a directory"));
     }
 
     #[test]
