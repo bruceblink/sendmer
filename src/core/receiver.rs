@@ -59,9 +59,10 @@ pub async fn receive(
             Ok(artifacts) => artifacts,
             Err(error) => {
                 tracing::error!(error = %error, "download operation failed");
-                emit_receive_failed(&app_handle, error.to_string());
+                let message = receive_failed_message(&error);
+                emit_receive_failed(&app_handle, message.clone());
                 let error = finalize_failed_receive(
-                    anyhow::anyhow!("error: {error}"),
+                    anyhow::anyhow!(message),
                     cleanup_failed_receive(&context).await,
                 );
                 return Err(error);
@@ -69,9 +70,10 @@ pub async fn receive(
         },
         _ = tokio::signal::ctrl_c() => {
             tracing::warn!("operation cancelled by user");
-            emit_receive_failed(&app_handle, "Operation cancelled");
+            let message = receive_cancelled_message();
+            emit_receive_failed(&app_handle, message);
             let error = finalize_failed_receive(
-                anyhow::anyhow!("Operation cancelled"),
+                anyhow::anyhow!(message),
                 cleanup_failed_receive(&context).await,
             );
             return Err(error);
@@ -203,6 +205,14 @@ fn emit_collection_file_names(emitter: &TransferEventEmitter, collection: &Colle
     if !file_names.is_empty() {
         emitter.emit_file_names(file_names);
     }
+}
+
+fn receive_failed_message(error: &anyhow::Error) -> String {
+    format!("error: {error}")
+}
+
+const fn receive_cancelled_message() -> &'static str {
+    "Operation cancelled"
 }
 
 fn emit_receive_failed(app_handle: &AppHandle, message: impl Into<String>) {
@@ -563,7 +573,8 @@ mod tests {
     use super::{
         completed_local_total_files, completed_local_total_files_from_children,
         emit_receive_failed, finalize_cleanup, finalize_failed_receive, get_export_path,
-        process_get_stream, resolve_output_dir, validate_path_component,
+        process_get_stream, receive_cancelled_message, receive_failed_message, resolve_output_dir,
+        validate_path_component,
     };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
     use iroh_blobs::api::remote::GetProgressItem;
@@ -670,6 +681,17 @@ mod tests {
         let err = completed_local_total_files_from_children(None)
             .expect_err("missing children should be rejected");
         assert!(err.to_string().contains("missing collection children"));
+    }
+
+    #[test]
+    fn receive_failed_message_wraps_error_with_prefix() {
+        let message = receive_failed_message(&anyhow::anyhow!("boom"));
+        assert_eq!(message, "error: boom");
+    }
+
+    #[test]
+    fn receive_cancelled_message_is_stable() {
+        assert_eq!(receive_cancelled_message(), "Operation cancelled");
     }
 
     #[test]
