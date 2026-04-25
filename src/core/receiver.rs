@@ -334,10 +334,7 @@ fn collect_file_names(collection: &Collection) -> Vec<String> {
 fn resolve_output_dir(output_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     let resolved = match output_dir {
         Some(path) => path,
-        None => match dirs::download_dir() {
-            Some(path) => path,
-            None => std::env::current_dir()?,
-        },
+        None => std::env::current_dir()?,
     };
     Ok(resolved)
 }
@@ -767,10 +764,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_output_dir_falls_back_when_value_is_missing() {
-        let expected =
-            dirs::download_dir().unwrap_or_else(|| std::env::current_dir().expect("current dir"));
-        let resolved = resolve_output_dir(None).expect("fallback output should resolve");
+    fn resolve_output_dir_defaults_to_current_directory() {
+        let expected = std::env::current_dir().expect("current dir");
+        let resolved = resolve_output_dir(None).expect("default output should resolve");
         assert_eq!(resolved, expected);
     }
 
