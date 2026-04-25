@@ -60,15 +60,21 @@ pub async fn receive(
             Err(error) => {
                 tracing::error!(error = %error, "download operation failed");
                 emit_receive_failed(&app_handle, error.to_string());
-                cleanup_failed_receive(&context).await?;
-                anyhow::bail!("error: {error}");
+                let error = finalize_failed_receive(
+                    anyhow::anyhow!("error: {error}"),
+                    cleanup_failed_receive(&context).await,
+                );
+                return Err(error);
             }
         },
         _ = tokio::signal::ctrl_c() => {
             tracing::warn!("operation cancelled by user");
             emit_receive_failed(&app_handle, "Operation cancelled");
-            cleanup_failed_receive(&context).await?;
-            anyhow::bail!("Operation cancelled");
+            let error = finalize_failed_receive(
+                anyhow::anyhow!("Operation cancelled"),
+                cleanup_failed_receive(&context).await,
+            );
+            return Err(error);
         }
     };
 
@@ -203,6 +209,16 @@ fn emit_receive_failed(app_handle: &AppHandle, message: impl Into<String>) {
     let emitter =
         TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
     emitter.emit_failed(message);
+}
+
+fn finalize_failed_receive(
+    primary_error: anyhow::Error,
+    cleanup_result: anyhow::Result<()>,
+) -> anyhow::Error {
+    if let Err(error) = cleanup_result {
+        tracing::warn!(error = %error, "failed to cleanup receive context after error");
+    }
+    primary_error
 }
 
 async fn cleanup_failed_receive(context: &ReceiveContext) -> anyhow::Result<()> {
@@ -546,8 +562,8 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 mod tests {
     use super::{
         completed_local_total_files, completed_local_total_files_from_children,
-        emit_receive_failed, finalize_cleanup, get_export_path, process_get_stream,
-        resolve_output_dir, validate_path_component,
+        emit_receive_failed, finalize_cleanup, finalize_failed_receive, get_export_path,
+        process_get_stream, resolve_output_dir, validate_path_component,
     };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
     use iroh_blobs::api::remote::GetProgressItem;
@@ -687,6 +703,15 @@ mod tests {
             dirs::download_dir().unwrap_or_else(|| std::env::current_dir().expect("current dir"));
         let resolved = resolve_output_dir(None).expect("fallback output should resolve");
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn finalize_failed_receive_preserves_primary_error_when_cleanup_fails() {
+        let err = finalize_failed_receive(
+            anyhow::anyhow!("primary failure"),
+            Err(anyhow::anyhow!("cleanup failure")),
+        );
+        assert!(err.to_string().contains("primary failure"));
     }
 
     #[test]
