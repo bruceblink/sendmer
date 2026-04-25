@@ -2,6 +2,8 @@
 
 本文件包含开发者在本仓库中常用的本地检查、Clippy 与工具链设置说明。
 
+主线迭代计划请见：[docs/MAINLINE_DEVELOPMENT_PLAN.md](docs/MAINLINE_DEVELOPMENT_PLAN.md)
+
 ## Clippy & 项目配置
 本项目在 crate 根使用了 Clippy 警告（`#![warn(clippy::all)]` 和 `#![warn(clippy::nursery)]`），并包含 `clippy.toml`（`msrv = "1.89.0"`）。为避免工具链不匹配，推荐使用 Rust 1.89.0 或更高版本。
 

@@ -164,7 +164,8 @@ The library re-exports:
 
 ## Development
 
-[DEVELOPMENT.md](DEVELOPMENT.md)
+- [DEVELOPMENT.md](DEVELOPMENT.md)
+- [Mainline Development Plan](docs/MAINLINE_DEVELOPMENT_PLAN.md)
 
 ## License
 

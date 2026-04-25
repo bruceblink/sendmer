@@ -164,7 +164,8 @@ async fn main() -> anyhow::Result<()> {
 
 ## 开发
 
-[DEVELOPMENT.md](DEVELOPMENT.md)
+- [DEVELOPMENT.md](DEVELOPMENT.md)
+- [主线开发计划](docs/MAINLINE_DEVELOPMENT_PLAN.md)
 
 ## License
 
