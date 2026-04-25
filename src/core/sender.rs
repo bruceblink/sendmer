@@ -27,11 +27,14 @@ use std::{
     path::{Component, Path, PathBuf},
     time::Duration,
 };
-use tokio::{select, sync::mpsc};
+use tokio::{
+    select,
+    sync::{Semaphore, mpsc},
+};
 use tracing::{info, trace};
 use walkdir::WalkDir;
 
-// use helpers from core::progress
+const PROVIDER_PROGRESS_TASK_LIMIT: usize = 32;
 
 /// Prepare endpoint with the given options
 async fn prepare_endpoint(options: &SendOptions) -> anyhow::Result<Endpoint> {
@@ -446,6 +449,7 @@ async fn show_provide_progress_with_provider_tracker(
     entry_type: crate::core::types::EntryType,
 ) -> anyhow::Result<()> {
     let reporter = SenderProgressReporter::new(app_handle, entry_type);
+    let request_task_limit = std::sync::Arc::new(Semaphore::new(PROVIDER_PROGRESS_TASK_LIMIT));
 
     while let Some(item) = recv.recv().await {
         match item {
@@ -459,7 +463,11 @@ async fn show_provide_progress_with_provider_tracker(
 
                 let reporter_clone = reporter.clone();
                 let mut rx = msg.rx;
+                let task_limit = request_task_limit.clone();
                 tokio::spawn(async move {
+                    let Ok(_permit) = task_limit.acquire_owned().await else {
+                        return;
+                    };
                     while let Ok(Some(update)) = rx.recv().await {
                         reporter_clone.on_request_update(transfer_id, update).await;
                     }
@@ -604,5 +612,13 @@ mod tests {
         let err =
             validate_share_path(&cwd).expect_err("absolute current directory should be rejected");
         assert!(err.to_string().contains("current directory"));
+    }
+
+    #[test]
+    fn validate_share_path_accepts_nested_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let nested = temp_dir.path().join("nested").join("share");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+        validate_share_path(&nested).expect("nested path should be accepted");
     }
 }
