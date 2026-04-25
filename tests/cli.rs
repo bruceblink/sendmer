@@ -262,3 +262,40 @@ fn receive_fails_on_existing_target_and_cleans_temp_dir() {
         "temporary receive dirs should be cleaned: {leaked:?}"
     );
 }
+
+#[test]
+fn receive_defaults_to_current_directory_when_output_dir_is_missing() {
+    let name = "default-output.bin";
+    let data = vec![7u8; 128];
+
+    let src_dir = tempfile::tempdir().unwrap();
+    let work_dir = tempfile::tempdir().unwrap();
+    let src_file = src_dir.path().join(name);
+    std::fs::write(&src_file, &data).unwrap();
+
+    let mut send = RunningSend::spawn(&src_file, src_dir.path()).unwrap();
+    let ticket = send.read_ticket();
+
+    let current = std::env::current_dir().unwrap();
+    std::env::set_current_dir(work_dir.path()).unwrap();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let opts = sendmer::ReceiveOptions {
+        output_dir: None,
+        relay_mode: Default::default(),
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+    };
+
+    let result = rt.block_on(async { sendmer::receive(ticket.to_string(), opts, None).await });
+
+    std::env::set_current_dir(current).unwrap();
+    send.cleanup();
+
+    let res = result.expect("receive should succeed with default output directory");
+    assert!(res.message.contains("Downloaded"));
+
+    let received_file = work_dir.path().join(name);
+    let received_data = std::fs::read(received_file).unwrap();
+    assert_eq!(received_data, data);
+}
