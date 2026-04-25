@@ -19,10 +19,6 @@ pub fn unique_temp_dir(prefix: &str) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-pub fn named_temp_dir(prefix: &str, name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("{prefix}{name}"))
-}
-
 pub async fn load_fs_store(path: &Path) -> anyhow::Result<FsStore> {
     tokio::fs::create_dir_all(path).await?;
     FsStore::load(path).await
@@ -30,14 +26,7 @@ pub async fn load_fs_store(path: &Path) -> anyhow::Result<FsStore> {
 
 #[cfg(test)]
 mod tests {
-    use super::{named_temp_dir, unique_temp_dir};
-
-    #[test]
-    fn named_temp_dir_uses_system_temp_root() {
-        let path = named_temp_dir(".sendmer-recv-", "abc123");
-        assert!(path.starts_with(std::env::temp_dir()));
-        assert!(path.ends_with(".sendmer-recv-abc123"));
-    }
+    use super::unique_temp_dir;
 
     #[test]
     fn unique_temp_dir_generates_prefixed_path() {
@@ -49,5 +38,12 @@ mod tests {
 
         assert!(path.starts_with(std::env::temp_dir()));
         assert!(file_name.starts_with(".sendmer-send-"));
+    }
+
+    #[test]
+    fn unique_temp_dir_returns_distinct_paths() {
+        let first = unique_temp_dir(".sendmer-recv-").expect("first path");
+        let second = unique_temp_dir(".sendmer-recv-").expect("second path");
+        assert_ne!(first, second);
     }
 }
