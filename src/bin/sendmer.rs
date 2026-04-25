@@ -94,7 +94,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
 /// 与 `send` 类似，`receive` 在命令行模式下决定是否创建 `CliEventEmitter`，
 /// 调用 `download` 并将结果消息输出到 stdout。
 async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
-    let opts = receive_options(&args)?;
+    let opts = receive_options(args.output_dir.clone(), &args.common);
     let app_handle = cli_app_handle("[recv]", args.common.no_progress);
 
     let res = receiver::receive(args.ticket.to_string(), opts, app_handle).await?;
@@ -111,17 +111,13 @@ fn send_options(args: &SendArgs) -> SendOptions {
     }
 }
 
-fn receive_options(args: &ReceiveArgs) -> anyhow::Result<ReceiveOptions> {
-    let output_dir = match &args.output_dir {
-        Some(path) => path.clone(),
-        None => std::env::current_dir()?,
-    };
-    Ok(ReceiveOptions {
-        output_dir: Some(output_dir),
-        relay_mode: args.common.relay.clone(),
-        magic_ipv4_addr: args.common.magic_ipv4_addr,
-        magic_ipv6_addr: args.common.magic_ipv6_addr,
-    })
+fn receive_options(output_dir: Option<std::path::PathBuf>, common: &CommonArgs) -> ReceiveOptions {
+    ReceiveOptions {
+        output_dir,
+        relay_mode: common.relay.clone(),
+        magic_ipv4_addr: common.magic_ipv4_addr,
+        magic_ipv6_addr: common.magic_ipv6_addr,
+    }
 }
 
 fn cli_app_handle(prefix: &'static str, no_progress: bool) -> AppHandle {
@@ -254,4 +250,43 @@ fn add_to_clipboard(ticket: &String) {
         CopyToClipboard::to_clipboard_from(format!("sendmer receive {ticket}"))
     )
     .unwrap_or_else(|e| eprintln!("Failed to copy to clipboard: {e}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::receive_options;
+    use sendmer::core::args::CommonArgs;
+    use sendmer::core::options::RelayModeOption;
+    use std::path::PathBuf;
+
+    fn sample_common_args() -> CommonArgs {
+        CommonArgs {
+            magic_ipv4_addr: None,
+            magic_ipv6_addr: None,
+            format: Default::default(),
+            verbose: 0,
+            no_progress: false,
+            relay: RelayModeOption::Default,
+            show_secret: false,
+        }
+    }
+
+    #[test]
+    fn receive_options_keeps_explicit_output_dir() {
+        let common = sample_common_args();
+        let output = Some(PathBuf::from("explicit-output"));
+
+        let options = receive_options(output.clone(), &common);
+
+        assert_eq!(options.output_dir, output);
+    }
+
+    #[test]
+    fn receive_options_preserves_missing_output_dir() {
+        let common = sample_common_args();
+
+        let options = receive_options(None, &common);
+
+        assert!(options.output_dir.is_none());
+    }
 }
