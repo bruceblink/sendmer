@@ -636,6 +636,14 @@ mod tests {
     }
 
     #[test]
+    fn resolve_output_dir_falls_back_when_value_is_missing() {
+        let expected =
+            dirs::download_dir().unwrap_or_else(|| std::env::current_dir().expect("current dir"));
+        let resolved = resolve_output_dir(None).expect("fallback output should resolve");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
     fn finalize_cleanup_returns_shutdown_error_even_if_cleanup_fails() {
         let shutdown_error = anyhow::anyhow!("shutdown failed");
         let cleanup_error = anyhow::anyhow!("cleanup failed");
