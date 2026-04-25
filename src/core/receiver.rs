@@ -7,7 +7,7 @@ use crate::core::events::AppHandle;
 use crate::core::options::ReceiveOptions;
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
-use crate::core::storage::{load_fs_store, named_temp_dir};
+use crate::core::storage::{load_fs_store, unique_temp_dir};
 use iroh::{Endpoint, discovery::dns::DnsDiscovery};
 use iroh_blobs::{
     api::{
@@ -32,6 +32,7 @@ use tracing::log::trace;
 const SIZE_FETCH_RETRY_LIMIT: u32 = 3;
 const SIZE_FETCH_CHUNK_SIZE: u64 = 1024 * 1024 * 32;
 const SIZE_FETCH_BACKOFF_MS: u64 = 250;
+const RECEIVE_TEMP_DIR_PREFIX: &str = ".sendmer-recv-";
 
 /// 下载并导出由 `ticket_str` 指定的数据到本地目录。
 ///
@@ -369,6 +370,8 @@ fn log_get_error_misc(e: &GetError) {
 
 /// 根据集合内的名称生成导出路径，同时验证每个路径组件的合法性。
 fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(root)?;
+    let canonical_root = root.canonicalize()?;
     let parts = name.split('/');
     let mut path = root.to_path_buf();
     for part in parts {
@@ -376,9 +379,16 @@ fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
         path.push(part);
     }
 
-    // Ensure the final path is still within the root directory
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let canonical_parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("invalid export target"))?
+        .canonicalize()?;
     anyhow::ensure!(
-        path.starts_with(root),
+        canonical_parent.starts_with(&canonical_root),
         "final path must be within the root directory"
     );
 
@@ -397,7 +407,10 @@ async fn prepare_env(
     }
     let endpoint = builder.bind().await?;
 
-    let iroh_data_dir = named_temp_dir(".sendmer-recv-", &ticket.hash().to_hex());
+    let iroh_data_dir = unique_temp_dir(&format!(
+        "{RECEIVE_TEMP_DIR_PREFIX}{}-",
+        ticket.hash().to_hex()
+    ))?;
     let db = load_fs_store(&iroh_data_dir).await?;
     Ok((endpoint, iroh_data_dir, db.into()))
 }
@@ -569,6 +582,17 @@ mod tests {
     fn get_export_path_rejects_empty_component() {
         let root = Path::new("downloads");
         let err = get_export_path(root, "dir//file.txt").expect_err("empty component should fail");
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn get_export_path_rejects_absolute_like_name() {
+        let root = tempfile::tempdir()
+            .expect("temp dir")
+            .path()
+            .join("downloads");
+        let err = get_export_path(&root, "/etc/passwd")
+            .expect_err("absolute-style export name should fail");
         assert!(err.to_string().contains("cannot be empty"));
     }
 

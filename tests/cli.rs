@@ -47,6 +47,22 @@ fn read_ascii_lines(mut n: usize, reader: &mut impl Read) -> io::Result<Vec<u8>>
     Ok(res)
 }
 
+fn list_receive_temp_dirs() -> std::collections::HashSet<PathBuf> {
+    let prefix = ".sendmer-recv-";
+    std::fs::read_dir(std::env::temp_dir())
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(prefix))
+        })
+        .collect()
+}
+
 #[test]
 fn read_ascii_lines_reads_only_requested_lines() {
     let mut input = io::Cursor::new(b"first line\nsecond line\nthird line\n".to_vec());
@@ -213,9 +229,10 @@ fn receive_fails_on_existing_target_and_cleans_temp_dir() {
     // Pre-create a conflicting target file so export must fail.
     std::fs::write(tgt_dir.path().join(name), b"existing").unwrap();
 
+    let before = list_receive_temp_dirs();
+
     let mut send = RunningSend::spawn(&src_file, src_dir.path()).unwrap();
     let ticket = send.read_ticket();
-    let recv_temp = std::env::temp_dir().join(format!(".sendmer-recv-{}", ticket.hash().to_hex()));
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let opts = sendmer::ReceiveOptions {
@@ -230,8 +247,18 @@ fn receive_fails_on_existing_target_and_cleans_temp_dir() {
     send.cleanup();
 
     assert!(err.to_string().contains("already exists"));
+
+    let after = list_receive_temp_dirs();
+    let leaked = after
+        .difference(&before)
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(&ticket.hash().to_hex()))
+        })
+        .collect::<Vec<_>>();
     assert!(
-        !recv_temp.exists(),
-        "temporary receive dir should be cleaned"
+        leaked.is_empty(),
+        "temporary receive dirs should be cleaned: {leaked:?}"
     );
 }
