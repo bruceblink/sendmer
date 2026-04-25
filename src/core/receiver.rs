@@ -55,16 +55,18 @@ pub async fn receive(
     let output_dir = resolve_output_dir(options.output_dir)?;
 
     let artifacts = select! {
-        x = receive_once(&context, &output_dir, app_handle) => match x {
+        x = receive_once(&context, &output_dir, app_handle.clone()) => match x {
             Ok(artifacts) => artifacts,
             Err(error) => {
                 tracing::error!(error = %error, "download operation failed");
+                emit_receive_failed(&app_handle, error.to_string());
                 cleanup_failed_receive(&context).await?;
                 anyhow::bail!("error: {error}");
             }
         },
         _ = tokio::signal::ctrl_c() => {
             tracing::warn!("operation cancelled by user");
+            emit_receive_failed(&app_handle, "Operation cancelled");
             cleanup_failed_receive(&context).await?;
             anyhow::bail!("Operation cancelled");
         }
@@ -195,6 +197,12 @@ fn emit_collection_file_names(emitter: &TransferEventEmitter, collection: &Colle
     if !file_names.is_empty() {
         emitter.emit_file_names(file_names);
     }
+}
+
+fn emit_receive_failed(app_handle: &AppHandle, message: impl Into<String>) {
+    let emitter =
+        TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
+    emitter.emit_failed(message);
 }
 
 async fn cleanup_failed_receive(context: &ReceiveContext) -> anyhow::Result<()> {
@@ -537,12 +545,32 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        completed_local_total_files, completed_local_total_files_from_children, finalize_cleanup,
-        get_export_path, process_get_stream, resolve_output_dir, validate_path_component,
+        completed_local_total_files, completed_local_total_files_from_children,
+        emit_receive_failed, finalize_cleanup, get_export_path, process_get_stream,
+        resolve_output_dir, validate_path_component,
     };
+    use crate::core::events::{EventEmitter, Role, TransferEvent};
     use iroh_blobs::api::remote::GetProgressItem;
     use n0_future::stream;
     use std::path::Path;
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: StdMutex<Vec<TransferEvent>>,
+    }
+
+    impl RecordingEmitter {
+        fn events(&self) -> Vec<TransferEvent> {
+            self.events.lock().expect("events lock").clone()
+        }
+    }
+
+    impl EventEmitter for RecordingEmitter {
+        fn emit(&self, event: &TransferEvent) {
+            self.events.lock().expect("events lock").push(event.clone());
+        }
+    }
 
     #[test]
     fn validate_path_component_accepts_normal_name() {
@@ -626,6 +654,24 @@ mod tests {
         let err = completed_local_total_files_from_children(None)
             .expect_err("missing children should be rejected");
         assert!(err.to_string().contains("missing collection children"));
+    }
+
+    #[test]
+    fn emit_receive_failed_emits_receiver_failed_event() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let app_handle: crate::core::events::AppHandle = Some(emitter.clone());
+
+        emit_receive_failed(&app_handle, "boom");
+
+        let events = emitter.events();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            TransferEvent::Failed { role, message } => {
+                assert_eq!(*role, Role::Receiver);
+                assert_eq!(message, "boom");
+            }
+            other => panic!("expected failed event, got {other:?}"),
+        }
     }
 
     #[test]
