@@ -25,7 +25,7 @@ sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses chan
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 
 # Or install a specific version
-$env:SENDMER_VERSION="v0.4.2"
+$env:SENDMER_VERSION="v0.4.3"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
@@ -48,7 +48,7 @@ After installation:
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 
 # Or install a specific version
-SENDMER_VERSION=v0.4.2 \
+SENDMER_VERSION=v0.4.3 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
