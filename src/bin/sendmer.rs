@@ -184,6 +184,14 @@ fn handle_key_press(set_clipboard: bool, ticket: String) {
     #[cfg(windows)]
     use windows_sys::Win32::System::Console::{CTRL_C_EVENT, GenerateConsoleCtrlEvent};
 
+    struct RawModeGuard;
+
+    impl Drop for RawModeGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+
     if set_clipboard {
         add_to_clipboard(&ticket);
     }
@@ -191,39 +199,37 @@ fn handle_key_press(set_clipboard: bool, ticket: String) {
     let _keyboard = tokio::task::spawn(async move {
         println!("press c to copy command to clipboard, or use the --clipboard argument");
 
-        // `enable_raw_mode` will remember the current terminal mode
-        // and restore it when `disable_raw_mode` is called.
-        enable_raw_mode().unwrap_or_else(|err| eprintln!("Failed to enable raw mode: {err}"));
+        let _raw_mode_guard = match enable_raw_mode() {
+            Ok(()) => Some(RawModeGuard),
+            Err(err) => {
+                eprintln!("Failed to enable raw mode: {err}");
+                None
+            }
+        };
+
         EventStream::new()
             .for_each(move |e| match e {
                 Err(err) => eprintln!("Failed to process event: {err}"),
-                // c is pressed
                 Ok(Event::Key(KeyEvent {
                     code: KeyCode::Char('c'),
                     modifiers: KeyModifiers::NONE,
                     kind: KeyEventKind::Press,
                     ..
                 })) => add_to_clipboard(&ticket),
-                // Ctrl+c is pressed
                 Ok(Event::Key(KeyEvent {
                     code: KeyCode::Char('c'),
                     modifiers: KeyModifiers::CONTROL,
                     kind: KeyEventKind::Press,
                     ..
                 })) => {
-                    disable_raw_mode()
-                        .unwrap_or_else(|e| eprintln!("Failed to disable raw mode: {e}"));
+                    let _ = disable_raw_mode();
 
                     #[cfg(unix)]
-                    // Safety: Raw syscall to re-send the SIGINT signal to the console.
-                    // `raise` returns nonzero for failure.
                     if unsafe { raise(SIGINT) } != 0 {
                         eprintln!("Failed to raise signal: {}", io::Error::last_os_error());
                     }
 
                     #[cfg(windows)]
-                    // Safety: Raw syscall to re-send the `CTRL_C_EVENT` to the console.
-                    // `GenerateConsoleCtrlEvent` returns 0 for failure.
                     if unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) } == 0 {
                         eprintln!(
                             "Failed to generate console event: {}",
@@ -233,7 +239,7 @@ fn handle_key_press(set_clipboard: bool, ticket: String) {
                 }
                 _ => {}
             })
-            .await
+            .await;
     });
 }
 

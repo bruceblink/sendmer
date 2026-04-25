@@ -51,7 +51,7 @@ pub async fn receive(
         "starting receive"
     );
     let context = ReceiveContext::prepare(ticket, &options).await?;
-    let output_dir = resolve_output_dir(options.output_dir);
+    let output_dir = resolve_output_dir(options.output_dir)?;
 
     let artifacts = select! {
         x = receive_once(&context, &output_dir, app_handle) => match x {
@@ -197,17 +197,18 @@ fn emit_collection_file_names(emitter: &TransferEventEmitter, collection: &Colle
 }
 
 async fn cleanup_failed_receive(context: &ReceiveContext) -> anyhow::Result<()> {
-    context.db.shutdown().await?;
-    remove_temp_receive_dir(&context.iroh_data_dir).await?;
-    Ok(())
+    let shutdown_result = context.db.shutdown().await.map_err(anyhow::Error::from);
+    let cleanup_result = remove_temp_receive_dir(&context.iroh_data_dir).await;
+    finalize_cleanup(shutdown_result, cleanup_result)
 }
 
 async fn finish_receive(
     context: &ReceiveContext,
     artifacts: ReceiveArtifacts,
 ) -> anyhow::Result<ReceiveResult> {
-    context.db.shutdown().await?;
-    remove_temp_receive_dir(&context.iroh_data_dir).await?;
+    let shutdown_result = context.db.shutdown().await.map_err(anyhow::Error::from);
+    let cleanup_result = remove_temp_receive_dir(&context.iroh_data_dir).await;
+    finalize_cleanup(shutdown_result, cleanup_result)?;
 
     Ok(ReceiveResult {
         message: format!(
@@ -287,13 +288,29 @@ fn collect_file_names(collection: &Collection) -> Vec<String> {
         .collect()
 }
 
-fn resolve_output_dir(output_dir: Option<PathBuf>) -> PathBuf {
-    output_dir
-        .unwrap_or_else(|| dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap()))
+fn resolve_output_dir(output_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    let resolved = match output_dir {
+        Some(path) => path,
+        None => match dirs::download_dir() {
+            Some(path) => path,
+            None => std::env::current_dir()?,
+        },
+    };
+    Ok(resolved)
 }
 
 fn size_fetch_backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis(SIZE_FETCH_BACKOFF_MS * u64::from(attempt))
+}
+
+fn finalize_cleanup(
+    shutdown_result: anyhow::Result<()>,
+    cleanup_result: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if let Err(error) = cleanup_result {
+        tracing::warn!(error = %error, "failed to clean temporary receive dir");
+    }
+    shutdown_result
 }
 
 /// 将 `GetError` 打印到日志并原样返回，便于上层处理。
@@ -500,8 +517,8 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        completed_local_total_files, completed_local_total_files_from_children, get_export_path,
-        process_get_stream, validate_path_component,
+        completed_local_total_files, completed_local_total_files_from_children, finalize_cleanup,
+        get_export_path, process_get_stream, resolve_output_dir, validate_path_component,
     };
     use iroh_blobs::api::remote::GetProgressItem;
     use n0_future::stream;
@@ -567,6 +584,28 @@ mod tests {
         let err = completed_local_total_files_from_children(None)
             .expect_err("missing children should be rejected");
         assert!(err.to_string().contains("missing collection children"));
+    }
+
+    #[test]
+    fn resolve_output_dir_uses_explicit_value() {
+        let dir = Path::new("explicit-dir").to_path_buf();
+        let resolved = resolve_output_dir(Some(dir.clone())).expect("explicit output should pass");
+        assert_eq!(resolved, dir);
+    }
+
+    #[test]
+    fn finalize_cleanup_returns_shutdown_error_even_if_cleanup_fails() {
+        let shutdown_error = anyhow::anyhow!("shutdown failed");
+        let cleanup_error = anyhow::anyhow!("cleanup failed");
+        let err = finalize_cleanup(Err(shutdown_error), Err(cleanup_error))
+            .expect_err("shutdown error should be preserved");
+        assert!(err.to_string().contains("shutdown failed"));
+    }
+
+    #[test]
+    fn finalize_cleanup_succeeds_if_shutdown_succeeds() {
+        finalize_cleanup(Ok(()), Err(anyhow::anyhow!("cleanup failed")))
+            .expect("cleanup failures should not fail operation");
     }
 
     #[tokio::test]

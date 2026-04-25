@@ -36,9 +36,10 @@ impl CliEventEmitter {
     fn make_progress_style() -> ProgressStyle {
         #[allow(clippy::literal_string_with_formatting_args)]
         let template = "{prefix}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec}";
-        ProgressStyle::with_template(template)
-            .unwrap()
-            .progress_chars("#>-")
+        ProgressStyle::with_template(template).map_or_else(
+            |_| ProgressStyle::default_bar(),
+            |style| style.progress_chars("#>-"),
+        )
     }
 }
 
@@ -46,7 +47,7 @@ impl EventEmitter for CliEventEmitter {
     fn emit(&self, event: &TransferEvent) {
         match event {
             TransferEvent::Started { .. } => {
-                let mut guard = self.pb.lock().unwrap();
+                let mut guard = self.pb.lock().unwrap_or_else(|error| error.into_inner());
                 if guard.is_none() {
                     let pb = self.mp.add(ProgressBar::new(0));
                     pb.set_style(Self::make_progress_style());
@@ -62,7 +63,7 @@ impl EventEmitter for CliEventEmitter {
                 speed,
                 ..
             } => {
-                let mut guard = self.pb.lock().unwrap();
+                let mut guard = self.pb.lock().unwrap_or_else(|error| error.into_inner());
 
                 if guard.is_none() {
                     let pb = self.mp.add(ProgressBar::new(*total));
@@ -83,14 +84,22 @@ impl EventEmitter for CliEventEmitter {
             }
 
             TransferEvent::Completed { .. } => {
-                let value = self.pb.lock().unwrap().take();
+                let value = self
+                    .pb
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
                 if let Some(pb) = value {
                     pb.finish_and_clear();
                 }
             }
 
             TransferEvent::Failed { message, .. } => {
-                let value = self.pb.lock().unwrap().take();
+                let value = self
+                    .pb
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
                 if let Some(pb) = value {
                     pb.abandon();
                 }

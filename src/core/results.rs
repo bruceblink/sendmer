@@ -25,9 +25,18 @@ impl SendResult {
     /// Shut down the active share and remove its temporary blob store.
     pub async fn shutdown(self) -> anyhow::Result<()> {
         drop(self.temp_tag);
-        tokio::time::timeout(std::time::Duration::from_secs(2), self.router.shutdown()).await??;
-        tokio::fs::remove_dir_all(self.blobs_data_dir).await?;
-        Ok(())
+        let shutdown_result =
+            match tokio::time::timeout(std::time::Duration::from_secs(2), self.router.shutdown())
+                .await
+            {
+                Ok(result) => result.map_err(anyhow::Error::from),
+                Err(error) => Err(error.into()),
+            };
+        let cleanup_result = tokio::fs::remove_dir_all(self.blobs_data_dir).await;
+        if let Err(error) = cleanup_result {
+            tracing::warn!(error = %error, "failed to clean sender temporary data dir");
+        }
+        shutdown_result
     }
 }
 
