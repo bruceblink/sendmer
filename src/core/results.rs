@@ -81,4 +81,10 @@ mod tests {
             .expect_err("shutdown error should be preserved");
         assert!(err.to_string().contains("shutdown failed"));
     }
+
+    #[test]
+    fn finalize_sender_shutdown_returns_ok_when_shutdown_succeeds() {
+        finalize_sender_shutdown(Ok(()), Err(anyhow::anyhow!("cleanup failed")))
+            .expect("cleanup errors should not fail successful shutdown");
+    }
 }
