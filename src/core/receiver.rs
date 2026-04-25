@@ -211,8 +211,16 @@ fn receive_failed_message(error: &anyhow::Error) -> String {
     format!("error: {error}")
 }
 
+fn receive_failed_message_from_get_error(error: &GetError) -> String {
+    format!("error: {error}")
+}
+
 const fn receive_cancelled_message() -> &'static str {
     "Operation cancelled"
+}
+
+const fn receive_stream_ended_message() -> &'static str {
+    "download stream ended before completion"
 }
 
 fn emit_receive_failed(app_handle: &AppHandle, message: impl Into<String>) {
@@ -529,9 +537,14 @@ where
             }
             GetProgressItem::Error(cause) => {
                 tracing::error!("Download error: {:?}", cause);
-                anyhow::bail!(show_get_error(cause));
+                let error = show_get_error(cause);
+                reporter.emit_failed(receive_failed_message_from_get_error(&error));
+                anyhow::bail!(error);
             }
         }
+    }
+    if !seen_done {
+        reporter.emit_failed(receive_stream_ended_message());
     }
     anyhow::ensure!(seen_done, "download stream ended before completion");
     Ok(())
@@ -573,8 +586,8 @@ mod tests {
     use super::{
         completed_local_total_files, completed_local_total_files_from_children,
         emit_receive_failed, finalize_cleanup, finalize_failed_receive, get_export_path,
-        process_get_stream, receive_cancelled_message, receive_failed_message, resolve_output_dir,
-        validate_path_component,
+        process_get_stream, receive_failed_message, receive_stream_ended_message,
+        resolve_output_dir, validate_path_component,
     };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
     use iroh_blobs::api::remote::GetProgressItem;
@@ -690,8 +703,42 @@ mod tests {
     }
 
     #[test]
-    fn receive_cancelled_message_is_stable() {
-        assert_eq!(receive_cancelled_message(), "Operation cancelled");
+    fn receive_stream_ended_message_is_stable() {
+        assert_eq!(
+            receive_stream_ended_message(),
+            "download stream ended before completion"
+        );
+    }
+
+    #[test]
+    fn process_get_stream_emits_failed_event_when_stream_ends_early() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let app_handle: crate::core::events::AppHandle = Some(emitter.clone());
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let mut s = stream::empty::<GetProgressItem>();
+            let err = process_get_stream(&mut s, 12, &app_handle)
+                .await
+                .expect_err("stream ending early should fail");
+            assert!(err.to_string().contains("ended before completion"));
+        });
+
+        let events = emitter.events();
+        assert!(matches!(
+            events.first(),
+            Some(TransferEvent::Progress {
+                role: Role::Receiver,
+                processed: 0,
+                total: 12,
+                ..
+            })
+        ));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            TransferEvent::Failed { role: Role::Receiver, message }
+                if message == "download stream ended before completion"
+        )));
     }
 
     #[test]

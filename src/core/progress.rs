@@ -417,6 +417,10 @@ impl ReceiverProgressReporter {
         self.emitter
             .emit_progress(snapshot.current, snapshot.total, snapshot.speed);
     }
+
+    pub fn emit_failed(&self, message: impl Into<String>) {
+        self.emitter.emit_failed(message);
+    }
 }
 
 #[cfg(test)]
