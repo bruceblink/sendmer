@@ -21,6 +21,24 @@ pub struct SendResult {
     pub _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
 }
 
+fn normalize_sender_cleanup_result(cleanup_result: std::io::Result<()>) -> anyhow::Result<()> {
+    match cleanup_result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn finalize_sender_shutdown(
+    shutdown_result: anyhow::Result<()>,
+    cleanup_result: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if let Err(error) = cleanup_result {
+        tracing::warn!(error = %error, "failed to clean sender temporary data dir");
+    }
+    shutdown_result
+}
+
 impl SendResult {
     /// Shut down the active share and remove its temporary blob store.
     pub async fn shutdown(self) -> anyhow::Result<()> {
@@ -32,11 +50,9 @@ impl SendResult {
                 Ok(result) => result.map_err(anyhow::Error::from),
                 Err(error) => Err(error.into()),
             };
-        let cleanup_result = tokio::fs::remove_dir_all(self.blobs_data_dir).await;
-        if let Err(error) = cleanup_result {
-            tracing::warn!(error = %error, "failed to clean sender temporary data dir");
-        }
-        shutdown_result
+        let cleanup_result =
+            normalize_sender_cleanup_result(tokio::fs::remove_dir_all(&self.blobs_data_dir).await);
+        finalize_sender_shutdown(shutdown_result, cleanup_result)
     }
 }
 
@@ -45,4 +61,24 @@ impl SendResult {
 pub struct ReceiveResult {
     pub message: String,
     pub file_path: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{finalize_sender_shutdown, normalize_sender_cleanup_result};
+
+    #[test]
+    fn normalize_sender_cleanup_result_ignores_not_found() {
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing dir");
+        normalize_sender_cleanup_result(Err(err)).expect("not found should be ignored");
+    }
+
+    #[test]
+    fn finalize_sender_shutdown_preserves_shutdown_error() {
+        let shutdown_error = anyhow::anyhow!("shutdown failed");
+        let cleanup_error = anyhow::anyhow!("cleanup failed");
+        let err = finalize_sender_shutdown(Err(shutdown_error), Err(cleanup_error))
+            .expect_err("shutdown error should be preserved");
+        assert!(err.to_string().contains("shutdown failed"));
+    }
 }
