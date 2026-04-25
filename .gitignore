@@ -6,3 +6,4 @@ tmp2/*
 # ide
 .idea/
 *.iml
+.claude/
