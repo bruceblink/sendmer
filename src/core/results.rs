@@ -5,6 +5,9 @@
 use crate::core::types::EntryType;
 use iroh_blobs::{Hash, ticket::BlobTicket};
 use std::path::PathBuf;
+use tokio::sync::watch;
+
+pub use crate::core::progress::SenderTransferStatus;
 
 /// 发送结果结构体。
 pub struct SendResult {
@@ -19,6 +22,7 @@ pub struct SendResult {
     pub blobs_data_dir: PathBuf,        // Path for cleanup when share stops
     pub _progress_handle: n0_future::task::AbortOnDropHandle<anyhow::Result<()>>, // Keeps event channel open
     pub _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
+    pub(crate) transfer_status_rx: watch::Receiver<SenderTransferStatus>,
 }
 
 fn normalize_sender_cleanup_result(cleanup_result: std::io::Result<()>) -> anyhow::Result<()> {
@@ -40,6 +44,14 @@ fn finalize_sender_shutdown(
 }
 
 impl SendResult {
+    pub fn transfer_status(&self) -> SenderTransferStatus {
+        *self.transfer_status_rx.borrow()
+    }
+
+    pub fn subscribe_transfer_status(&self) -> watch::Receiver<SenderTransferStatus> {
+        self.transfer_status_rx.clone()
+    }
+
     /// Shut down the active share and remove its temporary blob store.
     pub async fn shutdown(self) -> anyhow::Result<()> {
         drop(self.temp_tag);

@@ -5,7 +5,7 @@
 use crate::core::endpoint::base_endpoint_builder;
 use crate::core::events::AppHandle;
 use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
-use crate::core::progress::{SenderProgressReporter, TransferId};
+use crate::core::progress::{SenderProgressReporter, SenderTransferStatus, TransferId};
 use crate::core::results::SendResult;
 use crate::core::storage::{load_fs_store, unique_temp_dir};
 use anyhow::Context;
@@ -29,7 +29,7 @@ use std::{
 };
 use tokio::{
     select,
-    sync::{Semaphore, mpsc},
+    sync::{Semaphore, mpsc, watch},
 };
 use tracing::{info, trace};
 use walkdir::WalkDir;
@@ -74,6 +74,7 @@ async fn setup_data_sharing(
     wait_for_online: bool,
 ) -> anyhow::Result<SharingSetup> {
     let (progress_tx, progress_rx) = mpsc::channel(32);
+    let (transfer_status_tx, transfer_status_rx) = watch::channel(SenderTransferStatus::Idle);
 
     let setup_future = async move {
         let store = load_fs_store(&blobs_data_dir).await?;
@@ -87,6 +88,7 @@ async fn setup_data_sharing(
             share_request.app_handle,
             size,
             share_request.entry_type,
+            transfer_status_tx,
         );
 
         let router = iroh::protocol::Router::builder(endpoint)
@@ -101,6 +103,7 @@ async fn setup_data_sharing(
             blobs_data_dir,
             store,
             progress_handle,
+            transfer_status_rx,
         })
     };
 
@@ -149,12 +152,14 @@ fn spawn_provider_progress_task(
     app_handle: AppHandle,
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
+    transfer_status_tx: watch::Sender<SenderTransferStatus>,
 ) -> AbortOnDropHandle<anyhow::Result<()>> {
     AbortOnDropHandle::new(tokio::spawn(show_provide_progress_with_provider_tracker(
         progress_rx,
         app_handle,
         total_file_size,
         entry_type,
+        transfer_status_tx,
     )))
 }
 
@@ -177,6 +182,7 @@ struct SharingSetup {
     blobs_data_dir: PathBuf,
     store: FsStore,
     progress_handle: AbortOnDropHandle<anyhow::Result<()>>,
+    transfer_status_rx: watch::Receiver<SenderTransferStatus>,
 }
 
 struct ImportedCollection {
@@ -219,6 +225,7 @@ impl SharingSetup {
             blobs_data_dir,
             store,
             progress_handle,
+            transfer_status_rx,
         } = self;
         let ImportedCollection { temp_tag, size, .. } = imported;
         let hash = temp_tag.hash();
@@ -238,6 +245,7 @@ impl SharingSetup {
             blobs_data_dir,
             _progress_handle: progress_handle,
             _store: store,
+            transfer_status_rx,
         })
     }
 }
@@ -447,8 +455,9 @@ async fn show_provide_progress_with_provider_tracker(
     app_handle: AppHandle,
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
+    transfer_status_tx: watch::Sender<SenderTransferStatus>,
 ) -> anyhow::Result<()> {
-    let reporter = SenderProgressReporter::new(app_handle, entry_type);
+    let reporter = SenderProgressReporter::new(app_handle, entry_type, transfer_status_tx);
     let request_task_limit = std::sync::Arc::new(Semaphore::new(PROVIDER_PROGRESS_TASK_LIMIT));
 
     while let Some(item) = recv.recv().await {

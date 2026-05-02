@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::core::events::{AppHandle, Role, TransferEvent, emit_event};
 use crate::core::types::EntryType;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 pub struct ProgressTracker {
     start: Instant,
@@ -296,10 +296,19 @@ pub enum CompletionStatus {
     MoreRequestsArrivingSoon,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SenderTransferStatus {
+    Idle,
+    Started,
+    Completed,
+    Aborted,
+}
+
 #[derive(Clone)]
 pub struct SenderProgressReporter {
     emitter: TransferEventEmitter,
     state: Arc<Mutex<SenderProgressState>>,
+    status_tx: watch::Sender<SenderTransferStatus>,
 }
 
 struct SenderProgressState {
@@ -308,24 +317,38 @@ struct SenderProgressState {
 }
 
 impl SenderProgressReporter {
-    pub fn new(app_handle: AppHandle, entry_type: EntryType) -> Self {
+    pub fn new(
+        app_handle: AppHandle,
+        entry_type: EntryType,
+        status_tx: watch::Sender<SenderTransferStatus>,
+    ) -> Self {
         Self {
             emitter: TransferEventEmitter::new(app_handle, Role::Sender),
             state: Arc::new(Mutex::new(SenderProgressState {
                 tracker: ProviderProgressTracker::new(entry_type),
                 has_emitted_started: false,
             })),
+            status_tx,
         }
     }
 
     pub async fn on_request_received(&self, transfer_id: TransferId, total_file_size: u64) {
-        let mut state = self.state.lock().await;
-        state
-            .tracker
-            .on_request_started(transfer_id, total_file_size);
-        if !state.has_emitted_started {
+        let should_emit_started = {
+            let mut state = self.state.lock().await;
+            state
+                .tracker
+                .on_request_started(transfer_id, total_file_size);
+            if state.has_emitted_started {
+                false
+            } else {
+                state.has_emitted_started = true;
+                true
+            }
+        };
+
+        if should_emit_started {
             self.emitter.emit_started();
-            state.has_emitted_started = true;
+            let _ = self.status_tx.send(SenderTransferStatus::Started);
         }
     }
 
@@ -350,6 +373,7 @@ impl SenderProgressReporter {
                     match state.tracker.on_request_completed(transfer_id) {
                         CompletionStatus::Completed => {
                             self.emitter.emit_completed();
+                            let _ = self.status_tx.send(SenderTransferStatus::Completed);
                             None
                         }
                         CompletionStatus::InProgress => None,
@@ -368,6 +392,7 @@ impl SenderProgressReporter {
                         CompletionStatus::Completed
                     ) {
                         self.emitter.emit_completed();
+                        let _ = self.status_tx.send(SenderTransferStatus::Completed);
                     }
                 }
             }
@@ -378,6 +403,7 @@ impl SenderProgressReporter {
                 };
 
                 if should_emit_failed {
+                    let _ = self.status_tx.send(SenderTransferStatus::Aborted);
                     self.emitter.emit_failed("transfer aborted");
                 }
             }
@@ -425,10 +451,16 @@ impl ReceiverProgressReporter {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompletionStatus, ProviderProgressTracker, SenderProgressReporter, TransferId};
+    use super::{
+        CompletionStatus, ProviderProgressTracker, SenderProgressReporter, SenderTransferStatus,
+        TransferId,
+    };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
     use crate::core::types::EntryType;
-    use iroh_blobs::provider::{TransferStats, events::TransferCompleted};
+    use iroh_blobs::provider::{
+        TransferStats,
+        events::{RequestUpdate, TransferAborted, TransferCompleted},
+    };
     use std::sync::{Arc, Mutex as StdMutex};
     use std::thread::sleep;
     use std::time::Duration;
@@ -541,20 +573,16 @@ mod tests {
     #[tokio::test]
     async fn sender_progress_reporter_emits_started_and_completed() {
         let sink = Arc::new(RecordingEmitter::default());
-        let reporter = SenderProgressReporter::new(Some(sink.clone()), EntryType::File);
+        let (status_tx, _status_rx) = tokio::sync::watch::channel(SenderTransferStatus::Idle);
+        let reporter = SenderProgressReporter::new(Some(sink.clone()), EntryType::File, status_tx);
         let id = TransferId::new(10, 1);
 
         reporter.on_request_received(id, 128).await;
         reporter
             .on_request_update(
                 id,
-                iroh_blobs::provider::events::RequestUpdate::Completed(TransferCompleted {
-                    stats: Box::new(TransferStats {
-                        payload_bytes_sent: 128,
-                        other_bytes_sent: 0,
-                        other_bytes_read: 0,
-                        duration: Duration::from_millis(100),
-                    }),
+                RequestUpdate::Completed(TransferCompleted {
+                    stats: transfer_stats(128),
                 }),
             )
             .await;
@@ -570,5 +598,44 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, TransferEvent::Completed { role: Role::Sender }))
         );
+    }
+
+    #[tokio::test]
+    async fn sender_progress_reporter_publishes_aborted_status() {
+        let sink = Arc::new(RecordingEmitter::default());
+        let (status_tx, mut status_rx) = tokio::sync::watch::channel(SenderTransferStatus::Idle);
+        let reporter = SenderProgressReporter::new(Some(sink.clone()), EntryType::File, status_tx);
+        let id = TransferId::new(11, 1);
+
+        reporter.on_request_received(id, 128).await;
+        reporter
+            .on_request_update(
+                id,
+                RequestUpdate::Aborted(TransferAborted {
+                    stats: transfer_stats(0),
+                }),
+            )
+            .await;
+
+        assert_eq!(
+            *status_rx.borrow_and_update(),
+            SenderTransferStatus::Aborted
+        );
+
+        let events = sink.events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            TransferEvent::Failed { role: Role::Sender, message }
+                if message == "transfer aborted"
+        )));
+    }
+
+    fn transfer_stats(payload_bytes_sent: u64) -> Box<TransferStats> {
+        Box::new(TransferStats {
+            payload_bytes_sent,
+            other_bytes_sent: 0,
+            other_bytes_read: 0,
+            duration: Duration::from_millis(100),
+        })
     }
 }

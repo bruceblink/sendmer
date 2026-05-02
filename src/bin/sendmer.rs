@@ -12,6 +12,7 @@ use sendmer::core::args::{
     Args, Commands, CommonArgs, ReceiveArgs, SendArgs, get_or_create_secret, print_hash,
 };
 use sendmer::core::cli_helper::CliEventEmitter;
+use sendmer::core::results::SenderTransferStatus;
 use sendmer::core::{receiver, sender};
 use sendmer::{AppHandle, ReceiveOptions, SendOptions};
 use std::io::IsTerminal;
@@ -85,8 +86,16 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     println!("sendmer receive {}", res.ticket);
     #[cfg(feature = "clipboard")]
     maybe_handle_key_press(args.clipboard, res.ticket.to_string());
-    tokio::signal::ctrl_c().await?;
-    res.shutdown().await
+    let wait_result = wait_for_send_shutdown(&res).await;
+    let shutdown_result = res.shutdown().await;
+    match (wait_result, shutdown_result) {
+        (Err(error), Err(shutdown_error)) => {
+            tracing::warn!(error = %shutdown_error, "failed to shutdown sender after wait error");
+            Err(error)
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), shutdown_result) => shutdown_result,
+    }
 }
 
 /// CLI wrapper: call library `download` and print the result message.
@@ -125,6 +134,37 @@ fn cli_app_handle(prefix: &'static str, no_progress: bool) -> AppHandle {
         None
     } else {
         Some(Arc::new(CliEventEmitter::new(prefix)))
+    }
+}
+
+async fn wait_for_send_shutdown(res: &sendmer::core::results::SendResult) -> anyhow::Result<()> {
+    let mut status_rx = res.subscribe_transfer_status();
+
+    loop {
+        if matches!(*status_rx.borrow(), SenderTransferStatus::Aborted) {
+            anyhow::bail!("receiver cancelled the transfer");
+        }
+
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                result?;
+                return Ok(());
+            }
+            changed = status_rx.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+
+                match *status_rx.borrow() {
+                    SenderTransferStatus::Aborted => {
+                        anyhow::bail!("receiver cancelled the transfer");
+                    }
+                    SenderTransferStatus::Idle
+                    | SenderTransferStatus::Started
+                    | SenderTransferStatus::Completed => {}
+                }
+            }
+        }
     }
 }
 
