@@ -58,8 +58,23 @@ cargo clippy --all-targets --all-features -- -D warnings
 - 导出阶段若遇冲突路径必须失败，并执行临时目录清理。
 - 下载阶段若流异常提前结束（无 `Done`）必须返回错误。
 
+## Git Hooks（提交前自动检查）
+可安装本仓库提供的脚本，在 `git commit` 前自动执行：
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --locked --workspace --all-targets --all-features`
+
+安装方式：
+
+```bash
+bash scripts/install-git-hooks.sh
+```
+
+安装成功后，每次提交都会触发上述检查，任一失败将阻止提交。
+
 ## 提交与推送
 在本地确认 lint 与测试通过后提交并推送：
+
 ```bash
 git add -A
 git commit -m "chore: apply clippy fixes / update README"
