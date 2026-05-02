@@ -126,6 +126,7 @@ fn receive_options(output_dir: Option<std::path::PathBuf>, common: &CommonArgs) 
         relay_mode: common.relay.clone(),
         magic_ipv4_addr: common.magic_ipv4_addr,
         magic_ipv6_addr: common.magic_ipv6_addr,
+        retry_policy: Default::default(),
     }
 }
 

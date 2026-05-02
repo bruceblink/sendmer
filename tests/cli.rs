@@ -152,6 +152,7 @@ fn send_recv_file() {
         relay_mode: Default::default(),
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
+        retry_policy: Default::default(),
     };
     let res = rt
         .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
@@ -199,6 +200,7 @@ fn send_recv_dir() {
         relay_mode: Default::default(),
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
+        retry_policy: Default::default(),
     };
     let res = rt
         .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
@@ -240,6 +242,7 @@ fn receive_fails_on_existing_target_and_cleans_temp_dir() {
         relay_mode: Default::default(),
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
+        retry_policy: Default::default(),
     };
     let err = rt
         .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
@@ -285,8 +288,8 @@ fn receive_defaults_to_current_directory_when_output_dir_is_missing() {
         relay_mode: Default::default(),
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
+        retry_policy: Default::default(),
     };
-
     let result = rt.block_on(async { sendmer::receive(ticket.to_string(), opts, None).await });
 
     std::env::set_current_dir(current).unwrap();

@@ -13,12 +13,30 @@ pub struct SendOptions {
     pub magic_ipv6_addr: Option<SocketAddrV6>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ReceiveRetryPolicy {
+    pub size_fetch_retry_limit: u32,
+    pub size_fetch_chunk_size: u64,
+    pub size_fetch_backoff_ms: u64,
+}
+
+impl Default for ReceiveRetryPolicy {
+    fn default() -> Self {
+        Self {
+            size_fetch_retry_limit: 3,
+            size_fetch_chunk_size: 1024 * 1024 * 32,
+            size_fetch_backoff_ms: 250,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ReceiveOptions {
     pub output_dir: Option<std::path::PathBuf>,
     pub relay_mode: RelayModeOption,
     pub magic_ipv4_addr: Option<SocketAddrV4>,
     pub magic_ipv6_addr: Option<SocketAddrV6>,
+    pub retry_policy: ReceiveRetryPolicy,
 }
 
 pub trait EndpointOptions: BindAddressOptions {
@@ -134,7 +152,6 @@ pub enum AddrInfoOptions {
     Relay,
     Addresses,
 }
-
 pub fn apply_options(addr: &mut iroh::EndpointAddr, opts: AddrInfoOptions) {
     use iroh::TransportAddr;
     match opts {
@@ -160,5 +177,18 @@ pub fn apply_options(addr: &mut iroh::EndpointAddr, opts: AddrInfoOptions) {
                 .cloned()
                 .collect();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReceiveRetryPolicy;
+
+    #[test]
+    fn receive_retry_policy_defaults_match_receiver_expectations() {
+        let policy = ReceiveRetryPolicy::default();
+        assert_eq!(policy.size_fetch_retry_limit, 3);
+        assert_eq!(policy.size_fetch_chunk_size, 1024 * 1024 * 32);
+        assert_eq!(policy.size_fetch_backoff_ms, 250);
     }
 }

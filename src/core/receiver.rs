@@ -4,7 +4,7 @@
 
 use crate::core::endpoint::base_endpoint_builder;
 use crate::core::events::AppHandle;
-use crate::core::options::ReceiveOptions;
+use crate::core::options::{ReceiveOptions, ReceiveRetryPolicy};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
 use crate::core::storage::{load_fs_store, unique_temp_dir};
@@ -29,9 +29,6 @@ use tracing::log::trace;
 
 // event helpers provided by `core::progress`
 
-const SIZE_FETCH_RETRY_LIMIT: u32 = 3;
-const SIZE_FETCH_CHUNK_SIZE: u64 = 1024 * 1024 * 32;
-const SIZE_FETCH_BACKOFF_MS: u64 = 250;
 const RECEIVE_TEMP_DIR_PREFIX: &str = ".sendmer-recv-";
 
 /// 下载并导出由 `ticket_str` 指定的数据到本地目录。
@@ -129,6 +126,7 @@ struct ReceiveContext {
     endpoint: Endpoint,
     iroh_data_dir: PathBuf,
     db: Store,
+    retry_policy: ReceiveRetryPolicy,
 }
 
 struct ReceiveArtifacts {
@@ -157,6 +155,7 @@ impl ReceiveContext {
             endpoint,
             iroh_data_dir,
             db,
+            retry_policy: options.retry_policy,
         })
     }
 
@@ -288,8 +287,13 @@ async fn download_missing_data(
     }
 
     emitter.emit_started();
-    let (_hash_seq, sizes) =
-        get_sizes_with_retries(&context.endpoint, &context.addr, &context.ticket.hash()).await?;
+    let (_hash_seq, sizes) = get_sizes_with_retries(
+        &context.endpoint,
+        &context.addr,
+        &context.ticket.hash(),
+        context.retry_policy,
+    )
+    .await?;
     let plan = DownloadPlan::from_sizes(&sizes);
     execute_download(context, local.missing(), &plan, &app_handle).await?;
 
@@ -339,8 +343,8 @@ fn resolve_output_dir(output_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     Ok(resolved)
 }
 
-fn size_fetch_backoff(attempt: u32) -> std::time::Duration {
-    std::time::Duration::from_millis(SIZE_FETCH_BACKOFF_MS * u64::from(attempt))
+fn size_fetch_backoff(attempt: u32, retry_policy: ReceiveRetryPolicy) -> std::time::Duration {
+    std::time::Duration::from_millis(retry_policy.size_fetch_backoff_ms * u64::from(attempt))
 }
 
 fn finalize_cleanup(
@@ -466,19 +470,22 @@ async fn get_sizes_with_retries(
     endpoint: &Endpoint,
     addr: &iroh::EndpointAddr,
     hash: &iroh_blobs::Hash,
+    retry_policy: ReceiveRetryPolicy,
 ) -> anyhow::Result<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> {
     let mut last_err: Option<GetError> = None;
     let mut connection = endpoint
         .connect(addr.clone(), iroh_blobs::protocol::ALPN)
         .await?;
-    for attempt in 1..=SIZE_FETCH_RETRY_LIMIT {
-        match get_hash_seq_and_sizes(&connection, hash, SIZE_FETCH_CHUNK_SIZE, None).await {
+    for attempt in 1..=retry_policy.size_fetch_retry_limit {
+        match get_hash_seq_and_sizes(&connection, hash, retry_policy.size_fetch_chunk_size, None)
+            .await
+        {
             Ok(result) => return Ok(result),
             Err(e) => {
                 tracing::error!("Attempt {attempt} to get sizes failed: {e:?}");
                 last_err = Some(e);
-                if attempt < SIZE_FETCH_RETRY_LIMIT {
-                    tokio::time::sleep(size_fetch_backoff(attempt)).await;
+                if attempt < retry_policy.size_fetch_retry_limit {
+                    tokio::time::sleep(size_fetch_backoff(attempt, retry_policy)).await;
                     reconnect(endpoint, addr, &mut connection).await;
                 }
             }
