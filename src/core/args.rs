@@ -108,7 +108,7 @@ pub struct ReceiveArgs {
 
     /// Output directory for received files.
     ///
-    /// Defaults to the platform download directory (or current directory as fallback) when omitted.
+    /// Defaults to the current working directory when omitted.
     #[clap(long)]
     pub output_dir: Option<PathBuf>,
 

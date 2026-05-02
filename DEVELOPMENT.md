@@ -5,12 +5,12 @@
 主线迭代计划请见：[docs/MAINLINE_DEVELOPMENT_PLAN.md](docs/MAINLINE_DEVELOPMENT_PLAN.md)
 
 ## Clippy & 项目配置
-本项目在 crate 根使用了 Clippy 警告（`#![warn(clippy::all)]` 和 `#![warn(clippy::nursery)]`），并包含 `clippy.toml`（`msrv = "1.89.0"`）。为避免工具链不匹配，推荐使用 Rust 1.89.0 或更高版本。
+本项目在 crate 根使用了 Clippy 警告（`#![warn(clippy::all)]` 和 `#![warn(clippy::nursery)]`），并包含 `clippy.toml`（`msrv = "1.88.0"`）。为避免工具链不匹配，推荐使用 Rust 1.88 或更高版本。
 
 ## 设置工具链 (可选)
 ```powershell
-rustup toolchain install 1.89.0
-rustup override set 1.89.0
+rustup toolchain install 1.88.0
+rustup override set 1.88.0
 ```
 
 ## 运行 Clippy (本地检查与自动修复)
