@@ -132,7 +132,7 @@ struct ReceiveContext {
 struct ReceiveArtifacts {
     total_files: u64,
     payload_size: u64,
-    output_dir: PathBuf,
+    root_item_path: PathBuf,
 }
 
 struct DownloadOutcome {
@@ -189,13 +189,14 @@ async fn receive_once(
     let download = download_missing_data(context, app_handle).await?;
     let collection = context.load_collection().await?;
     emit_collection_file_names(&event_emitter, &collection);
+    let root_item_path = resolve_root_item_path(output_dir, &collection)?;
     export(&context.db, collection, output_dir).await?;
     event_emitter.emit_completed();
 
     Ok(ReceiveArtifacts {
         total_files: download.total_files,
         payload_size: download.payload_size,
-        output_dir: output_dir.to_path_buf(),
+        root_item_path,
     })
 }
 
@@ -257,7 +258,7 @@ async fn finish_receive(
             "Downloaded {} files, {} bytes",
             artifacts.total_files, artifacts.payload_size
         ),
-        file_path: artifacts.output_dir,
+        file_path: artifacts.root_item_path,
     })
 }
 
@@ -333,6 +334,26 @@ fn collect_file_names(collection: &Collection) -> Vec<String> {
         .iter()
         .map(|(name, _hash)| name.to_string())
         .collect()
+}
+
+fn resolve_root_item_path(output_dir: &Path, collection: &Collection) -> anyhow::Result<PathBuf> {
+    let mut names = collection.iter().map(|(name, _)| name);
+    let Some(first_name) = names.next() else {
+        anyhow::bail!("collection is empty")
+    };
+
+    let Some(first_root) = first_name.split('/').next().filter(|part| !part.is_empty()) else {
+        anyhow::bail!("collection contains invalid entry name")
+    };
+
+    if names
+        .filter_map(|name| name.split('/').next())
+        .any(|root| root != first_root)
+    {
+        return get_export_path(output_dir, first_name);
+    }
+
+    get_export_path(output_dir, first_root)
 }
 
 fn resolve_output_dir(output_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {

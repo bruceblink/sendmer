@@ -159,6 +159,8 @@ fn send_recv_file() {
         .unwrap();
     send.cleanup();
     assert!(res.message.contains("Downloaded"));
+    let expected_root = tgt_dir.path().join(name);
+    assert_eq!(res.file_path, expected_root);
     let tgt_file = tgt_dir.path().join(name);
     let tgt_data = std::fs::read(tgt_file).unwrap();
     assert_eq!(tgt_data, data);
@@ -207,6 +209,8 @@ fn send_recv_dir() {
         .unwrap();
     send.cleanup();
     assert!(res.message.contains("Downloaded"));
+    let expected_root = tgt_data_dir.clone();
+    assert_eq!(res.file_path, expected_root);
     // validate directory structure
     for i in 0..5 {
         for j in 0..5 {
