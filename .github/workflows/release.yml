@@ -16,6 +16,10 @@ on:
         description: "Upload build artifacts"
         required: true
         default: "true"
+      publish_crate:
+        description: "Publish crate to crates.io"
+        required: true
+        default: "true"
 
 env:
   BIN_NAME: sendmer
@@ -43,7 +47,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_version: ${{ steps.version.outputs.version }}
-
     steps:
       - name: Determine release version
         id: version
@@ -66,20 +69,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create GitHub release
+      - name: Ensure GitHub release exists
         if: github.event_name == 'push' || github.event.inputs.create_release == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.version.outputs.version }}" \
-            --title "${{ steps.version.outputs.version }}" \
-            --generate-notes
+          VERSION="${{ steps.version.outputs.version }}"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists, skip create."
+          else
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --generate-notes
+          fi
 
   build-release:
     name: Build Release Binaries
     needs: create-release
     runs-on: ${{ matrix.os }}
-
     strategy:
       fail-fast: false
       matrix:
@@ -95,7 +102,6 @@ jobs:
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -150,3 +156,17 @@ jobs:
         run: |
           gh release upload "${{ needs.create-release.outputs.release_version }}" "${{ steps.package.outputs.asset }}" --clobber
 
+  publish-crate:
+    name: Publish crate to crates.io
+    needs: [quality-gate, create-release, build-release]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.inputs.publish_crate == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
