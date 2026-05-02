@@ -22,12 +22,27 @@ env:
   IROH_FORCE_STAGING_RELAYS: "1"
 
 jobs:
+  quality-gate:
+    name: Release Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+      - name: Cargo clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Cargo test
+        run: cargo test --locked --workspace --all-features --bins --tests --examples
+
   create-release:
     name: Create GitHub Release
+    needs: quality-gate
     runs-on: ubuntu-latest
     outputs:
       release_version: ${{ steps.version.outputs.version }}
-      upload_url: ${{ steps.release.outputs.upload_url }}
 
     steps:
       - name: Determine release version
@@ -52,18 +67,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Create GitHub release
-        id: release
         if: github.event_name == 'push' || github.event.inputs.create_release == 'true'
-        uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.version.outputs.version }}
-          release_name: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "${{ steps.version.outputs.version }}" \
+            --title "${{ steps.version.outputs.version }}" \
+            --generate-notes
 
-  # ------------------------------------------------------------
-  # Job 2: Build & Upload Artifacts (matrix)
-  # ------------------------------------------------------------
   build-release:
     name: Build Release Binaries
     needs: create-release
@@ -75,36 +86,21 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            archive: tar.gz
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
-            archive: tar.gz
             use_cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
-            archive: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
-            archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive: zip
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-
-      - name: Generate Changelog and Create Release
-        run: npx changelogithub
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -129,6 +125,7 @@ jobs:
           fi
 
       - name: Package artifact
+        id: package
         shell: bash
         run: |
           VERSION="${{ needs.create-release.outputs.release_version }}"
@@ -138,20 +135,18 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "$NAME/"
             powershell Compress-Archive "$NAME/*" "$NAME.zip"
-            echo "ASSET=$NAME.zip" >> $GITHUB_ENV
+            echo "asset=$NAME.zip" >> "$GITHUB_OUTPUT"
           else
             cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "$NAME/"
             tar czf "$NAME.tar.gz" -C "$NAME" .
-            echo "ASSET=$NAME.tar.gz" >> $GITHUB_ENV
+            echo "asset=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload release asset
         if: github.event_name == 'push' || github.event.inputs.upload_artifacts == 'true'
-        uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ env.ASSET }}
-          asset_name: ${{ env.ASSET }}
-          asset_content_type: application/octet-stream
+        shell: bash
+        run: |
+          gh release upload "${{ needs.create-release.outputs.release_version }}" "${{ steps.package.outputs.asset }}" --clobber
+
