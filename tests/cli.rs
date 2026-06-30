@@ -80,7 +80,13 @@ struct RunningSend {
 impl RunningSend {
     fn spawn(path: &Path, cwd: &Path) -> io::Result<Self> {
         let child = Command::new(sendmer_bin())
-            .args(["send", "--no-progress", path.to_str().unwrap()])
+            .args([
+                "send",
+                "--no-progress",
+                "--relay",
+                "disabled",
+                path.to_str().unwrap(),
+            ])
             .current_dir(cwd)
             .env_remove("RUST_LOG")
             .stdout(Stdio::piped())

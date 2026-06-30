@@ -159,5 +159,5 @@ pub fn get_or_create_secret() -> anyhow::Result<iroh::SecretKey> {
 }
 
 fn new_secret_key() -> iroh::SecretKey {
-    iroh::SecretKey::generate(&mut rand::rng())
+    iroh::SecretKey::generate()
 }

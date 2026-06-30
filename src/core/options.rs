@@ -3,7 +3,7 @@
 //! 本文件定义：SendOptions, ReceiveOptions, RelayModeOption, AddrInfoOptions。
 
 use iroh::RelayUrl;
-use std::net::{SocketAddrV4, SocketAddrV6};
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 
 #[derive(Debug, Default)]
 pub struct SendOptions {
@@ -83,14 +83,14 @@ impl BindAddressOptions for ReceiveOptions {
 pub fn apply_bind_addrs<T: BindAddressOptions>(
     mut builder: iroh::endpoint::Builder,
     options: &T,
-) -> iroh::endpoint::Builder {
+) -> anyhow::Result<iroh::endpoint::Builder> {
     if let Some(addr) = options.magic_ipv4_addr() {
-        builder = builder.bind_addr_v4(addr);
+        builder = builder.bind_addr(SocketAddr::V4(addr))?;
     }
     if let Some(addr) = options.magic_ipv6_addr() {
-        builder = builder.bind_addr_v6(addr);
+        builder = builder.bind_addr(SocketAddr::V6(addr))?;
     }
-    builder
+    Ok(builder)
 }
 
 #[derive(Clone, Debug, Default)]

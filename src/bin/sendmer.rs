@@ -7,6 +7,7 @@ use clap::{CommandFactory, Parser};
 use console::style;
 use data_encoding::HEXLOWER;
 use indicatif::HumanBytes;
+#[cfg(feature = "clipboard")]
 use n0_future::StreamExt;
 use sendmer::core::args::{
     Args, Commands, CommonArgs, ReceiveArgs, SendArgs, get_or_create_secret, print_hash,
@@ -15,6 +16,7 @@ use sendmer::core::cli_helper::CliEventEmitter;
 use sendmer::core::results::SenderTransferStatus;
 use sendmer::core::{receiver, sender};
 use sendmer::{AppHandle, ReceiveOptions, SendOptions};
+#[cfg(feature = "clipboard")]
 use std::io::IsTerminal;
 use std::sync::Arc;
 

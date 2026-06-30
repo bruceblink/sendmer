@@ -8,7 +8,7 @@ use crate::core::options::{ReceiveOptions, ReceiveRetryPolicy};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
 use crate::core::storage::{load_fs_store, unique_temp_dir};
-use iroh::{Endpoint, discovery::dns::DnsDiscovery};
+use iroh::{Endpoint, address_lookup::DnsAddressLookup};
 use iroh_blobs::{
     api::{
         Store,
@@ -164,7 +164,9 @@ impl ReceiveContext {
     }
 
     async fn load_collection(&self) -> anyhow::Result<Collection> {
-        Collection::load(self.hash_and_format().hash, &self.db).await
+        Collection::load(self.hash_and_format().hash, &self.db)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
     }
 }
 
@@ -474,7 +476,7 @@ async fn prepare_env(
     let mut builder = base_endpoint_builder(options, vec![])?;
 
     if ticket.addr().relay_urls().next().is_none() && ticket.addr().ip_addrs().next().is_none() {
-        builder = builder.discovery(DnsDiscovery::n0_dns());
+        builder = builder.address_lookup(DnsAddressLookup::n0_dns());
     }
     let endpoint = builder.bind().await?;
 

@@ -25,7 +25,7 @@ on:
       - 'docs/**'
 
 env:
-  MSRV: "1.88"
+  MSRV: "1.91"
   RUST_BACKTRACE: 1
   RUSTFLAGS: -Dwarnings
   IROH_FORCE_STAGING_RELAYS: "1"

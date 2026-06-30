@@ -9,7 +9,7 @@ use crate::core::progress::{SenderProgressReporter, SenderTransferStatus, Transf
 use crate::core::results::SendResult;
 use crate::core::storage::{load_fs_store, unique_temp_dir};
 use anyhow::Context;
-use iroh::{Endpoint, discovery::pkarr::PkarrPublisher};
+use iroh::{Endpoint, address_lookup::PkarrPublisher};
 use iroh_blobs::{
     BlobFormat, BlobsProtocol,
     api::{
@@ -31,17 +31,18 @@ use tokio::{
     select,
     sync::{Semaphore, mpsc, watch},
 };
-use tracing::{info, trace};
+use tracing::{info, trace, warn};
 use walkdir::WalkDir;
 
 const PROVIDER_PROGRESS_TASK_LIMIT: usize = 32;
+const ENDPOINT_ONLINE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Prepare endpoint with the given options
 async fn prepare_endpoint(options: &SendOptions) -> anyhow::Result<Endpoint> {
     let mut builder = base_endpoint_builder(options, vec![iroh_blobs::protocol::ALPN.to_vec()])?;
 
     if options.ticket_type == AddrInfoOptions::Id {
-        builder = builder.discovery(PkarrPublisher::n0_dns());
+        builder = builder.address_lookup(PkarrPublisher::n0_dns());
     }
 
     builder.bind().await.map_err(Into::into)
@@ -168,10 +169,16 @@ async fn wait_until_endpoint_is_online(
     wait_for_online: bool,
 ) -> anyhow::Result<()> {
     if wait_for_online {
-        tokio::time::timeout(Duration::from_secs(30), async move {
-            let _ = endpoint.online().await;
-        })
-        .await?;
+        match tokio::time::timeout(ENDPOINT_ONLINE_WAIT_TIMEOUT, endpoint.online()).await {
+            Ok(()) => {}
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    timeout_secs = ENDPOINT_ONLINE_WAIT_TIMEOUT.as_secs(),
+                    "endpoint online probe timed out; continuing with available addresses"
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -306,10 +313,17 @@ fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {
 
 /// 将 `path`（文件或目录）导入到给定的 `Store`，并返回导入后的集合信息。
 async fn import(path: PathBuf, db: &Store) -> anyhow::Result<ImportedCollection> {
-    let parallelism = num_cpus::get();
     let sources = collect_import_sources(path)?;
+    let parallelism = import_parallelism(sources.len());
     let imported = import_sources(db, sources, parallelism).await?;
     build_collection_from_imports(db, imported).await
+}
+
+fn import_parallelism(source_count: usize) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    available.min(source_count.max(1))
 }
 
 fn collect_import_sources(path: PathBuf) -> anyhow::Result<Vec<ImportedSource>> {
@@ -472,11 +486,11 @@ async fn show_provide_progress_with_provider_tracker(
 
                 let reporter_clone = reporter.clone();
                 let mut rx = msg.rx;
-                let task_limit = request_task_limit.clone();
+                let Ok(permit) = request_task_limit.clone().acquire_owned().await else {
+                    break;
+                };
                 tokio::spawn(async move {
-                    let Ok(_permit) = task_limit.acquire_owned().await else {
-                        return;
-                    };
+                    let _permit = permit;
                     while let Ok(Some(update)) = rx.recv().await {
                         reporter_clone.on_request_update(transfer_id, update).await;
                     }
@@ -495,7 +509,7 @@ async fn show_provide_progress_with_provider_tracker(
 mod tests {
     use super::{
         canonicalized_path_to_string, collect_import_sources, detect_entry_type,
-        validate_share_path,
+        import_parallelism, validate_share_path,
     };
     use crate::core::options::{AddrInfoOptions, apply_options};
     use crate::core::types::EntryType;
@@ -504,7 +518,7 @@ mod tests {
     use std::str::FromStr;
 
     fn sample_addr() -> iroh::EndpointAddr {
-        let node_id = SecretKey::generate(&mut rand::rng()).public();
+        let node_id = SecretKey::generate().public();
         let relay = RelayUrl::from_str("https://relay.example").expect("valid relay url");
         let ip = "127.0.0.1:7777".parse().expect("valid socket addr");
         EndpointAddr::new(node_id)
@@ -602,6 +616,13 @@ mod tests {
         names.sort();
 
         assert_eq!(names, vec!["data/alpha.txt", "data/nested/beta.txt"]);
+    }
+
+    #[test]
+    fn import_parallelism_is_bounded_by_available_work() {
+        assert_eq!(import_parallelism(0), 1);
+        assert_eq!(import_parallelism(1), 1);
+        assert!(import_parallelism(usize::MAX) >= 1);
     }
 
     #[test]

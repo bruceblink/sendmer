@@ -21,7 +21,9 @@ pub fn unique_temp_dir(prefix: &str) -> anyhow::Result<PathBuf> {
 
 pub async fn load_fs_store(path: &Path) -> anyhow::Result<FsStore> {
     tokio::fs::create_dir_all(path).await?;
-    FsStore::load(path).await
+    FsStore::load(path)
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))
 }
 
 #[cfg(test)]
