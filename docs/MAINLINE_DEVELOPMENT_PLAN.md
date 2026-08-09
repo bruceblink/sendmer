@@ -18,7 +18,7 @@
 - CI 新增固定版本 `actionlint` job，持续检查 `.github/workflows/` 的语义和表达式，降低 release workflow 回归风险。
 - release workflow 新增取消保护的汇总 job，将 tag、运行链接和各阶段结果写入 GitHub Step Summary，失败时能快速定位阶段。
 - release 资产现在同时上传 `.sha256` sidecar，Windows 与 Unix 安装器会在解压前校验 SHA-256 和资产文件名。
-- M3 下一步是做一次不上传资产的 tag/release 演练，确认完整链路的失败定位信息。
+- M3 已完成 `v0.5.0` 的本地不上传 tag/release 演练（`scripts/rehearse-release.ps1 -Tag v0.5.0 -RequireRemoteTag`）：临时 worktree 中的 fmt、clippy、check、package、test 全部通过，且演练自动清理 worktree；真正的 GitHub Actions workflow_dispatch 演练仍需在同步当前 workflow 后进行。
 
 ## Recommended approach
 
