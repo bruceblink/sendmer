@@ -48,8 +48,8 @@ pub async fn receive(
         ip_addrs = ticket.addr().ip_addrs().count(),
         "starting receive"
     );
+    let output_dir = resolve_output_dir(options.output_dir.clone())?;
     let context = ReceiveContext::prepare(ticket, &options).await?;
-    let output_dir = resolve_output_dir(options.output_dir)?;
 
     let artifacts = select! {
         x = receive_once(&context, &output_dir, app_handle.clone()) => match x {
@@ -243,6 +243,7 @@ fn finalize_failed_receive(
 }
 
 async fn cleanup_failed_receive(context: &ReceiveContext) -> anyhow::Result<()> {
+    close_receive_endpoint(&context.endpoint).await;
     let shutdown_result = context.db.shutdown().await.map_err(anyhow::Error::from);
     let cleanup_result = remove_temp_receive_dir(&context.iroh_data_dir).await;
     finalize_cleanup(shutdown_result, cleanup_result)
@@ -252,6 +253,7 @@ async fn finish_receive(
     context: &ReceiveContext,
     artifacts: ReceiveArtifacts,
 ) -> anyhow::Result<ReceiveResult> {
+    close_receive_endpoint(&context.endpoint).await;
     let shutdown_result = context.db.shutdown().await.map_err(anyhow::Error::from);
     let cleanup_result = remove_temp_receive_dir(&context.iroh_data_dir).await;
     finalize_cleanup(shutdown_result, cleanup_result)?;
@@ -263,6 +265,20 @@ async fn finish_receive(
         ),
         file_path: artifacts.root_item_path,
     })
+}
+
+/// Close the receive endpoint before its temporary store is finalized.
+async fn close_receive_endpoint(endpoint: &Endpoint) {
+    if endpoint.is_closed() {
+        return;
+    }
+
+    if tokio::time::timeout(std::time::Duration::from_secs(2), endpoint.close())
+        .await
+        .is_err()
+    {
+        tracing::warn!("timed out while closing receive endpoint");
+    }
 }
 
 async fn remove_temp_receive_dir(path: &Path) -> anyhow::Result<()> {
@@ -636,12 +652,14 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ReceiveRetryPolicy, completed_local_total_files, completed_local_total_files_from_children,
+        ReceiveRetryPolicy, base_endpoint_builder, close_receive_endpoint,
+        completed_local_total_files, completed_local_total_files_from_children,
         emit_receive_failed, finalize_cleanup, finalize_failed_receive, get_export_path,
         process_get_stream, receive_failed_message, receive_stream_ended_message,
         resolve_output_dir, size_fetch_backoff, validate_path_component,
     };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
+    use crate::core::options::{ReceiveOptions, RelayModeOption};
     use iroh_blobs::api::remote::GetProgressItem;
     use n0_future::stream;
     use std::path::Path;
@@ -879,6 +897,23 @@ mod tests {
             size_fetch_backoff(2, policy),
             std::time::Duration::from_millis(250)
         );
+    }
+
+    #[tokio::test]
+    async fn close_receive_endpoint_marks_endpoint_closed() {
+        let options = ReceiveOptions {
+            relay_mode: RelayModeOption::Disabled,
+            ..Default::default()
+        };
+        let endpoint = base_endpoint_builder(&options, vec![])
+            .expect("endpoint builder")
+            .bind()
+            .await
+            .expect("endpoint should bind");
+
+        close_receive_endpoint(&endpoint).await;
+
+        assert!(endpoint.is_closed());
     }
 
     #[test]
