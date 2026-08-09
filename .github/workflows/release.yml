@@ -40,6 +40,8 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Cargo check
         run: cargo check --workspace --all-features --bins
+      - name: Cargo package
+        run: cargo package --locked --no-verify
       - name: Cargo test
         run: cargo test --locked --workspace --all-features --bins --tests --examples
 
