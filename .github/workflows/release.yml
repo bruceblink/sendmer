@@ -277,7 +277,7 @@ jobs:
 
   release-summary:
     name: Release Run Summary
-    if: always()
+    if: ${{ !cancelled() }}
     needs: [release-context, quality-gate, create-release, build-release, publish-crate]
     runs-on: ubuntu-latest
     steps:
