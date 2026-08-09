@@ -8,20 +8,34 @@ use std::{
 use iroh::EndpointAddr;
 use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
 
-// binary path
-fn sendmer_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_SENDMER").unwrap_or_else(|_| {
-        // 如果环境变量不存在，尝试几种可能的路径
-        if cfg!(test) {
-            // 在测试环境中，尝试找到构建的二进制
-            let mut path = std::env::current_dir().unwrap();
-            path.push("target/debug/sendmer");
-            if path.exists() {
-                return path.to_string_lossy().to_string();
+// Resolve the binary before changing the child working directory so parallel
+// tests cannot make the command path point at a temporary directory.
+fn sendmer_bin() -> PathBuf {
+    for variable in ["CARGO_BIN_EXE_sendmer", "CARGO_BIN_EXE_SENDMER"] {
+        if let Some(path) = std::env::var_os(variable) {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                return path;
             }
+            return Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
         }
-        "sendmer".to_string() // 最后回退到在 PATH 中查找
-    })
+    }
+
+    // The integration-test executable lives in target/debug/deps, so its
+    // sibling binary is stable even when another test changes process cwd.
+    if let Ok(test_executable) = std::env::current_exe()
+        && let Some(debug_dir) = test_executable.parent().and_then(Path::parent)
+    {
+        let mut binary = debug_dir.join("sendmer");
+        if cfg!(windows) {
+            binary.set_extension("exe");
+        }
+        if binary.exists() {
+            return binary;
+        }
+    }
+
+    PathBuf::from("sendmer")
 }
 
 /// Read `n` lines from `reader`, returning the bytes read including the newlines.
