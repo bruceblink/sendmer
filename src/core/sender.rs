@@ -74,6 +74,7 @@ async fn setup_data_sharing(
     share_request: ShareRequest,
     wait_for_online: bool,
 ) -> anyhow::Result<SharingSetup> {
+    let cleanup_dir = blobs_data_dir.clone();
     let (progress_tx, progress_rx) = mpsc::channel(32);
     let (transfer_status_tx, transfer_status_rx) = watch::channel(SenderTransferStatus::Idle);
 
@@ -108,7 +109,34 @@ async fn setup_data_sharing(
         })
     };
 
-    setup_future.await
+    match setup_future.await {
+        Ok(setup) => Ok(setup),
+        Err(error) => Err(finalize_failed_sender_setup(
+            error,
+            remove_temp_sender_dir(&cleanup_dir).await,
+        )),
+    }
+}
+
+/// Remove a sender-owned temporary store after setup fails, tolerating a store
+/// that was never created.
+async fn remove_temp_sender_dir(path: &Path) -> anyhow::Result<()> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Preserve the startup error while recording a best-effort cleanup failure.
+fn finalize_failed_sender_setup(
+    primary_error: anyhow::Error,
+    cleanup_result: anyhow::Result<()>,
+) -> anyhow::Error {
+    if let Err(error) = cleanup_result {
+        warn!(error = %error, "failed to clean sender temporary data after setup error");
+    }
+    primary_error
 }
 
 struct ShareRequest {
@@ -281,15 +309,24 @@ pub async fn send(
     let endpoint = prepare_endpoint(&options).await?;
     let share_request = plan.build_request(path, app_handle);
 
-    let setup = select! {
+    let setup_result = select! {
         x = setup_data_sharing(
             endpoint,
             plan.blobs_data_dir.clone(),
             share_request,
             plan.wait_for_online
-        ) => x?,
+        ) => x,
         _ = tokio::signal::ctrl_c() => {
-            anyhow::bail!("Operation cancelled");
+            Err(anyhow::anyhow!("Operation cancelled"))
+        }
+    };
+    let setup = match setup_result {
+        Ok(setup) => setup,
+        Err(error) => {
+            return Err(finalize_failed_sender_setup(
+                error,
+                remove_temp_sender_dir(&plan.blobs_data_dir).await,
+            ));
         }
     };
 
@@ -508,10 +545,10 @@ async fn show_provide_progress_with_provider_tracker(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalized_path_to_string, collect_import_sources, detect_entry_type,
-        import_parallelism, validate_share_path,
+        ShareRequest, canonicalized_path_to_string, collect_import_sources, detect_entry_type,
+        import_parallelism, prepare_endpoint, setup_data_sharing, validate_share_path,
     };
-    use crate::core::options::{AddrInfoOptions, apply_options};
+    use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions, apply_options};
     use crate::core::types::EntryType;
     use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
     use std::path::Path;
@@ -650,5 +687,39 @@ mod tests {
         let nested = temp_dir.path().join("nested").join("share");
         std::fs::create_dir_all(&nested).expect("create nested dir");
         validate_share_path(&nested).expect("nested path should be accepted");
+    }
+
+    #[tokio::test]
+    async fn sender_setup_failure_removes_blob_store() {
+        let source_dir = tempfile::tempdir().expect("source directory");
+        let missing_source = source_dir.path().join("missing-source.bin");
+        let storage_root = tempfile::tempdir().expect("storage root");
+        let blobs_data_dir = storage_root.path().join("sender-store");
+        let options = SendOptions {
+            relay_mode: RelayModeOption::Disabled,
+            ticket_type: AddrInfoOptions::RelayAndAddresses,
+            ..SendOptions::default()
+        };
+        let endpoint = prepare_endpoint(&options)
+            .await
+            .expect("create sender endpoint");
+        let share_request = ShareRequest {
+            path: missing_source,
+            entry_type: EntryType::File,
+            app_handle: None,
+        };
+
+        let error = match setup_data_sharing(endpoint, blobs_data_dir.clone(), share_request, false)
+            .await
+        {
+            Ok(_) => panic!("missing source should fail sender setup"),
+            Err(error) => error,
+        };
+
+        assert!(!error.to_string().is_empty());
+        assert!(
+            !blobs_data_dir.exists(),
+            "sender setup failure should remove its blob store"
+        );
     }
 }

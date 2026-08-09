@@ -9,6 +9,7 @@
 - M1 的默认输出目录、失败事件和临时目录清理已完成，并有 CLI/单元回归覆盖。
 - M2 已完成：重试参数边界、每次尝试重新建连、symlink/containment 防护、endpoint 关闭和失败后的临时目录清理均已落地并通过门禁。
 - 发送端 shutdown 现在先释放 router、进度任务和 blob store，再删除临时目录，并有真实启停回归覆盖 Windows 文件锁顺序。
+- 发送端初始化导入失败也会清理临时 blob store，且有缺失源路径的确定性回归覆盖。
 - M3 已完成首批门禁：release workflow 已加入版本一致性校验、`cargo check`、`cargo package`、锁定依赖构建和压缩包构建元数据，开发者指南已补充发布前 checklist，接收失败日志已保留阶段上下文。
 - M3 已补充 release 资产验收：打包步骤检查二进制、元数据和最终压缩包，并要求发布 tag 已存在后再生成 release notes。
 - push 与 workflow_dispatch 的 quality-gate/create/build/publish job 现在统一 checkout 已验证的 tag，构建元数据记录真实 tag commit。
