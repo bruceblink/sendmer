@@ -166,16 +166,24 @@ jobs:
           mkdir "$NAME"
           printf 'sendmer_version=%s\nrust_target=%s\nsource_commit=%s\n' \
             "$VERSION" "${{ matrix.target }}" "$GITHUB_SHA" > "$NAME/BUILD-METADATA.txt"
+          test -s "$NAME/BUILD-METADATA.txt"
+          grep -Fqx "sendmer_version=$VERSION" "$NAME/BUILD-METADATA.txt"
+          grep -Fqx "rust_target=${{ matrix.target }}" "$NAME/BUILD-METADATA.txt"
 
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "$NAME/"
+            test -s "$NAME/${{ env.BIN_NAME }}.exe"
             powershell Compress-Archive "$NAME/*" "$NAME.zip"
-            echo "asset=$NAME.zip" >> "$GITHUB_OUTPUT"
+            ASSET="$NAME.zip"
           else
             cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "$NAME/"
+            test -x "$NAME/${{ env.BIN_NAME }}"
             tar czf "$NAME.tar.gz" -C "$NAME" .
-            echo "asset=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+            ASSET="$NAME.tar.gz"
           fi
+
+          test -s "$ASSET"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
 
       - name: Upload release asset
         if: github.event_name == 'push' || github.event.inputs.upload_artifacts == 'true'
