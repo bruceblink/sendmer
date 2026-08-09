@@ -30,6 +30,21 @@ impl Default for ReceiveRetryPolicy {
     }
 }
 
+impl ReceiveRetryPolicy {
+    /// Validate the size-fetch settings before network and temporary-store setup begins.
+    pub fn validate(self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.size_fetch_retry_limit > 0,
+            "size-fetch retry limit must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.size_fetch_chunk_size > 0,
+            "size-fetch chunk size must be greater than zero"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ReceiveOptions {
     pub output_dir: Option<std::path::PathBuf>,
@@ -190,5 +205,43 @@ mod tests {
         assert_eq!(policy.size_fetch_retry_limit, 3);
         assert_eq!(policy.size_fetch_chunk_size, 1024 * 1024 * 32);
         assert_eq!(policy.size_fetch_backoff_ms, 250);
+    }
+
+    #[test]
+    fn receive_retry_policy_rejects_zero_retry_limit() {
+        let policy = ReceiveRetryPolicy {
+            size_fetch_retry_limit: 0,
+            ..Default::default()
+        };
+
+        let error = policy
+            .validate()
+            .expect_err("zero retries should be rejected");
+        assert!(error.to_string().contains("retry limit"));
+    }
+
+    #[test]
+    fn receive_retry_policy_rejects_zero_chunk_size() {
+        let policy = ReceiveRetryPolicy {
+            size_fetch_chunk_size: 0,
+            ..Default::default()
+        };
+
+        let error = policy
+            .validate()
+            .expect_err("zero chunk size should be rejected");
+        assert!(error.to_string().contains("chunk size"));
+    }
+
+    #[test]
+    fn receive_retry_policy_allows_zero_backoff() {
+        let policy = ReceiveRetryPolicy {
+            size_fetch_backoff_ms: 0,
+            ..Default::default()
+        };
+
+        policy
+            .validate()
+            .expect("zero backoff should allow immediate retries");
     }
 }

@@ -147,6 +147,7 @@ struct DownloadPlan {
 
 impl ReceiveContext {
     async fn prepare(ticket: BlobTicket, options: &ReceiveOptions) -> anyhow::Result<Self> {
+        options.retry_policy.validate()?;
         let addr = ticket.addr().clone();
         let (endpoint, iroh_data_dir, db) = prepare_env(&ticket, options).await?;
         Ok(Self {
