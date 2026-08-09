@@ -518,54 +518,49 @@ async fn prepare_env(
     Ok((endpoint, iroh_data_dir, db.into()))
 }
 
-// Helper: get sizes with retries and reconnects
+/// Fetch remote collection sizes with a fresh connection for each retry.
+///
+/// Reconnecting inside the attempt loop means an initial connection failure is
+/// retried too, instead of skipping the retry policy before any request starts.
 async fn get_sizes_with_retries(
     endpoint: &Endpoint,
     addr: &iroh::EndpointAddr,
     hash: &iroh_blobs::Hash,
     retry_policy: ReceiveRetryPolicy,
 ) -> anyhow::Result<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> {
-    let mut last_err: Option<GetError> = None;
-    let mut connection = endpoint
-        .connect(addr.clone(), iroh_blobs::protocol::ALPN)
-        .await?;
+    let mut last_err: Option<anyhow::Error> = None;
     for attempt in 1..=retry_policy.size_fetch_retry_limit {
+        let connection = match endpoint
+            .connect(addr.clone(), iroh_blobs::protocol::ALPN)
+            .await
+        {
+            Ok(connection) => connection,
+            Err(error) => {
+                tracing::error!("Attempt {attempt} to connect for sizes failed: {error}");
+                last_err = Some(error.into());
+                if attempt < retry_policy.size_fetch_retry_limit {
+                    tokio::time::sleep(size_fetch_backoff(attempt, retry_policy)).await;
+                }
+                continue;
+            }
+        };
+
         match get_hash_seq_and_sizes(&connection, hash, retry_policy.size_fetch_chunk_size, None)
             .await
         {
             Ok(result) => return Ok(result),
             Err(e) => {
                 tracing::error!("Attempt {attempt} to get sizes failed: {e:?}");
-                last_err = Some(e);
+                let error = show_get_error(e);
+                last_err = Some(error.into());
                 if attempt < retry_policy.size_fetch_retry_limit {
                     tokio::time::sleep(size_fetch_backoff(attempt, retry_policy)).await;
-                    reconnect(endpoint, addr, &mut connection).await;
                 }
             }
         }
     }
 
-    if let Some(e) = last_err {
-        tracing::error!("Failed to get sizes after retries: {:?}", e);
-        tracing::error!("Error type: {}", std::any::type_name_of_val(&e));
-        Err(show_get_error(e).into())
-    } else {
-        anyhow::bail!("unknown error getting sizes")
-    }
-}
-
-async fn reconnect(
-    endpoint: &Endpoint,
-    addr: &iroh::EndpointAddr,
-    connection: &mut iroh::endpoint::Connection,
-) {
-    match endpoint
-        .connect(addr.clone(), iroh_blobs::protocol::ALPN)
-        .await
-    {
-        Ok(new_connection) => *connection = new_connection,
-        Err(conn_err) => tracing::error!("reconnect failed: {conn_err}"),
-    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("unknown error getting sizes")))
 }
 
 // Helper: process a Get stream and emit progress events
@@ -641,10 +636,10 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        completed_local_total_files, completed_local_total_files_from_children,
+        ReceiveRetryPolicy, completed_local_total_files, completed_local_total_files_from_children,
         emit_receive_failed, finalize_cleanup, finalize_failed_receive, get_export_path,
         process_get_stream, receive_failed_message, receive_stream_ended_message,
-        resolve_output_dir, validate_path_component,
+        resolve_output_dir, size_fetch_backoff, validate_path_component,
     };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
     use iroh_blobs::api::remote::GetProgressItem;
@@ -870,6 +865,20 @@ mod tests {
         let expected = std::env::current_dir().expect("current dir");
         let resolved = resolve_output_dir(None).expect("default output should resolve");
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn size_fetch_backoff_scales_by_attempt() {
+        let policy = ReceiveRetryPolicy {
+            size_fetch_backoff_ms: 125,
+            ..Default::default()
+        };
+
+        assert_eq!(size_fetch_backoff(0, policy), std::time::Duration::ZERO);
+        assert_eq!(
+            size_fetch_backoff(2, policy),
+            std::time::Duration::from_millis(250)
+        );
     }
 
     #[test]
