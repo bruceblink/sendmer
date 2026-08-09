@@ -78,6 +78,7 @@ bash scripts/install-git-hooks.sh
 
 - `Cargo.toml` 的 package 版本与准备创建的标签一致。
 - 远端标签已存在，并指向准备发布的提交。
+- `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7`
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
 - `cargo check --workspace --all-features --bins`
