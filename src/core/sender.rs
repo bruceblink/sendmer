@@ -55,15 +55,24 @@ fn prepare_temp_directory() -> anyhow::Result<PathBuf> {
 
 /// Validate the path to be shared
 fn validate_share_path(path: &Path) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
-    let resolved = cwd.join(path);
-    let is_cwd = match (cwd.canonicalize(), resolved.canonicalize()) {
-        (Ok(cwd_canonical), Ok(path_canonical)) => path_canonical == cwd_canonical,
-        _ => resolved == cwd,
-    };
-    if is_cwd {
+    let canonical_cwd = std::env::current_dir()?.canonicalize()?;
+    let canonical_path = path.canonicalize().with_context(|| {
+        format!(
+            "share path {} does not exist or cannot be accessed",
+            path.display()
+        )
+    })?;
+
+    if canonical_path == canonical_cwd {
         anyhow::bail!("can not share from the current directory");
     }
+
+    anyhow::ensure!(
+        canonical_path.is_file() || canonical_path.is_dir(),
+        "share path {} is not a file or directory",
+        path.display()
+    );
+
     Ok(())
 }
 
@@ -679,6 +688,19 @@ mod tests {
         let err =
             validate_share_path(&cwd).expect_err("absolute current directory should be rejected");
         assert!(err.to_string().contains("current directory"));
+    }
+
+    #[test]
+    fn validate_share_path_rejects_missing_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let missing = temp_dir.path().join("missing-share");
+
+        let err = validate_share_path(&missing).expect_err("missing path should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("does not exist or cannot be accessed")
+        );
     }
 
     #[test]
