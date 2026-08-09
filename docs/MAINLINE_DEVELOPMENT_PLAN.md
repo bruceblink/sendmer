@@ -15,6 +15,7 @@
 - push 与 workflow_dispatch 的 quality-gate/create/build/publish job 现在统一 checkout 已验证的 tag，构建元数据记录真实 tag commit。
 - 已加入 `scripts/rehearse-release.ps1`：在临时 worktree 中校验本地/远端 tag，并执行与 release workflow 相同的 fmt、clippy、check、package、test 门禁，不上传资产。
 - release workflow 的 `workflow_dispatch` 版本输入现在通过环境变量传递并先做严格 semver 校验，避免未校验字符串进入 shell。
+- workflow、Unix 安装器和 PowerShell 安装器统一接受 `vMAJOR.MINOR.PATCH[-prerelease][+build]`，拒绝点分隔的伪 prerelease；CI 以有效/无效版本矩阵约束 workflow 与 Unix 安装器的规则，避免发布与安装阶段的 tag 规则分叉。
 - `publish-crate` 现在先查询 crates.io：已存在的不可变版本跳过发布，查询异常则 fail closed，支持 release 重试幂等化。
 - CI 新增固定版本 `actionlint` job，持续检查 `.github/workflows/` 的语义和表达式，降低 release workflow 回归风险。
 - release workflow 新增取消保护的汇总 job，将 tag、运行链接和各阶段结果写入 GitHub Step Summary，失败时能快速定位阶段。

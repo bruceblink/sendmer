@@ -44,6 +44,8 @@ jobs:
           go-version: stable
       - name: actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - name: release version validation
+        run: bash ./tests/release-version.sh
 
   installer-test:
     runs-on: windows-latest

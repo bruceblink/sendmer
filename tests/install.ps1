@@ -5,7 +5,7 @@ $installerPath = Join-Path $PSScriptRoot "..\install.ps1"
 $originalVersion = $env:SENDMER_VERSION
 
 try {
-    $env:SENDMER_VERSION = "v0.5.0"
+    $env:SENDMER_VERSION = "v0.5.0-preview+build.7"
     $result = & {
         param([string]$Path)
 
@@ -54,6 +54,30 @@ try {
     }
     if (Test-Path -LiteralPath $result.TempDir) {
         throw "installer left its temporary directory behind: $($result.TempDir)"
+    }
+
+    $env:SENDMER_VERSION = "v1.2.3.rc1"
+    $invalidResult = & {
+        param([string]$Path)
+
+        function Invoke-WebRequest {
+            throw "invalid release version should not start a download"
+        }
+
+        $caught = $null
+        try {
+            . $Path
+        }
+        catch {
+            $caught = $_
+        }
+        $caught
+    } $installerPath
+    if ($null -eq $invalidResult) {
+        throw "installer should reject a dotted prerelease without a hyphen"
+    }
+    if ($invalidResult.Exception.Message -notmatch "Invalid release version") {
+        throw "installer returned the wrong invalid-version error"
     }
 
     Write-Host "PowerShell installer failure cleanup passed."

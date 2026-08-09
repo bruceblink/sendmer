@@ -15,7 +15,7 @@ if (-not $Version) {
     $Version = $Response.tag_name
 }
 
-if ($Version -notmatch '^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+if ($Version -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
     throw "Invalid release version: $Version"
 }
 

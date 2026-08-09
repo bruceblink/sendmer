@@ -59,7 +59,7 @@ if [ -z "$VERSION" ]; then
     | sed -E 's/.*"([^"]+)".*/\1/')"
 fi
 
-if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
   echo "❌ Invalid release version: $VERSION"
   exit 1
 fi
