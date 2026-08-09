@@ -28,7 +28,15 @@ $Arch = if ([Environment]::Is64BitOperatingSystem) {
 
 $InstallDir = "$env:USERPROFILE\.sendmer\bin"
 $ZipName = "$Bin-$Version-$Arch-pc-windows-msvc.zip"
-$ZipPath = Join-Path $env:TEMP $ZipName
+$TempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+$TempDir = [System.IO.Path]::GetFullPath((Join-Path $TempRoot (
+            "sendmer-install-{0}" -f [Guid]::NewGuid().ToString("N")
+        )))
+if (-not $TempDir.StartsWith($TempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to create installer files outside the system temp directory"
+}
+
+$ZipPath = Join-Path $TempDir $ZipName
 $Url = "https://github.com/$Repo/releases/download/$Version/$ZipName"
 $ChecksumPath = "$ZipPath.sha256"
 $ChecksumUrl = "$Url.sha256"
@@ -36,31 +44,36 @@ $ChecksumUrl = "$Url.sha256"
 Write-Host "Installing sendmer $Version"
 Write-Host "Downloading $Url"
 
-Invoke-WebRequest $Url -OutFile $ZipPath
-Invoke-WebRequest $ChecksumUrl -OutFile $ChecksumPath
+try {
+    New-Item -ItemType Directory -Path $TempDir | Out-Null
+    Invoke-WebRequest $Url -OutFile $ZipPath
+    Invoke-WebRequest $ChecksumUrl -OutFile $ChecksumPath
 
-$ChecksumFields = @((Get-Content -Raw -LiteralPath $ChecksumPath).Trim() -split '\s+')
-$ExpectedHash = $ChecksumFields[0].ToLowerInvariant()
-$ExpectedFile = if ($ChecksumFields.Count -gt 1) { $ChecksumFields[1] } else { "" }
-if ($ExpectedHash -notmatch '^[0-9a-f]{64}$' -or $ExpectedFile -ne $ZipName) {
-    throw "Invalid checksum file for $ZipName"
+    $ChecksumFields = @((Get-Content -Raw -LiteralPath $ChecksumPath).Trim() -split '\s+')
+    $ExpectedHash = $ChecksumFields[0].ToLowerInvariant()
+    $ExpectedFile = if ($ChecksumFields.Count -gt 1) { $ChecksumFields[1] } else { "" }
+    if ($ExpectedHash -notmatch '^[0-9a-f]{64}$' -or $ExpectedFile -ne $ZipName) {
+        throw "Invalid checksum file for $ZipName"
+    }
+
+    $ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ZipPath).Hash.ToLowerInvariant()
+    if ($ActualHash -ne $ExpectedHash) {
+        throw "Checksum verification failed for $ZipName"
+    }
+
+    Write-Host "Extracting..."
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    Expand-Archive -Path $ZipPath -DestinationPath $InstallDir -Force
+
+    $ExePath = Join-Path $InstallDir "$Bin.exe"
+    if (-not (Test-Path $ExePath)) {
+        Write-Error "sendmer.exe not found after extraction"
+    }
 }
-
-$ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ZipPath).Hash.ToLowerInvariant()
-if ($ActualHash -ne $ExpectedHash) {
-    throw "Checksum verification failed for $ZipName"
+finally {
+    # Every install attempt owns one isolated directory, so failure cleanup cannot clash.
+    Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
-
-Write-Host "Extracting..."
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Expand-Archive -Path $ZipPath -DestinationPath $InstallDir -Force
-
-$ExePath = Join-Path $InstallDir "$Bin.exe"
-if (-not (Test-Path $ExePath)) {
-    Write-Error "sendmer.exe not found after extraction"
-}
-
-Remove-Item -LiteralPath $ZipPath, $ChecksumPath -Force -ErrorAction SilentlyContinue
 
 # 添加到 PATH（用户级）
 $UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")

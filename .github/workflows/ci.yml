@@ -45,6 +45,14 @@ jobs:
       - name: actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
 
+  installer-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell installer failure cleanup
+        shell: powershell
+        run: .\tests\install.ps1
+
   lint:
     runs-on: ubuntu-latest
     steps:
