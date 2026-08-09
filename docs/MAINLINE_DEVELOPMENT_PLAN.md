@@ -8,8 +8,8 @@
 
 - M1 的默认输出目录、失败事件和临时目录清理已完成，并有 CLI/单元回归覆盖。
 - M2 已完成：重试参数边界、每次尝试重新建连、symlink/containment 防护、endpoint 关闭和失败后的临时目录清理均已落地并通过门禁。
-- M3 已启动：release workflow 已加入版本一致性校验和 `cargo check` 门禁，开发者指南已补充发布前 checklist。
-- M3 下一步聚焦产物命名/发布说明的可定位性，以及关键错误日志分类的统一。
+- M3 已完成首批门禁：release workflow 已加入版本一致性校验、`cargo check`、锁定依赖构建，开发者指南已补充发布前 checklist，接收失败日志已保留阶段上下文。
+- M3 下一步聚焦产物命名/发布说明的可定位性，以及 release 资产验收的自动化。
 
 ## Recommended approach
 
