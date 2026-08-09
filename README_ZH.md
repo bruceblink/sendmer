@@ -29,6 +29,12 @@ $env:SENDMER_VERSION="v0.5.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
+Git Bash、MSYS2 或 Cygwin 请改用 shell 安装器，并确保已安装 `unzip`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+```
+
 默认安装路径：
 
 ```powershell

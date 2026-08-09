@@ -29,6 +29,12 @@ $env:SENDMER_VERSION="v0.5.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
+For Git Bash, MSYS2, or Cygwin, use the shell installer instead. It requires `unzip`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+```
+
 Default install path:
 
 ```powershell
