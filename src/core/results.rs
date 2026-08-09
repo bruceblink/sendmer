@@ -52,18 +52,35 @@ impl SendResult {
         self.transfer_status_rx.clone()
     }
 
-    /// Shut down the active share and remove its temporary blob store.
+    /// Shut down the active share, release store handles, and remove its temporary blob data.
     pub async fn shutdown(self) -> anyhow::Result<()> {
-        drop(self.temp_tag);
-        let shutdown_result =
-            match tokio::time::timeout(std::time::Duration::from_secs(2), self.router.shutdown())
-                .await
-            {
-                Ok(result) => result.map_err(anyhow::Error::from),
-                Err(error) => Err(error.into()),
-            };
+        let Self {
+            router,
+            temp_tag,
+            blobs_data_dir,
+            _progress_handle,
+            _store,
+            ..
+        } = self;
+
+        drop(temp_tag);
+        let shutdown_result = match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            router.shutdown(),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(anyhow::Error::from),
+            Err(error) => Err(error.into()),
+        };
+
+        // Windows cannot remove the blob directory while router/store handles still own files.
+        drop(router);
+        drop(_progress_handle);
+        drop(_store);
+
         let cleanup_result =
-            normalize_sender_cleanup_result(tokio::fs::remove_dir_all(&self.blobs_data_dir).await);
+            normalize_sender_cleanup_result(tokio::fs::remove_dir_all(&blobs_data_dir).await);
         finalize_sender_shutdown(shutdown_result, cleanup_result)
     }
 }
@@ -78,6 +95,10 @@ pub struct ReceiveResult {
 #[cfg(test)]
 mod tests {
     use super::{finalize_sender_shutdown, normalize_sender_cleanup_result};
+    use crate::core::{
+        options::{RelayModeOption, SendOptions},
+        sender,
+    };
 
     #[test]
     fn normalize_sender_cleanup_result_ignores_not_found() {
@@ -98,5 +119,28 @@ mod tests {
     fn finalize_sender_shutdown_returns_ok_when_shutdown_succeeds() {
         finalize_sender_shutdown(Ok(()), Err(anyhow::anyhow!("cleanup failed")))
             .expect("cleanup errors should not fail successful shutdown");
+    }
+
+    #[tokio::test]
+    async fn sender_shutdown_removes_blob_store_after_releasing_handles() {
+        let source_dir = tempfile::tempdir().expect("source directory");
+        let source_file = source_dir.path().join("source.bin");
+        tokio::fs::write(&source_file, b"shutdown cleanup")
+            .await
+            .expect("write source file");
+        let options = SendOptions {
+            relay_mode: RelayModeOption::Disabled,
+            ..SendOptions::default()
+        };
+
+        let result = sender::send(source_file, options, None)
+            .await
+            .expect("start sender");
+        let blobs_data_dir = result.blobs_data_dir.clone();
+        assert!(blobs_data_dir.exists());
+
+        result.shutdown().await.expect("shutdown sender");
+
+        assert!(!blobs_data_dir.exists());
     }
 }
