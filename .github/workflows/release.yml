@@ -26,28 +26,8 @@ env:
   IROH_FORCE_STAGING_RELAYS: "1"
 
 jobs:
-  quality-gate:
-    name: Release Quality Gate
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Cargo fmt
-        run: cargo fmt --all -- --check
-      - name: Cargo clippy
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: Cargo check
-        run: cargo check --workspace --all-features --bins
-      - name: Cargo package
-        run: cargo package --locked --no-verify
-      - name: Cargo test
-        run: cargo test --locked --workspace --all-features --bins --tests --examples
-
-  create-release:
-    name: Create GitHub Release
-    needs: quality-gate
+  release-context:
+    name: Resolve Release Tag
     runs-on: ubuntu-latest
     outputs:
       release_version: ${{ steps.version.outputs.version }}
@@ -67,20 +47,71 @@ jobs:
             exit 1
           fi
 
+          if [[ "$VERSION" != v* ]]; then
+            echo "Release version must start with v: $VERSION"
+            exit 1
+          fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Release version: $VERSION"
 
+  quality-gate:
+    name: Release Quality Gate
+    needs: release-context
+    runs-on: ubuntu-latest
+    steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.version.outputs.version }}
+          fetch-depth: 0
+          ref: ${{ needs.release-context.outputs.release_version }}
+      - name: Verify checked out release tag
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+        shell: bash
+        run: |
+          TAG_REF="refs/tags/${RELEASE_VERSION}"
+          TAG_COMMIT="$(git rev-parse "${TAG_REF}^{commit}")"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+
+          if [ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]; then
+            echo "Checked out commit ${HEAD_COMMIT} does not match ${RELEASE_VERSION} (${TAG_COMMIT})"
+            exit 1
+          fi
+
+          echo "Release tag verified: ${RELEASE_VERSION} (${TAG_COMMIT})"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+      - name: Cargo clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Cargo check
+        run: cargo check --workspace --all-features --bins
+      - name: Cargo package
+        run: cargo package --locked --no-verify
+      - name: Cargo test
+        run: cargo test --locked --workspace --all-features --bins --tests --examples
+
+  create-release:
+    name: Create GitHub Release
+    needs: [release-context, quality-gate]
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ needs.release-context.outputs.release_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-context.outputs.release_version }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Verify release version matches Cargo package
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
         shell: bash
         run: |
           CRATE_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; data = json.loads(sys.stdin.buffer.read().decode("utf-8-sig")); print(next(package["version"] for package in data["packages"] if package["name"] == "sendmer"))')"
@@ -103,7 +134,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.release-context.outputs.release_version }}"
           if gh release view "$VERSION" >/dev/null 2>&1; then
             echo "Release $VERSION already exists, skip create."
           else

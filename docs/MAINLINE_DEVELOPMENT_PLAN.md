@@ -10,7 +10,7 @@
 - M2 已完成：重试参数边界、每次尝试重新建连、symlink/containment 防护、endpoint 关闭和失败后的临时目录清理均已落地并通过门禁。
 - M3 已完成首批门禁：release workflow 已加入版本一致性校验、`cargo check`、`cargo package`、锁定依赖构建和压缩包构建元数据，开发者指南已补充发布前 checklist，接收失败日志已保留阶段上下文。
 - M3 已补充 release 资产验收：打包步骤检查二进制、元数据和最终压缩包，并要求发布 tag 已存在后再生成 release notes。
-- push 与 workflow_dispatch 的 create/build/publish job 现在统一 checkout 已验证的 tag，构建元数据记录真实 tag commit。
+- push 与 workflow_dispatch 的 quality-gate/create/build/publish job 现在统一 checkout 已验证的 tag，构建元数据记录真实 tag commit。
 - M3 下一步是做一次不上传资产的 tag/release 演练，确认完整链路的失败定位信息。
 
 ## Recommended approach
