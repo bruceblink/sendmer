@@ -76,12 +76,14 @@ fn validate_share_path(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Setup data sharing with progress tracking
+/// Set up data sharing and return immediately after the router starts.
+///
+/// The caller owns the returned setup before it waits for endpoint readiness, so a
+/// later cancellation can use the normal graceful shutdown path.
 async fn setup_data_sharing(
     endpoint: Endpoint,
     blobs_data_dir: PathBuf,
     share_request: ShareRequest,
-    wait_for_online: bool,
 ) -> anyhow::Result<SharingSetup> {
     let cleanup_dir = blobs_data_dir.clone();
     let (progress_tx, progress_rx) = mpsc::channel(32);
@@ -105,8 +107,6 @@ async fn setup_data_sharing(
         let router = iroh::protocol::Router::builder(endpoint)
             .accept(iroh_blobs::protocol::ALPN, blobs.clone())
             .spawn();
-
-        wait_until_endpoint_is_online(router.endpoint(), wait_for_online).await?;
 
         anyhow::Ok(SharingSetup {
             router,
@@ -262,7 +262,7 @@ impl SharingSetup {
         self,
         entry_type: crate::core::types::EntryType,
         ticket_type: AddrInfoOptions,
-    ) -> anyhow::Result<SendResult> {
+    ) -> SendResult {
         let Self {
             router,
             imported,
@@ -279,7 +279,7 @@ impl SharingSetup {
 
         let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
 
-        Ok(SendResult {
+        SendResult {
             ticket,
             hash,
             size,
@@ -290,8 +290,25 @@ impl SharingSetup {
             _progress_handle: progress_handle,
             _store: store,
             transfer_status_rx,
-        })
+        }
     }
+}
+
+/// Shut down a fully initialized share after its final startup step fails or is cancelled.
+///
+/// A `SharingSetup` already owns a live router and file-backed store, so it must be
+/// converted into `SendResult` to reuse the ordered shutdown and directory cleanup logic.
+async fn shutdown_started_sender_setup(
+    setup: SharingSetup,
+    entry_type: crate::core::types::EntryType,
+    ticket_type: AddrInfoOptions,
+    primary_error: anyhow::Error,
+) -> anyhow::Error {
+    let cleanup_result = setup
+        .into_send_result(entry_type, ticket_type)
+        .shutdown()
+        .await;
+    finalize_failed_sender_setup(primary_error, cleanup_result)
 }
 
 /// 开始共享（发送）指定的 `path`（文件或目录）。
@@ -317,15 +334,19 @@ pub async fn send(
     let plan = SharePlan::new(&path, &options)?;
     let endpoint = prepare_endpoint(&options).await?;
     let share_request = plan.build_request(path, app_handle);
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
 
+    // If setup and Ctrl+C become ready together, retain the completed setup so it can
+    // be shut down gracefully below instead of dropping a live router.
     let setup_result = select! {
+        biased;
         x = setup_data_sharing(
             endpoint,
             plan.blobs_data_dir.clone(),
-            share_request,
-            plan.wait_for_online
+            share_request
         ) => x,
-        _ = tokio::signal::ctrl_c() => {
+        _ = &mut ctrl_c => {
             Err(anyhow::anyhow!("Operation cancelled"))
         }
     };
@@ -339,7 +360,42 @@ pub async fn send(
         }
     };
 
-    let result = setup.into_send_result(plan.entry_type, plan.ticket_type)?;
+    let online_wait_outcome = {
+        let online_wait =
+            wait_until_endpoint_is_online(setup.router.endpoint(), plan.wait_for_online);
+        tokio::pin!(online_wait);
+
+        select! {
+            biased;
+            _ = &mut ctrl_c => None,
+            result = &mut online_wait => Some(result),
+        }
+    };
+
+    match online_wait_outcome {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            return Err(shutdown_started_sender_setup(
+                setup,
+                plan.entry_type,
+                plan.ticket_type,
+                error,
+            )
+            .await);
+        }
+        None => {
+            return Err(shutdown_started_sender_setup(
+                setup,
+                plan.entry_type,
+                plan.ticket_type,
+                anyhow::anyhow!("Operation cancelled"),
+            )
+            .await);
+        }
+    }
+
+    let result = setup.into_send_result(plan.entry_type, plan.ticket_type);
+
     info!(
         hash = %result.hash,
         size = result.size,
@@ -555,7 +611,8 @@ async fn show_provide_progress_with_provider_tracker(
 mod tests {
     use super::{
         ShareRequest, canonicalized_path_to_string, collect_import_sources, detect_entry_type,
-        import_parallelism, prepare_endpoint, setup_data_sharing, validate_share_path,
+        import_parallelism, prepare_endpoint, setup_data_sharing, shutdown_started_sender_setup,
+        validate_share_path,
     };
     use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions, apply_options};
     use crate::core::types::EntryType;
@@ -731,8 +788,7 @@ mod tests {
             app_handle: None,
         };
 
-        let error = match setup_data_sharing(endpoint, blobs_data_dir.clone(), share_request, false)
-            .await
+        let error = match setup_data_sharing(endpoint, blobs_data_dir.clone(), share_request).await
         {
             Ok(_) => panic!("missing source should fail sender setup"),
             Err(error) => error,
@@ -742,6 +798,50 @@ mod tests {
         assert!(
             !blobs_data_dir.exists(),
             "sender setup failure should remove its blob store"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_after_router_starts_removes_blob_store() {
+        let source_dir = tempfile::tempdir().expect("source directory");
+        let source_file = source_dir.path().join("source.bin");
+        tokio::fs::write(&source_file, b"cancel after setup")
+            .await
+            .expect("write source file");
+        let storage_root = tempfile::tempdir().expect("storage root");
+        let blobs_data_dir = storage_root.path().join("sender-store");
+        let options = SendOptions {
+            relay_mode: RelayModeOption::Disabled,
+            ticket_type: AddrInfoOptions::RelayAndAddresses,
+            ..SendOptions::default()
+        };
+        let endpoint = prepare_endpoint(&options)
+            .await
+            .expect("create sender endpoint");
+        let setup = setup_data_sharing(
+            endpoint,
+            blobs_data_dir.clone(),
+            ShareRequest {
+                path: source_file,
+                entry_type: EntryType::File,
+                app_handle: None,
+            },
+        )
+        .await
+        .expect("start sender router");
+
+        let error = shutdown_started_sender_setup(
+            setup,
+            EntryType::File,
+            AddrInfoOptions::RelayAndAddresses,
+            anyhow::anyhow!("Operation cancelled"),
+        )
+        .await;
+
+        assert!(error.to_string().contains("Operation cancelled"));
+        assert!(
+            !blobs_data_dir.exists(),
+            "cancelling a started sender should remove its blob store"
         );
     }
 }
