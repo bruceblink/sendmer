@@ -162,6 +162,8 @@ jobs:
           VERSION="${{ needs.create-release.outputs.release_version }}"
           NAME="${{ env.BIN_NAME }}-${VERSION}-${{ matrix.target }}"
           mkdir "$NAME"
+          printf 'sendmer_version=%s\nrust_target=%s\nsource_commit=%s\n' \
+            "$VERSION" "${{ matrix.target }}" "$GITHUB_SHA" > "$NAME/BUILD-METADATA.txt"
 
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "$NAME/"
