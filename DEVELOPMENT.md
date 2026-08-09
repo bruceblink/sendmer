@@ -72,6 +72,19 @@ bash scripts/install-git-hooks.sh
 
 安装成功后，每次提交都会触发上述检查，任一失败将阻止提交。
 
+## 发布前检查清单
+
+在创建 `v<version>` 标签前，按以下顺序确认：
+
+- `Cargo.toml` 的 package 版本与准备创建的标签一致。
+- `cargo fmt --all -- --check`
+- `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
+- `cargo check --workspace --all-features --bins`
+- `cargo test --locked --workspace --all-features --bins --tests --examples`
+- `git status --short` 为空，且发布说明会包含本次变更和验证结果。
+
+release workflow 会再次校验标签版本与 `Cargo.toml`，并在构建产物上传前执行同一组质量门禁。
+
 ## 提交与推送
 在本地确认 lint 与测试通过后提交并推送：
 
