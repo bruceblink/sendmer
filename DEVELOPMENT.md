@@ -77,6 +77,7 @@ bash scripts/install-git-hooks.sh
 在创建 `v<version>` 标签前，按以下顺序确认：
 
 - `Cargo.toml` 的 package 版本与准备创建的标签一致。
+- 远端标签已存在，并指向准备发布的提交。
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
 - `cargo check --workspace --all-features --bins`
