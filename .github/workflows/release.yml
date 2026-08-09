@@ -34,12 +34,14 @@ jobs:
     steps:
       - name: Determine release version
         id: version
+        env:
+          RELEASE_VERSION_INPUT: ${{ github.event.inputs.release_version }}
         shell: bash
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             VERSION="${GITHUB_REF#refs/tags/}"
           else
-            VERSION="${{ github.event.inputs.release_version }}"
+            VERSION="${RELEASE_VERSION_INPUT}"
           fi
 
           if [ -z "$VERSION" ]; then
@@ -47,12 +49,12 @@ jobs:
             exit 1
           fi
 
-          if [[ "$VERSION" != v* ]]; then
-            echo "Release version must start with v: $VERSION"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release version must be a semver tag such as v1.2.3: $VERSION"
             exit 1
           fi
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           echo "Release version: $VERSION"
 
   quality-gate:
@@ -133,8 +135,9 @@ jobs:
         if: github.event_name == 'push' || github.event.inputs.create_release == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
         run: |
-          VERSION="${{ needs.release-context.outputs.release_version }}"
+          VERSION="$RELEASE_VERSION"
           if gh release view "$VERSION" >/dev/null 2>&1; then
             echo "Release $VERSION already exists, skip create."
           else
@@ -194,27 +197,31 @@ jobs:
 
       - name: Package artifact
         id: package
+        env:
+          BIN_NAME: ${{ env.BIN_NAME }}
+          RELEASE_VERSION: ${{ needs.create-release.outputs.release_version }}
+          RUST_TARGET: ${{ matrix.target }}
         shell: bash
         run: |
-          VERSION="${{ needs.create-release.outputs.release_version }}"
-          NAME="${{ env.BIN_NAME }}-${VERSION}-${{ matrix.target }}"
+          VERSION="$RELEASE_VERSION"
+          NAME="${BIN_NAME}-${VERSION}-${RUST_TARGET}"
           SOURCE_COMMIT="$(git rev-parse HEAD)"
           mkdir "$NAME"
           printf 'sendmer_version=%s\nrust_target=%s\nsource_commit=%s\n' \
-            "$VERSION" "${{ matrix.target }}" "$SOURCE_COMMIT" > "$NAME/BUILD-METADATA.txt"
+            "$VERSION" "$RUST_TARGET" "$SOURCE_COMMIT" > "$NAME/BUILD-METADATA.txt"
           test -s "$NAME/BUILD-METADATA.txt"
           grep -Fqx "sendmer_version=$VERSION" "$NAME/BUILD-METADATA.txt"
-          grep -Fqx "rust_target=${{ matrix.target }}" "$NAME/BUILD-METADATA.txt"
+          grep -Fqx "rust_target=$RUST_TARGET" "$NAME/BUILD-METADATA.txt"
           grep -Fqx "source_commit=$SOURCE_COMMIT" "$NAME/BUILD-METADATA.txt"
 
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "$NAME/"
-            test -s "$NAME/${{ env.BIN_NAME }}.exe"
+            cp "target/${RUST_TARGET}/release/${BIN_NAME}.exe" "$NAME/"
+            test -s "$NAME/${BIN_NAME}.exe"
             powershell Compress-Archive "$NAME/*" "$NAME.zip"
             ASSET="$NAME.zip"
           else
-            cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "$NAME/"
-            test -x "$NAME/${{ env.BIN_NAME }}"
+            cp "target/${RUST_TARGET}/release/${BIN_NAME}" "$NAME/"
+            test -x "$NAME/${BIN_NAME}"
             tar czf "$NAME.tar.gz" -C "$NAME" .
             ASSET="$NAME.tar.gz"
           fi
@@ -226,9 +233,11 @@ jobs:
         if: github.event_name == 'push' || github.event.inputs.upload_artifacts == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.create-release.outputs.release_version }}
+          RELEASE_ASSET: ${{ steps.package.outputs.asset }}
         shell: bash
         run: |
-          gh release upload "${{ needs.create-release.outputs.release_version }}" "${{ steps.package.outputs.asset }}" --clobber
+          gh release upload "$RELEASE_VERSION" "$RELEASE_ASSET" --clobber
 
   publish-crate:
     name: Publish crate to crates.io
