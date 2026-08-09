@@ -5,7 +5,8 @@ use std::{
     str::FromStr,
 };
 
-use iroh_blobs::ticket::BlobTicket;
+use iroh::EndpointAddr;
+use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
 
 // binary path
 fn sendmer_bin() -> String {
@@ -311,4 +312,48 @@ fn receive_defaults_to_current_directory_when_output_dir_is_missing() {
     let received_file = work_dir.path().join(name);
     let received_data = std::fs::read(received_file).unwrap();
     assert_eq!(received_data, data);
+}
+
+#[test]
+fn receive_connection_failure_cleans_temp_dir_after_retries() {
+    let output_dir = tempfile::tempdir().unwrap();
+    let before = list_receive_temp_dirs();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let secret = sendmer::core::args::get_or_create_secret().unwrap();
+    let ticket = BlobTicket::new(
+        EndpointAddr::new(secret.public()),
+        Hash::new(b"sendmer-unreachable-retry-test"),
+        BlobFormat::HashSeq,
+    );
+    let result = rt.block_on(async {
+        let opts = sendmer::ReceiveOptions {
+            output_dir: Some(output_dir.path().to_path_buf()),
+            relay_mode: sendmer::RelayModeOption::Disabled,
+            magic_ipv4_addr: None,
+            magic_ipv6_addr: None,
+            retry_policy: sendmer::core::options::ReceiveRetryPolicy {
+                size_fetch_retry_limit: 2,
+                size_fetch_chunk_size: 1,
+                size_fetch_backoff_ms: 0,
+            },
+        };
+        sendmer::receive(ticket.to_string(), opts, None).await
+    });
+    let error = result.expect_err("self connection should fail immediately");
+    assert!(!error.to_string().is_empty());
+
+    let after = list_receive_temp_dirs();
+    let leaked = after
+        .difference(&before)
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(&ticket.hash().to_hex()))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        leaked.is_empty(),
+        "temporary receive dirs should be cleaned after retry failure: {leaked:?}"
+    );
 }
