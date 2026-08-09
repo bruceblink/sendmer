@@ -19,6 +19,7 @@ use sendmer::{AppHandle, ReceiveOptions, SendOptions};
 #[cfg(feature = "clipboard")]
 use std::io::IsTerminal;
 use std::sync::Arc;
+use std::{future::Future, io};
 
 #[tokio::main]
 async fn main() {
@@ -143,13 +144,26 @@ fn cli_app_handle(prefix: &'static str, no_progress: bool) -> AppHandle {
 async fn wait_for_send_shutdown(res: &sendmer::core::results::SendResult) -> anyhow::Result<()> {
     let mut status_rx = res.subscribe_transfer_status();
 
-    loop {
-        if matches!(*status_rx.borrow(), SenderTransferStatus::Aborted) {
-            anyhow::bail!("receiver cancelled the transfer");
-        }
+    wait_for_send_shutdown_with_signal(tokio::signal::ctrl_c(), &mut status_rx).await
+}
 
+/// Wait for the user to stop sharing while treating receiver updates as telemetry.
+///
+/// A receiver can abort independently while other receivers still use the same ticket, so
+/// status updates must not shut down the shared sender. Closing the status channel means the
+/// sender is already being torn down elsewhere.
+async fn wait_for_send_shutdown_with_signal<S>(
+    signal: S,
+    status_rx: &mut tokio::sync::watch::Receiver<SenderTransferStatus>,
+) -> anyhow::Result<()>
+where
+    S: Future<Output = io::Result<()>>,
+{
+    tokio::pin!(signal);
+
+    loop {
         tokio::select! {
-            result = tokio::signal::ctrl_c() => {
+            result = &mut signal => {
                 result?;
                 return Ok(());
             }
@@ -158,14 +172,8 @@ async fn wait_for_send_shutdown(res: &sendmer::core::results::SendResult) -> any
                     return Ok(());
                 }
 
-                match *status_rx.borrow() {
-                    SenderTransferStatus::Aborted => {
-                        anyhow::bail!("receiver cancelled the transfer");
-                    }
-                    SenderTransferStatus::Idle
-                    | SenderTransferStatus::Started
-                    | SenderTransferStatus::Completed => {}
-                }
+                // A single receiver can abort without invalidating the shared ticket.
+                // The progress event reports that failure while this loop keeps serving.
             }
         }
     }
@@ -297,9 +305,10 @@ fn add_to_clipboard(ticket: &String) {
 
 #[cfg(test)]
 mod tests {
-    use super::receive_options;
+    use super::{receive_options, wait_for_send_shutdown_with_signal};
     use sendmer::core::args::CommonArgs;
     use sendmer::core::options::RelayModeOption;
+    use sendmer::core::results::SenderTransferStatus;
     use std::path::PathBuf;
 
     fn sample_common_args() -> CommonArgs {
@@ -331,5 +340,24 @@ mod tests {
         let options = receive_options(None, &common);
 
         assert!(options.output_dir.is_none());
+    }
+
+    #[tokio::test]
+    async fn sender_wait_ignores_aborted_receiver_status() {
+        let (status_tx, mut status_rx) = tokio::sync::watch::channel(SenderTransferStatus::Idle);
+        status_tx
+            .send(SenderTransferStatus::Aborted)
+            .expect("status receiver should be present");
+        let wait = wait_for_send_shutdown_with_signal(
+            std::future::pending::<std::io::Result<()>>(),
+            &mut status_rx,
+        );
+        tokio::pin!(wait);
+
+        tokio::select! {
+            biased;
+            result = &mut wait => panic!("an aborted receiver must not stop the sender: {result:?}"),
+            _ = tokio::task::yield_now() => {}
+        }
     }
 }
