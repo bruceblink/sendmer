@@ -84,7 +84,7 @@ bash scripts/install-git-hooks.sh
 - `cargo test --locked --workspace --all-features --bins --tests --examples`
 - `git status --short` 为空，且发布说明会包含本次变更和验证结果。
 
-release workflow 会再次校验标签版本与 `Cargo.toml`，并在构建产物上传前执行同一组质量门禁。
+release workflow 会再次校验标签版本与 `Cargo.toml`，让 create/build/publish 全部使用该标签，并在构建产物上传前执行同一组质量门禁。
 
 ## 提交与推送
 在本地确认 lint 与测试通过后提交并推送：
