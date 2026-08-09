@@ -205,6 +205,7 @@ jobs:
           test -s "$NAME/BUILD-METADATA.txt"
           grep -Fqx "sendmer_version=$VERSION" "$NAME/BUILD-METADATA.txt"
           grep -Fqx "rust_target=${{ matrix.target }}" "$NAME/BUILD-METADATA.txt"
+          grep -Fqx "source_commit=$SOURCE_COMMIT" "$NAME/BUILD-METADATA.txt"
 
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}.exe" "$NAME/"
