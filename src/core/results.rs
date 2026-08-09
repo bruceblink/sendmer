@@ -53,6 +53,10 @@ impl SendResult {
     }
 
     /// Shut down the active share, release store handles, and remove its temporary blob data.
+    ///
+    /// Iroh may need a few seconds to notify peers before closing an unhealthy QUIC
+    /// connection. Wait for that shutdown so file-backed handles are released before
+    /// removing the sender-owned directory.
     pub async fn shutdown(self) -> anyhow::Result<()> {
         let Self {
             router,
@@ -64,15 +68,7 @@ impl SendResult {
         } = self;
 
         drop(temp_tag);
-        let shutdown_result = match tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            router.shutdown(),
-        )
-        .await
-        {
-            Ok(result) => result.map_err(anyhow::Error::from),
-            Err(error) => Err(error.into()),
-        };
+        let shutdown_result = router.shutdown().await.map_err(anyhow::Error::from);
 
         // Windows cannot remove the blob directory while router/store handles still own files.
         drop(router);
@@ -122,7 +118,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sender_shutdown_removes_blob_store_after_releasing_handles() {
+    async fn sender_shutdown_closes_endpoint_before_removing_blob_store() {
         let source_dir = tempfile::tempdir().expect("source directory");
         let source_file = source_dir.path().join("source.bin");
         tokio::fs::write(&source_file, b"shutdown cleanup")
@@ -137,10 +133,12 @@ mod tests {
             .await
             .expect("start sender");
         let blobs_data_dir = result.blobs_data_dir.clone();
+        let endpoint = result.router.endpoint().clone();
         assert!(blobs_data_dir.exists());
 
         result.shutdown().await.expect("shutdown sender");
 
+        assert!(endpoint.is_closed(), "shutdown should close the endpoint");
         assert!(!blobs_data_dir.exists());
     }
 }
