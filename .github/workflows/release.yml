@@ -106,6 +106,7 @@ jobs:
             echo "Release $VERSION already exists, skip create."
           else
             gh release create "$VERSION" \
+              --verify-tag \
               --title "$VERSION" \
               --generate-notes
           fi
