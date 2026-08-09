@@ -227,7 +227,23 @@ jobs:
           fi
 
           test -s "$ASSET"
+          CHECKSUM="${ASSET}.sha256"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            HASH="$(powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath '${ASSET}').Hash.ToLowerInvariant()")"
+            printf '%s  %s\n' "$HASH" "$(basename "$ASSET")" > "$CHECKSUM"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            shasum -a 256 "$ASSET" > "$CHECKSUM"
+          else
+            sha256sum "$ASSET" > "$CHECKSUM"
+          fi
+
+          test -s "$CHECKSUM"
+          CHECKSUM_HASH="$(awk '{ print $1 }' "$CHECKSUM")"
+          CHECKSUM_ASSET="$(awk '{ print $2 }' "$CHECKSUM")"
+          [[ "$CHECKSUM_HASH" =~ ^[0-9a-fA-F]{64}$ ]]
+          test "$CHECKSUM_ASSET" = "$(basename "$ASSET")"
           echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
 
       - name: Upload release asset
         if: github.event_name == 'push' || github.event.inputs.upload_artifacts == 'true'
@@ -235,9 +251,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.create-release.outputs.release_version }}
           RELEASE_ASSET: ${{ steps.package.outputs.asset }}
+          RELEASE_CHECKSUM: ${{ steps.package.outputs.checksum }}
         shell: bash
         run: |
-          gh release upload "$RELEASE_VERSION" "$RELEASE_ASSET" --clobber
+          gh release upload "$RELEASE_VERSION" "$RELEASE_ASSET" "$RELEASE_CHECKSUM" --clobber
 
   publish-crate:
     name: Publish crate to crates.io
