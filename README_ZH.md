@@ -25,7 +25,7 @@ sendmer 使用 256 位节点 ID，因此 ticket 在 IP 地址变化后仍可继�
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 
 # 或安装指定版本
-$env:SENDMER_VERSION="v0.5.0"
+$env:SENDMER_VERSION="v0.5.1"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
@@ -54,7 +54,7 @@ C:\Users\<用户名>\.sendmer\bin\sendmer.exe
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 
 # 或安装指定版本
-SENDMER_VERSION=v0.5.0 \
+SENDMER_VERSION=v0.5.1 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 

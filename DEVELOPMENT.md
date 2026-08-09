@@ -88,7 +88,7 @@ bash scripts/install-git-hooks.sh
 本地可以先运行无上传演练，脚本会在临时 worktree 中校验本地/远端标签并执行同一组质量门禁：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rehearse-release.ps1 -Tag v0.5.0 -RequireRemoteTag
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rehearse-release.ps1 -Tag v0.5.1 -RequireRemoteTag
 ```
 
 release workflow 会再次校验标签版本与 `Cargo.toml`，让 quality-gate/create/build/publish 全部使用该标签，并在构建产物上传前执行同一组质量门禁和 `.sha256` sidecar 校验。
