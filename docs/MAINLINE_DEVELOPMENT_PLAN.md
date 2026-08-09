@@ -14,6 +14,7 @@
 - 已加入 `scripts/rehearse-release.ps1`：在临时 worktree 中校验本地/远端 tag，并执行与 release workflow 相同的 fmt、clippy、check、package、test 门禁，不上传资产。
 - release workflow 的 `workflow_dispatch` 版本输入现在通过环境变量传递并先做严格 semver 校验，避免未校验字符串进入 shell。
 - `publish-crate` 现在先查询 crates.io：已存在的不可变版本跳过发布，查询异常则 fail closed，支持 release 重试幂等化。
+- CI 新增固定版本 `actionlint` job，持续检查 `.github/workflows/` 的语义和表达式，降低 release workflow 回归风险。
 - M3 下一步是做一次不上传资产的 tag/release 演练，确认完整链路的失败定位信息。
 
 ## Recommended approach
