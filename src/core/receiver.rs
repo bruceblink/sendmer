@@ -453,20 +453,49 @@ fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
         path.push(part);
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let canonical_parent = path
+    let parent = path
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("invalid export target"))?
-        .canonicalize()?;
+        .ok_or_else(|| anyhow::anyhow!("invalid export target"))?;
+    let canonical_existing_parent = canonicalize_existing_parent(parent)?;
+    anyhow::ensure!(
+        canonical_existing_parent.starts_with(&canonical_root),
+        "final path must be within the root directory"
+    );
+    std::fs::create_dir_all(parent)?;
+
+    let canonical_parent = parent.canonicalize()?;
     anyhow::ensure!(
         canonical_parent.starts_with(&canonical_root),
         "final path must be within the root directory"
     );
 
+    // A dangling final symlink is invisible to `Path::exists`, but exporting to it
+    // would still follow the link and write outside the validated output root.
+    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "export target must not be a symbolic link"
+        );
+    }
+
     Ok(path)
+}
+
+/// Resolve the nearest existing ancestor so symlink escapes are rejected before
+/// creating any missing export directories outside the configured root.
+fn canonicalize_existing_parent(path: &Path) -> anyhow::Result<PathBuf> {
+    let mut current = path;
+    loop {
+        match std::fs::symlink_metadata(current) {
+            Ok(_) => return Ok(current.canonicalize()?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                current = current
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("invalid export target"))?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 // Helper: prepare endpoint, temp dir and FsStore
@@ -708,6 +737,48 @@ mod tests {
         let err =
             get_export_path(&root_file, "dir/file.txt").expect_err("file root should be rejected");
         assert!(err.to_string().contains("is not a directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_export_path_rejects_symlinked_parent_outside_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("downloads");
+        let outside = temp_dir.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("create outside directory");
+        std::fs::create_dir_all(&root).expect("create output directory");
+        symlink(&outside, root.join("nested")).expect("create parent symlink");
+
+        let err = get_export_path(&root, "nested/file.txt")
+            .expect_err("symlinked parent outside root should be rejected");
+        assert!(err.to_string().contains("within the root"));
+        assert!(
+            !outside.join("file.txt").exists(),
+            "outside target must not be created"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_export_path_rejects_dangling_target_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("downloads");
+        let outside_target = temp_dir.path().join("outside").join("file.txt");
+        std::fs::create_dir_all(root.parent().expect("root parent")).expect("create temp root");
+        std::fs::create_dir_all(&root).expect("create output directory");
+        symlink(&outside_target, root.join("file.txt")).expect("create dangling target symlink");
+
+        let err = get_export_path(&root, "file.txt")
+            .expect_err("dangling target symlink should be rejected");
+        assert!(err.to_string().contains("symbolic link"));
+        assert!(
+            !outside_target.exists(),
+            "outside target must remain absent"
+        );
     }
 
     #[test]
