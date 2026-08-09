@@ -72,6 +72,8 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.version }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -135,6 +137,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.create-release.outputs.release_version }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -164,9 +167,10 @@ jobs:
         run: |
           VERSION="${{ needs.create-release.outputs.release_version }}"
           NAME="${{ env.BIN_NAME }}-${VERSION}-${{ matrix.target }}"
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
           mkdir "$NAME"
           printf 'sendmer_version=%s\nrust_target=%s\nsource_commit=%s\n' \
-            "$VERSION" "${{ matrix.target }}" "$GITHUB_SHA" > "$NAME/BUILD-METADATA.txt"
+            "$VERSION" "${{ matrix.target }}" "$SOURCE_COMMIT" > "$NAME/BUILD-METADATA.txt"
           test -s "$NAME/BUILD-METADATA.txt"
           grep -Fqx "sendmer_version=$VERSION" "$NAME/BUILD-METADATA.txt"
           grep -Fqx "rust_target=${{ matrix.target }}" "$NAME/BUILD-METADATA.txt"
@@ -202,6 +206,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.release_version }}
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Publish crate
