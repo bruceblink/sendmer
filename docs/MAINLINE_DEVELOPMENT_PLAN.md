@@ -13,6 +13,7 @@
 - push 与 workflow_dispatch 的 quality-gate/create/build/publish job 现在统一 checkout 已验证的 tag，构建元数据记录真实 tag commit。
 - 已加入 `scripts/rehearse-release.ps1`：在临时 worktree 中校验本地/远端 tag，并执行与 release workflow 相同的 fmt、clippy、check、package、test 门禁，不上传资产。
 - release workflow 的 `workflow_dispatch` 版本输入现在通过环境变量传递并先做严格 semver 校验，避免未校验字符串进入 shell。
+- `publish-crate` 现在先查询 crates.io：已存在的不可变版本跳过发布，查询异常则 fail closed，支持 release 重试幂等化。
 - M3 下一步是做一次不上传资产的 tag/release 演练，确认完整链路的失败定位信息。
 
 ## Recommended approach
