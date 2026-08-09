@@ -26,7 +26,7 @@
 - release 资产现在同时上传 `.sha256` sidecar，Windows 与 Unix 安装器会在解压前校验 SHA-256 和资产文件名；Unix 端会归一化 hash 大小写以兼容标准 sidecar 格式。
 - Bash 安装器现在也正确支持 MINGW/MSYS/Cygwin：选择 Windows ZIP 资产、校验 sidecar 并解压 `sendmer.exe`，避免请求不存在的 Windows tarball。
 - PowerShell 安装器现在为每次安装使用唯一临时目录，并通过 `finally` 清理下载产物；CI 用模拟 checksum 下载失败覆盖原始错误保留和失败后无残留。
-- M3 已完成 `v0.5.0` 的本地不上传 tag/release 演练（`scripts/rehearse-release.ps1 -Tag v0.5.0 -RequireRemoteTag`）：临时 worktree 中的 fmt、clippy、check、package、test 全部通过，且演练自动清理 worktree；真正的 GitHub Actions workflow_dispatch 演练仍需在同步当前 workflow 后进行。
+- M3 已完成 `v0.5.0` 的本地不上传 tag/release 演练（`scripts/rehearse-release.ps1 -Tag v0.5.0 -RequireRemoteTag`）：临时 worktree 中的 fmt、clippy、check、package、test 全部通过，且演练自动清理 worktree；GitHub Actions 的无上传 `workflow_dispatch` 演练也已成功，质量门禁和五个目标的构建/打包均通过，Release 创建、资产上传和 crate 发布均被跳过（[run 31315956210](https://github.com/bruceblink/sendmer/actions/runs/31315956210)）。
 
 ## Recommended approach
 
