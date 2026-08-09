@@ -100,24 +100,36 @@ async fn export(db: &Store, collection: Collection, output_dir: &Path) -> anyhow
             })
             .stream()
             .await;
+        process_export_stream(&mut stream, name).await?;
+    }
+    Ok(())
+}
 
-        while let Some(item) = stream.next().await {
-            match item {
-                ExportProgressItem::Size(_size) => {
-                    // Skip progress updates for library version
-                }
-                ExportProgressItem::CopyProgress(_offset) => {
-                    // Skip progress updates for library version
-                }
-                ExportProgressItem::Done => {
-                    // Export completed
-                }
-                ExportProgressItem::Error(cause) => {
-                    anyhow::bail!("error exporting {}: {}", name, cause);
-                }
+/// 消费一个文件的导出进度流，并且只在收到 `Done` 后报告成功。
+///
+/// 底层通道提前关闭时，可能已经留下不完整的目标文件；调用方会把该错误纳入
+/// 接收失败清理流程，而不会把半导出误报为成功。
+async fn process_export_stream<S>(stream: &mut S, name: &str) -> anyhow::Result<()>
+where
+    S: n0_future::Stream<Item = ExportProgressItem> + Unpin + Send,
+{
+    let mut seen_done = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            ExportProgressItem::Size(_) | ExportProgressItem::CopyProgress(_) => {
+                // This library version does not expose export progress to the caller.
+            }
+            ExportProgressItem::Done => {
+                seen_done = true;
+                break;
+            }
+            ExportProgressItem::Error(cause) => {
+                anyhow::bail!("error exporting {name}: {cause}");
             }
         }
     }
+
+    anyhow::ensure!(seen_done, "export stream ended before completion");
     Ok(())
 }
 
@@ -672,12 +684,13 @@ mod tests {
         ReceiveRetryPolicy, base_endpoint_builder, close_receive_endpoint,
         completed_local_total_files, completed_local_total_files_from_children,
         emit_receive_failed, finalize_cleanup, finalize_failed_receive, get_export_path,
-        process_get_stream, receive_failed_message, receive_stream_ended_message,
-        resolve_output_dir, size_fetch_backoff, validate_path_component,
+        process_export_stream, process_get_stream, receive_failed_message,
+        receive_stream_ended_message, resolve_output_dir, size_fetch_backoff,
+        validate_path_component,
     };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
     use crate::core::options::{ReceiveOptions, RelayModeOption};
-    use iroh_blobs::api::remote::GetProgressItem;
+    use iroh_blobs::api::{blobs::ExportProgressItem, remote::GetProgressItem};
     use n0_future::stream;
     use std::path::Path;
     use std::sync::{Arc, Mutex as StdMutex};
@@ -878,6 +891,29 @@ mod tests {
             TransferEvent::Failed { role: Role::Receiver, message }
                 if message == "download stream ended before completion"
         )));
+    }
+
+    #[test]
+    fn process_export_stream_rejects_early_end() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let mut s = stream::empty::<ExportProgressItem>();
+            let err = process_export_stream(&mut s, "report.txt")
+                .await
+                .expect_err("stream ending early should fail");
+            assert!(err.to_string().contains("ended before completion"));
+        });
+    }
+
+    #[test]
+    fn process_export_stream_accepts_done() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let mut s = stream::iter([ExportProgressItem::Done]);
+            process_export_stream(&mut s, "report.txt")
+                .await
+                .expect("done item should complete export");
+        });
     }
 
     #[test]
