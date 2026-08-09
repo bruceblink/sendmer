@@ -8,6 +8,7 @@ use crate::core::options::{ReceiveOptions, ReceiveRetryPolicy};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
 use crate::core::storage::{load_fs_store, unique_temp_dir};
+use anyhow::Context;
 use iroh::{Endpoint, address_lookup::DnsAddressLookup};
 use iroh_blobs::{
     api::{
@@ -190,10 +191,16 @@ async fn receive_once(
     let event_emitter =
         TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
     let download = download_missing_data(context, app_handle).await?;
-    let collection = context.load_collection().await?;
+    let collection = context
+        .load_collection()
+        .await
+        .context("load received collection")?;
     emit_collection_file_names(&event_emitter, &collection);
-    let root_item_path = resolve_root_item_path(output_dir, &collection)?;
-    export(&context.db, collection, output_dir).await?;
+    let root_item_path =
+        resolve_root_item_path(output_dir, &collection).context("resolve received output path")?;
+    export(&context.db, collection, output_dir)
+        .await
+        .context("export received files")?;
     event_emitter.emit_completed();
 
     Ok(ReceiveArtifacts {
@@ -210,8 +217,14 @@ fn emit_collection_file_names(emitter: &TransferEventEmitter, collection: &Colle
     }
 }
 
+/// Format a user-facing failure while keeping both stage context and root cause.
 fn receive_failed_message(error: &anyhow::Error) -> String {
-    format!("error: {error}")
+    let details = error
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ");
+    format!("error: {details}")
 }
 
 fn receive_failed_message_from_get_error(error: &GetError) -> String {
@@ -313,7 +326,8 @@ async fn download_missing_data(
         &context.ticket.hash(),
         context.retry_policy,
     )
-    .await?;
+    .await
+    .context("fetch remote collection sizes")?;
     let plan = DownloadPlan::from_sizes(&sizes);
     execute_download(context, local.missing(), &plan, &app_handle).await?;
 
@@ -342,10 +356,13 @@ async fn execute_download(
     let connection = context
         .endpoint
         .connect(context.addr.clone(), iroh_blobs::protocol::ALPN)
-        .await?;
+        .await
+        .context("connect to sender for blob download")?;
     let get = context.db.remote().execute_get(connection, missing);
     let mut stream = get.stream();
-    process_get_stream(&mut stream, plan.payload_size, app_handle).await
+    process_get_stream(&mut stream, plan.payload_size, app_handle)
+        .await
+        .context("download blob stream")
 }
 
 fn collect_file_names(collection: &Collection) -> Vec<String> {
@@ -812,6 +829,16 @@ mod tests {
     fn receive_failed_message_wraps_error_with_prefix() {
         let message = receive_failed_message(&anyhow::anyhow!("boom"));
         assert_eq!(message, "error: boom");
+    }
+
+    #[test]
+    fn receive_failed_message_preserves_failure_stage_context() {
+        let error = anyhow::anyhow!("connection refused").context("fetch remote collection sizes");
+        let message = receive_failed_message(&error);
+        assert_eq!(
+            message,
+            "error: fetch remote collection sizes: connection refused"
+        );
     }
 
     #[test]
