@@ -4,6 +4,12 @@
 
 你现在希望的是“主线开发计划”（持续 1~2 个版本迭代），而不是单次缺陷修复。当前仓库已具备可发布基线（send/receive 主流程、清理策略、路径校验、并发限流、CI 基础链路），主线应聚焦“稳定性与发布工程化增强”，在不引入大功能的前提下持续降低回归风险、提升发布确定性。
 
+## 当前进度（2026-08-09）
+
+- M1 的默认输出目录、失败事件和临时目录清理已完成，并有 CLI/单元回归覆盖。
+- 当前进入 M2，先处理接收端重试参数边界：在创建 endpoint 和临时存储前拒绝无效策略，避免零次尝试产生无法定位的失败。
+- 本轮完成后，按以下顺序继续推进：路径/符号链接边界回归，中断后的资源回收回归，最后再进入 M3 发布链路验收。
+
 ## Recommended approach
 
 ### 里程碑 M1（1~2 周）：稳定性与行为一致性收敛
@@ -47,6 +53,9 @@
   - `src/core/sender.rs`
   - `src/core/receiver.rs`
   - `tests/cli.rs`
+- 校验 `ReceiveRetryPolicy` 的最小有效边界（至少一次 size-fetch、chunk size 非零），并在初始化网络和临时存储前失败
+  - `src/core/options.rs`
+  - `src/core/receiver.rs`
 - 补中断与重试相关回归（Ctrl+C、瞬时连接失败重试后的清理）
   - `src/core/receiver.rs`
   - `src/bin/sendmer.rs`
@@ -63,6 +72,7 @@
 - `cargo fmt --all -- --check`
 - `cargo test --locked --workspace --all-features --bins --tests --examples`
 - 行为回归点：路径 traversal/symlink 边界拒绝、中断后资源回收、重试失败后清理一致
+- 行为回归点：无效重试策略在创建临时目录前被拒绝，零毫秒 backoff 仍可用于快速重试
 
 ---
 
