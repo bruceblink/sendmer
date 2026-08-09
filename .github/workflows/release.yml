@@ -274,3 +274,33 @@ jobs:
               exit 1
               ;;
           esac
+
+  release-summary:
+    name: Release Run Summary
+    if: always()
+    needs: [release-context, quality-gate, create-release, build-release, publish-crate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write job results to summary
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          CONTEXT_RESULT: ${{ needs.release-context.result }}
+          QUALITY_RESULT: ${{ needs.quality-gate.result }}
+          CREATE_RESULT: ${{ needs.create-release.result }}
+          BUILD_RESULT: ${{ needs.build-release.result }}
+          PUBLISH_RESULT: ${{ needs.publish-crate.result }}
+        shell: bash
+        run: |
+          {
+            echo "## Release workflow summary"
+            echo "- tag: \`${RELEASE_VERSION:-unknown}\`"
+            echo "- run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo ""
+            echo "| job | result |"
+            echo "| --- | --- |"
+            echo "| release-context | ${CONTEXT_RESULT} |"
+            echo "| quality-gate | ${QUALITY_RESULT} |"
+            echo "| create-release | ${CREATE_RESULT} |"
+            echo "| build-release | ${BUILD_RESULT} |"
+            echo "| publish-crate | ${PUBLISH_RESULT} |"
+          } >> "$GITHUB_STEP_SUMMARY"
