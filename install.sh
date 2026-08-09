@@ -99,6 +99,7 @@ if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-fA-F]{64}$ || "$EXPECTED_FILE" != "$ARCHIVE
   echo "❌ Invalid checksum file for $ARCHIVE_NAME"
   exit 1
 fi
+EXPECTED_SHA256="${EXPECTED_SHA256,,}"
 
 if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL_SHA256="$(sha256sum "$ARCHIVE" | awk '{ print $1 }')"
@@ -108,6 +109,7 @@ else
   echo "❌ No SHA-256 utility found (sha256sum or shasum)"
   exit 1
 fi
+ACTUAL_SHA256="${ACTUAL_SHA256,,}"
 
 if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
   echo "❌ Checksum verification failed for $ARCHIVE_NAME"

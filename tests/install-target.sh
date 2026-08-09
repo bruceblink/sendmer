@@ -8,6 +8,8 @@ trap 'rm -rf -- "$TEST_ROOT"' EXIT
 export HOME="$TEST_ROOT/home"
 export SENDMER_VERSION="v0.5.0"
 export ARCHIVE_RECORD
+UPPERCASE_HASH='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+LOWERCASE_HASH="${UPPERCASE_HASH,,}"
 
 uname() {
   case "$1" in
@@ -31,14 +33,14 @@ curl() {
 
   [[ -n "$output" ]]
   if [[ "$output" == *.sha256 ]]; then
-    printf '%064d  %s\n' 0 "$(basename "${output%.sha256}")" > "$output"
+    printf '%s  %s\n' "$UPPERCASE_HASH" "$(basename "${output%.sha256}")" > "$output"
   else
     printf 'fixture archive' > "$output"
   fi
 }
 
 sha256sum() {
-  printf '%064d  %s\n' 0 "$1"
+  printf '%s  %s\n' "$LOWERCASE_HASH" "$1"
 }
 
 # Record the selected archive and create the executable expected after extraction.
