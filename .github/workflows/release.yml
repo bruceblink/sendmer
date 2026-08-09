@@ -69,6 +69,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify release version matches Cargo package
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          CRATE_VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; data = json.loads(sys.stdin.buffer.read().decode("utf-8-sig")); print(next(package["version"] for package in data["packages"] if package["name"] == "sendmer"))')"
+          EXPECTED_VERSION="v${CRATE_VERSION}"
+
+          if [[ "${RELEASE_VERSION}" != v* ]]; then
+            echo "Release version must start with v: ${RELEASE_VERSION}"
+            exit 1
+          fi
+
+          if [[ "${RELEASE_VERSION}" != "${EXPECTED_VERSION}" ]]; then
+            echo "Release version ${RELEASE_VERSION} does not match Cargo package ${EXPECTED_VERSION}"
+            exit 1
+          fi
+
+          echo "Release version verified: ${RELEASE_VERSION}"
+
       - name: Ensure GitHub release exists
         if: github.event_name == 'push' || github.event.inputs.create_release == 'true'
         env:
