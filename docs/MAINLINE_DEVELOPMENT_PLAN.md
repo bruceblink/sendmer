@@ -1,10 +1,10 @@
 # 主线开发计划（sendmer）
 
-> 本文保留 M1-M3 的完成记录。`v0.5.1` 之后的前瞻计划、版本边界和验收门槛见 [FUTURE_DEVELOPMENT_PLAN.md](FUTURE_DEVELOPMENT_PLAN.md)。
+> 本文保留 M1-M3 的完成记录。`v0.6.0` 之后的前瞻计划、版本边界和验收门槛见 [FUTURE_DEVELOPMENT_PLAN.md](FUTURE_DEVELOPMENT_PLAN.md)。
 
 ## Context
 
-`v0.5.1` 已建立可发布基线：send/receive 主流程、失败清理、路径安全、并发接收、事件通知和 GitHub Release 门禁均已落地。后续主线应先解决数据完整性和可恢复性，再稳定库 API，最后探索持久化会话、安全增强和更大规模传输，避免在同一版本同时引入协议、GUI 和服务端架构。
+`v0.6.0` 已建立可靠接收基线：send/receive 主流程、失败清理、路径安全、原子导出、重连重试、超时控制、并发接收、事件通知和 GitHub Release 门禁均已落地。后续主线应先稳定库 API 和可观测性，再探索持久化会话、安全增强和更大规模传输，避免在同一版本同时引入协议、GUI 和服务端架构。
 
 ## 当前进度（2026-08-11）
 
@@ -30,6 +30,9 @@
 - Bash 安装器现在也正确支持 MINGW/MSYS/Cygwin：选择 Windows ZIP 资产、校验 sidecar 并解压 `sendmer.exe`，避免请求不存在的 Windows tarball。
 - PowerShell 安装器现在为每次安装使用唯一临时目录，并通过 `finally` 清理下载产物；CI 用模拟 checksum 下载失败覆盖原始错误保留和失败后无残留。
 - M3 已完成 `v0.5.0` 的本地不上传 tag/release 演练（`scripts/rehearse-release.ps1 -Tag v0.5.0 -RequireRemoteTag`）：临时 worktree 中的 fmt、clippy、check、package、test 全部通过，且演练自动清理 worktree；GitHub Actions 的无上传 `workflow_dispatch` 演练也已成功，质量门禁和五个目标的构建/打包均通过，Release 创建、资产上传和 crate 发布均被跳过（[run 31315956210](https://github.com/bruceblink/sendmer/actions/runs/31315956210)）。
+- `v0.6.0` 已完成原子 staging 导出和 native no-replace 提交：失败不会留下半目标，已有文件、目录或符号链接保持不变。
+- `v0.6.0` 已完成下载阶段重连重试和可选连接、元数据、下载空闲超时；未设置 timeout 时保持既有行为，无效 timeout 在创建 endpoint 和临时目录前失败。
+- `v0.6.0` 固化 fail-only 冲突策略，并在发送端拒绝空目录、空子目录和符号链接，避免当前 file-only collection 格式静默丢失数据。
 
 ## Recommended approach
 

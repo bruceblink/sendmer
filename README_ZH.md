@@ -25,7 +25,7 @@ sendmer 使用 256 位节点 ID，因此 ticket 在 IP 地址变化后仍可继�
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 
 # 或安装指定版本
-$env:SENDMER_VERSION="v0.5.1"
+$env:SENDMER_VERSION="v0.6.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
@@ -54,7 +54,7 @@ C:\Users\<用户名>\.sendmer\bin\sendmer.exe
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 
 # 或安装指定版本
-SENDMER_VERSION=v0.5.1 \
+SENDMER_VERSION=v0.6.0 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
@@ -123,7 +123,9 @@ sendmer receive <ticket>
 sendmer receive <ticket>
 ```
 
-接收过程中会先将数据写入系统临时目录下的临时缓存目录，完成后再清理该目录。
+接收过程中会先将数据写入系统临时目录下的临时缓存目录。只有所有导出条目都报告完成后，才会把文件或目录发布到最终目标；接收失败会清理临时数据，不会替换已有目标。
+
+目录必须包含常规文件。由于当前 collection 格式不能安全保留目录元数据，sendmer 会拒绝空目录、含空子目录的目录和符号链接。
 
 ## 常用参数
 
@@ -139,6 +141,17 @@ sendmer receive <ticket>
 仅 `receive` 支持：
 
 - `--output-dir <path>`：指定接收文件的输出目录（默认：当前工作目录）
+- `--retry-limit <count>`：blob 下载阶段的最大尝试次数（默认：`3`）
+- `--retry-backoff-ms <milliseconds>`：两次 blob 下载尝试之间的等待时间（默认：`250`）
+- `--connect-timeout-ms <milliseconds>`：每次连接发送端的可选超时
+- `--metadata-timeout-ms <milliseconds>`：获取 collection 元数据的可选超时
+- `--download-idle-timeout-ms <milliseconds>`：下载流长期没有更新时的可选超时
+
+### 接收安全语义
+
+本版本唯一支持的冲突策略是 **fail**。最终目标已存在为文件、目录或符号链接时，接收会失败并保持原内容不变；sendmer 不会合并、重命名、跳过或覆盖已有目标。含多个顶层根的外部 collection 也会被拒绝，因为它们不能作为一个原子目标提交。
+
+重试会复用同一次 receive 进程已获得的数据，但不代表跨进程的断点续传；持久化 cache 和真正续传会在后续版本实现。
 
 仅 `send` 支持：
 

@@ -25,7 +25,7 @@ sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses chan
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 
 # Or install a specific version
-$env:SENDMER_VERSION="v0.5.1"
+$env:SENDMER_VERSION="v0.6.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
@@ -54,7 +54,7 @@ After installation:
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 
 # Or install a specific version
-SENDMER_VERSION=v0.5.1 \
+SENDMER_VERSION=v0.6.0 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
@@ -123,7 +123,9 @@ Example:
 sendmer receive <ticket>
 ```
 
-Receive-side data is staged in a temporary directory under the system temp directory and cleaned up after completion.
+Receive-side data is first staged in a temporary directory under the system temp directory. Final files or directories are published only after every export reports completion; a failed receive cleans its temporary data without replacing an existing target.
+
+Directories must contain regular files. sendmer rejects empty directories, directories with empty subdirectories, and symbolic links because the current collection format cannot preserve them safely.
 
 ## Useful Options
 
@@ -139,6 +141,17 @@ Common options are available on both `send` and `receive`:
 Receive-specific options:
 
 - `--output-dir <path>`: set where received files are written (default: current working directory)
+- `--retry-limit <count>`: maximum attempts for the blob download phase (default: `3`)
+- `--retry-backoff-ms <milliseconds>`: delay between blob download attempts (default: `250`)
+- `--connect-timeout-ms <milliseconds>`: optional timeout for each sender connection attempt
+- `--metadata-timeout-ms <milliseconds>`: optional timeout for a collection metadata request
+- `--download-idle-timeout-ms <milliseconds>`: optional timeout while the download stream produces no updates
+
+### Receive Safety
+
+The only conflict policy in this release is **fail**. If the destination root already exists as a file, directory, or symbolic link, receive fails and leaves it unchanged; sendmer never merges into, renames, skips, or overwrites an existing target. Collections with multiple top-level roots are also rejected because they cannot be committed as one atomic destination.
+
+Retry reuses data already obtained by the current receive process, but it is not cross-process resumable transfer. Persistent cache and resume support are planned separately.
 
 Send-specific options:
 

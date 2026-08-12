@@ -74,10 +74,9 @@ bash scripts/install-git-hooks.sh
 
 ## 发布前检查清单
 
-在创建 `v<version>` 标签前，按以下顺序确认：
+在创建并推送 `v<version>` 标签前，按以下顺序确认：
 
 - `Cargo.toml` 的 package 版本与准备创建的标签一致。
-- 远端标签已存在，并指向准备发布的提交。
 - `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7`
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
@@ -85,13 +84,13 @@ bash scripts/install-git-hooks.sh
 - `cargo test --locked --workspace --all-features --bins --tests --examples`
 - `git status --short` 为空，且发布说明会包含本次变更和验证结果。
 
-本地可以先运行无上传演练，脚本会在临时 worktree 中校验本地/远端标签并执行同一组质量门禁：
+本地质量门通过后，先创建本地标签并运行无上传演练；脚本会在临时 worktree 中校验标签版本并执行同一组质量门禁：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rehearse-release.ps1 -Tag v0.5.1 -RequireRemoteTag
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rehearse-release.ps1 -Tag v0.6.0
 ```
 
-release workflow 会再次校验标签版本与 `Cargo.toml`，让 quality-gate/create/build/publish 全部使用该标签，并在构建产物上传前执行同一组质量门禁和 `.sha256` sidecar 校验。
+演练通过后推送标签；推送标签会触发 release workflow。随后可使用 `-RequireRemoteTag -SkipQualityGate` 确认远端标签仍指向同一提交。release workflow 会再次校验标签版本与 `Cargo.toml`，让 quality-gate/create/build/publish 全部使用该标签，并在构建产物上传前执行同一组质量门禁和 `.sha256` sidecar 校验。
 
 ## 提交与推送
 在本地确认 lint 与测试通过后提交并推送：
