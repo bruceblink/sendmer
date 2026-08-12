@@ -96,8 +96,8 @@ async fn export_atomically(
     collection: Collection,
     output_dir: &Path,
 ) -> anyhow::Result<()> {
-    let roots = collection_root_names(&collection)?;
-    ensure_export_roots_available(output_dir, &roots)?;
+    let root = collection_root_name(&collection)?;
+    ensure_export_root_available(output_dir, &root)?;
     let staging_dir = create_staging_dir(output_dir)?;
 
     if let Err(error) = export_to_staging(db, &collection, &staging_dir).await {
@@ -105,7 +105,7 @@ async fn export_atomically(
         return Err(error);
     }
 
-    if let Err(error) = commit_staged_export(&staging_dir, output_dir, &roots) {
+    if let Err(error) = commit_staged_export(&staging_dir, output_dir, &root) {
         cleanup_staging_dir(&staging_dir);
         return Err(error);
     }
@@ -134,7 +134,11 @@ async fn export_to_staging(
     Ok(())
 }
 
-fn collection_root_names(collection: &Collection) -> anyhow::Result<Vec<String>> {
+/// Return the only top-level root a collection may export atomically.
+///
+/// sendmer creates one-root collections for both files and directories.  External
+/// multi-root collections are rejected instead of risking a partial commit.
+fn collection_root_name(collection: &Collection) -> anyhow::Result<String> {
     let mut roots = std::collections::BTreeSet::new();
     for (name, _) in collection.iter() {
         let root = name
@@ -146,11 +150,17 @@ fn collection_root_names(collection: &Collection) -> anyhow::Result<Vec<String>>
         roots.insert(root.to_owned());
     }
 
-    anyhow::ensure!(!roots.is_empty(), "collection is empty");
-    Ok(roots.into_iter().collect())
+    let Some(root) = roots.pop_first() else {
+        anyhow::bail!("collection is empty")
+    };
+    anyhow::ensure!(
+        roots.is_empty(),
+        "collection contains multiple top-level roots and cannot be exported atomically"
+    );
+    Ok(root)
 }
 
-fn ensure_export_roots_available(output_dir: &Path, roots: &[String]) -> anyhow::Result<()> {
+fn ensure_export_root_available(output_dir: &Path, root: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all(output_dir)?;
     anyhow::ensure!(
         output_dir.is_dir(),
@@ -158,12 +168,10 @@ fn ensure_export_roots_available(output_dir: &Path, roots: &[String]) -> anyhow:
         output_dir.display()
     );
 
-    for root in roots {
-        validate_path_component(root)?;
-        let target = output_dir.join(root);
-        if std::fs::symlink_metadata(&target).is_ok() {
-            anyhow::bail!("target {} already exists", target.display());
-        }
+    validate_path_component(root)?;
+    let target = output_dir.join(root);
+    if std::fs::symlink_metadata(&target).is_ok() {
+        anyhow::bail!("target {} already exists", target.display());
     }
 
     Ok(())
@@ -199,48 +207,107 @@ fn cleanup_staging_dir(path: &Path) {
     }
 }
 
-/// Rename complete top-level roots into place and roll back roots already committed on failure.
-fn commit_staged_export(
-    staging_dir: &Path,
-    output_dir: &Path,
-    roots: &[String],
-) -> anyhow::Result<()> {
-    for root in roots {
-        anyhow::ensure!(
-            staging_dir.join(root).exists(),
-            "staged export root {} is missing",
-            root
-        );
-        anyhow::ensure!(
-            std::fs::symlink_metadata(output_dir.join(root)).is_err(),
-            "target {} already exists",
-            output_dir.join(root).display()
-        );
-    }
+/// Commit the complete staging root without replacing a target created concurrently.
+fn commit_staged_export(staging_dir: &Path, output_dir: &Path, root: &str) -> anyhow::Result<()> {
+    validate_path_component(root)?;
+    let staged = staging_dir.join(root);
+    anyhow::ensure!(staged.exists(), "staged export root {root} is missing");
+    let target = output_dir.join(root);
+    anyhow::ensure!(
+        std::fs::symlink_metadata(&target).is_err(),
+        "target {} already exists",
+        target.display()
+    );
 
-    let mut committed = Vec::new();
-    for root in roots {
-        let staged = staging_dir.join(root);
-        let target = output_dir.join(root);
-        if let Err(error) = std::fs::rename(&staged, &target) {
-            for previous in committed.into_iter().rev() {
-                let staged_previous = staging_dir.join(&previous);
-                let target_previous = output_dir.join(&previous);
-                if let Err(rollback_error) = std::fs::rename(&target_previous, &staged_previous) {
-                    tracing::warn!(
-                        root = %previous,
-                        error = %rollback_error,
-                        "failed to roll back committed export root"
-                    );
-                }
-            }
-            return Err(error.into());
-        }
-        committed.push(root.clone());
-    }
+    move_staged_root_without_replacing(&staged, &target)?;
 
     std::fs::remove_dir(staging_dir)?;
     Ok(())
+}
+
+/// Move a staged export into place while preserving any target created by another process.
+///
+/// All release targets have a native no-replace rename primitive.  The fallback
+/// retains the preflight check for unsupported platforms, but is not used by releases.
+#[cfg(target_os = "linux")]
+fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::Result<()> {
+    let source = path_to_c_string(source)?;
+    let target = path_to_c_string(target)?;
+    // SAFETY: the paths are valid NUL-terminated strings and AT_FDCWD makes them absolute.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::Result<()> {
+    let source = path_to_c_string(source)?;
+    let target = path_to_c_string(target)?;
+    // SAFETY: the paths are valid NUL-terminated strings for renamex_np.
+    let result = unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn path_to_c_string(path: &Path) -> std::io::Result<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+
+    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "export path contains an interior NUL byte",
+        )
+    })
+}
+
+#[cfg(windows)]
+fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both UTF-16 paths are NUL-terminated and no replacement flag is set.
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(target).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("target {} already exists", target.display()),
+        ));
+    }
+    std::fs::rename(source, target)
 }
 
 /// 消费一个文件的导出进度流，并且只在收到 `Done` 后报告成功。
@@ -523,24 +590,8 @@ fn collect_file_names(collection: &Collection) -> Vec<String> {
 }
 
 fn resolve_root_item_path(output_dir: &Path, collection: &Collection) -> anyhow::Result<PathBuf> {
-    let mut names = collection.iter().map(|(name, _)| name);
-    let Some(first_name) = names.next() else {
-        anyhow::bail!("collection is empty")
-    };
-
-    let Some(first_root) = first_name.split('/').next().filter(|part| !part.is_empty()) else {
-        anyhow::bail!("collection contains invalid entry name")
-    };
-
-    if names
-        .filter_map(|name| name.split('/').next())
-        .any(|root| root != first_root)
-    {
-        return get_export_path(output_dir, first_name);
-    }
-
-    validate_path_component(first_root)?;
-    Ok(output_dir.join(first_root))
+    let root = collection_root_name(collection)?;
+    Ok(output_dir.join(root))
 }
 
 fn resolve_output_dir(output_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
@@ -820,15 +871,17 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ReceiveRetryPolicy, base_endpoint_builder, cleanup_staging_dir, close_receive_endpoint,
+        ReceiveRetryPolicy, base_endpoint_builder, close_receive_endpoint, collection_root_name,
         commit_staged_export, completed_local_total_files,
         completed_local_total_files_from_children, create_staging_dir, emit_receive_failed,
-        finalize_cleanup, finalize_failed_receive, get_export_path, process_export_stream,
-        process_get_stream, receive_failed_message, receive_stream_ended_message,
-        resolve_output_dir, size_fetch_backoff, validate_path_component,
+        finalize_cleanup, finalize_failed_receive, get_export_path,
+        move_staged_root_without_replacing, process_export_stream, process_get_stream,
+        receive_failed_message, receive_stream_ended_message, resolve_output_dir,
+        size_fetch_backoff, validate_path_component,
     };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
     use crate::core::options::{ReceiveOptions, RelayModeOption};
+    use iroh_blobs::Hash;
     use iroh_blobs::api::{blobs::ExportProgressItem, remote::GetProgressItem};
     use n0_future::stream;
     use std::path::Path;
@@ -931,7 +984,7 @@ mod tests {
         std::fs::create_dir_all(&staged_root).expect("staged root");
         std::fs::write(staged_root.join("file.txt"), b"complete").expect("staged file");
 
-        commit_staged_export(&staging_dir, &output_dir, &["root".to_owned()])
+        commit_staged_export(&staging_dir, &output_dir, "root")
             .expect("staged export should commit");
 
         assert_eq!(
@@ -942,26 +995,40 @@ mod tests {
     }
 
     #[test]
-    fn commit_staged_export_rolls_back_previous_roots_on_failure() {
+    fn move_staged_root_does_not_replace_existing_target() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let output_dir = temp_dir.path().join("downloads");
-        std::fs::create_dir_all(&output_dir).expect("output directory");
-        let staging_dir = create_staging_dir(&output_dir).expect("staging directory");
-        for root in ["a", "b"] {
-            let staged_root = staging_dir.join(root);
-            std::fs::create_dir_all(&staged_root).expect("staged root");
-            std::fs::write(staged_root.join("file.txt"), root.as_bytes()).expect("staged file");
-        }
-        std::fs::remove_dir_all(staging_dir.join("b")).expect("remove staged root");
+        let source = temp_dir.path().join("staged-file");
+        let target = temp_dir.path().join("existing-file");
+        std::fs::write(&source, b"complete").expect("staged file");
+        std::fs::write(&target, b"existing").expect("existing file");
 
-        let error =
-            commit_staged_export(&staging_dir, &output_dir, &["a".to_owned(), "b".to_owned()])
-                .expect_err("existing target should block commit");
+        let error = move_staged_root_without_replacing(&source, &target)
+            .expect_err("native move must refuse to replace an existing target");
 
-        assert!(!output_dir.join("a").exists());
-        assert!(!output_dir.join("b").exists());
-        assert!(error.to_string().contains("missing"));
-        cleanup_staging_dir(&staging_dir);
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read(&source).expect("staged file remains"),
+            b"complete"
+        );
+        assert_eq!(
+            std::fs::read(&target).expect("existing file remains"),
+            b"existing"
+        );
+    }
+
+    #[test]
+    fn collection_root_name_rejects_multiple_top_level_roots() {
+        let collection = [
+            ("first/file.txt", Hash::new(b"first")),
+            ("second/file.txt", Hash::new(b"second")),
+        ]
+        .into_iter()
+        .collect();
+
+        let error = collection_root_name(&collection)
+            .expect_err("multiple roots cannot be committed atomically");
+
+        assert!(error.to_string().contains("multiple top-level roots"));
     }
 
     #[cfg(unix)]
