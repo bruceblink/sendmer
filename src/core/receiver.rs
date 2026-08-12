@@ -361,6 +361,7 @@ struct DownloadOutcome {
 struct DownloadPlan {
     total_files: u64,
     payload_size: u64,
+    transfer_total: u64,
 }
 
 impl ReceiveContext {
@@ -390,10 +391,18 @@ impl ReceiveContext {
 }
 
 impl DownloadPlan {
-    fn from_sizes(sizes: &[u64]) -> Self {
+    /// Build transfer totals from a collection hash sequence and its child sizes.
+    ///
+    /// The first child is collection metadata, so it is excluded from the user-facing
+    /// file count and payload size. The root hash sequence itself still travels over
+    /// the network and is included in progress accounting.
+    fn from_hash_seq_and_sizes(hash_seq: &iroh_blobs::hashseq::HashSeq, sizes: &[u64]) -> Self {
         Self {
             total_files: sizes.len().saturating_sub(1) as u64,
             payload_size: sizes.iter().skip(1).copied().sum::<u64>(),
+            transfer_total: (hash_seq.len() as u64)
+                .saturating_mul(32)
+                .saturating_add(sizes.iter().copied().sum::<u64>()),
         }
     }
 }
@@ -444,16 +453,8 @@ fn receive_failed_message(error: &anyhow::Error) -> String {
     format!("error: {details}")
 }
 
-fn receive_failed_message_from_get_error(error: &GetError) -> String {
-    format!("error: {error}")
-}
-
 const fn receive_cancelled_message() -> &'static str {
     "Operation cancelled"
-}
-
-const fn receive_stream_ended_message() -> &'static str {
-    "download stream ended before completion"
 }
 
 fn emit_receive_failed(app_handle: &AppHandle, message: impl Into<String>) {
@@ -537,7 +538,7 @@ async fn download_missing_data(
     }
 
     emitter.emit_started();
-    let (_hash_seq, sizes) = get_sizes_with_retries(
+    let (hash_seq, sizes) = get_sizes_with_retries(
         &context.endpoint,
         &context.addr,
         &context.ticket.hash(),
@@ -545,8 +546,8 @@ async fn download_missing_data(
     )
     .await
     .context("fetch remote collection sizes")?;
-    let plan = DownloadPlan::from_sizes(&sizes);
-    execute_download(context, local.missing(), &plan, &app_handle).await?;
+    let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &sizes);
+    execute_download_with_retries(context, &plan, &app_handle).await?;
 
     Ok(DownloadOutcome {
         total_files: plan.total_files,
@@ -564,11 +565,51 @@ fn completed_local_total_files_from_children(children: Option<u64>) -> anyhow::R
         .ok_or_else(|| anyhow::anyhow!("local complete state missing collection children"))
 }
 
-async fn execute_download(
+/// Reconnect and request only ranges still missing from the local store on each retry.
+async fn execute_download_with_retries(
     context: &ReceiveContext,
-    missing: iroh_blobs::protocol::GetRequest,
     plan: &DownloadPlan,
     app_handle: &AppHandle,
+) -> anyhow::Result<()> {
+    let mut last_error = None;
+    let mut reporter = ReceiverProgressReporter::new(app_handle.clone(), plan.transfer_total);
+    reporter.emit_initial_progress();
+    for attempt in 1..=context.retry_policy.download_retry_limit {
+        let local = context
+            .db
+            .remote()
+            .local(context.hash_and_format())
+            .await
+            .context("inspect local download state")?;
+        if local.is_complete() {
+            reporter.emit_completed_progress();
+            return Ok(());
+        }
+
+        let result =
+            execute_download_attempt(context, local.missing(), local.local_bytes(), &mut reporter)
+                .await;
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                tracing::warn!(error = %error, attempt, "blob download attempt failed");
+                last_error = Some(error);
+                if attempt < context.retry_policy.download_retry_limit {
+                    tokio::time::sleep(download_backoff(attempt, context.retry_policy)).await;
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("download failed without an error")))
+}
+
+/// Run one download attempt using a fresh connection and the currently missing ranges.
+async fn execute_download_attempt(
+    context: &ReceiveContext,
+    missing: iroh_blobs::protocol::GetRequest,
+    already_downloaded: u64,
+    reporter: &mut ReceiverProgressReporter,
 ) -> anyhow::Result<()> {
     let connection = context
         .endpoint
@@ -577,7 +618,7 @@ async fn execute_download(
         .context("connect to sender for blob download")?;
     let get = context.db.remote().execute_get(connection, missing);
     let mut stream = get.stream();
-    process_get_stream(&mut stream, plan.payload_size, app_handle)
+    process_get_stream_with_reporter(&mut stream, already_downloaded, reporter)
         .await
         .context("download blob stream")
 }
@@ -604,6 +645,14 @@ fn resolve_output_dir(output_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 
 fn size_fetch_backoff(attempt: u32, retry_policy: ReceiveRetryPolicy) -> std::time::Duration {
     std::time::Duration::from_millis(retry_policy.size_fetch_backoff_ms * u64::from(attempt))
+}
+
+fn download_backoff(attempt: u32, retry_policy: ReceiveRetryPolicy) -> std::time::Duration {
+    std::time::Duration::from_millis(
+        retry_policy
+            .download_retry_backoff_ms
+            .saturating_mul(u64::from(attempt)),
+    )
 }
 
 fn finalize_cleanup(
@@ -798,23 +847,21 @@ async fn get_sizes_with_retries(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("unknown error getting sizes")))
 }
 
-// Helper: process a Get stream and emit progress events
-async fn process_get_stream<S>(
+/// Consume one get stream, retaining one reporter across retries and leaving failure reporting to the caller.
+async fn process_get_stream_with_reporter<S>(
     stream: &mut S,
-    payload_size: u64,
-    app_handle: &AppHandle,
+    already_downloaded: u64,
+    reporter: &mut ReceiverProgressReporter,
 ) -> anyhow::Result<()>
 where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
 {
-    let mut reporter = ReceiverProgressReporter::new(app_handle.clone(), payload_size);
-    reporter.emit_initial_progress();
     let mut seen_done = false;
     while let Some(item) = stream.next().await {
         trace!("got item {item:?}");
         match item {
             GetProgressItem::Progress(offset) => {
-                reporter.on_progress(offset);
+                reporter.on_progress(already_downloaded.saturating_add(offset));
             }
             GetProgressItem::Done(value) => {
                 let _stats = value;
@@ -825,13 +872,9 @@ where
             GetProgressItem::Error(cause) => {
                 tracing::error!("Download error: {:?}", cause);
                 let error = show_get_error(cause);
-                reporter.emit_failed(receive_failed_message_from_get_error(&error));
                 anyhow::bail!(error);
             }
         }
-    }
-    if !seen_done {
-        reporter.emit_failed(receive_stream_ended_message());
     }
     anyhow::ensure!(seen_done, "download stream ended before completion");
     Ok(())
@@ -871,16 +914,17 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ReceiveRetryPolicy, base_endpoint_builder, close_receive_endpoint, collection_root_name,
-        commit_staged_export, completed_local_total_files,
-        completed_local_total_files_from_children, create_staging_dir, emit_receive_failed,
-        finalize_cleanup, finalize_failed_receive, get_export_path,
-        move_staged_root_without_replacing, process_export_stream, process_get_stream,
-        receive_failed_message, receive_stream_ended_message, resolve_output_dir,
+        DownloadPlan, ReceiveRetryPolicy, base_endpoint_builder, close_receive_endpoint,
+        collection_root_name, commit_staged_export, completed_local_total_files,
+        completed_local_total_files_from_children, create_staging_dir, download_backoff,
+        emit_receive_failed, finalize_cleanup, finalize_failed_receive, get_export_path,
+        move_staged_root_without_replacing, process_export_stream,
+        process_get_stream_with_reporter, receive_failed_message, resolve_output_dir,
         size_fetch_backoff, validate_path_component,
     };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
     use crate::core::options::{ReceiveOptions, RelayModeOption};
+    use crate::core::progress::ReceiverProgressReporter;
     use iroh_blobs::Hash;
     use iroh_blobs::api::{blobs::ExportProgressItem, remote::GetProgressItem};
     use n0_future::stream;
@@ -1081,6 +1125,22 @@ mod tests {
     }
 
     #[test]
+    fn download_plan_separates_collection_metadata_from_file_payload() {
+        let hash_seq = [
+            Hash::new(b"metadata"),
+            Hash::new(b"first file"),
+            Hash::new(b"second file"),
+        ]
+        .into_iter()
+        .collect();
+        let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &[18, 100, 200]);
+
+        assert_eq!(plan.total_files, 2);
+        assert_eq!(plan.payload_size, 300);
+        assert_eq!(plan.transfer_total, 414);
+    }
+
+    #[test]
     fn completed_local_total_files_from_children_rejects_missing_children() {
         let err = completed_local_total_files_from_children(None)
             .expect_err("missing children should be rejected");
@@ -1104,22 +1164,16 @@ mod tests {
     }
 
     #[test]
-    fn receive_stream_ended_message_is_stable() {
-        assert_eq!(
-            receive_stream_ended_message(),
-            "download stream ended before completion"
-        );
-    }
-
-    #[test]
-    fn process_get_stream_emits_failed_event_when_stream_ends_early() {
+    fn retryable_get_stream_error_does_not_emit_terminal_event() {
         let emitter = Arc::new(RecordingEmitter::default());
         let app_handle: crate::core::events::AppHandle = Some(emitter.clone());
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         runtime.block_on(async {
             let mut s = stream::empty::<GetProgressItem>();
-            let err = process_get_stream(&mut s, 12, &app_handle)
+            let mut reporter = ReceiverProgressReporter::new(app_handle, 12);
+            reporter.emit_initial_progress();
+            let err = process_get_stream_with_reporter(&mut s, 0, &mut reporter)
                 .await
                 .expect_err("stream ending early should fail");
             assert!(err.to_string().contains("ended before completion"));
@@ -1135,10 +1189,14 @@ mod tests {
                 ..
             })
         ));
-        assert!(events.iter().any(|event| matches!(
+        assert!(!events.iter().any(|event| matches!(
             event,
-            TransferEvent::Failed { role: Role::Receiver, message }
-                if message == "download stream ended before completion"
+            TransferEvent::Failed {
+                role: Role::Receiver,
+                ..
+            } | TransferEvent::Completed {
+                role: Role::Receiver
+            }
         )));
     }
 
@@ -1211,6 +1269,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn download_backoff_scales_by_attempt() {
+        let policy = ReceiveRetryPolicy {
+            download_retry_backoff_ms: 75,
+            ..Default::default()
+        };
+
+        assert_eq!(download_backoff(0, policy), std::time::Duration::ZERO);
+        assert_eq!(
+            download_backoff(3, policy),
+            std::time::Duration::from_millis(225)
+        );
+    }
+
     #[tokio::test]
     async fn close_receive_endpoint_marks_endpoint_closed() {
         let options = ReceiveOptions {
@@ -1255,7 +1327,8 @@ mod tests {
     #[tokio::test]
     async fn process_get_stream_errors_if_stream_ends_before_done() {
         let mut s = stream::empty::<GetProgressItem>();
-        let err = process_get_stream(&mut s, 0, &None)
+        let mut reporter = ReceiverProgressReporter::new(None, 0);
+        let err = process_get_stream_with_reporter(&mut s, 0, &mut reporter)
             .await
             .expect_err("stream ending early should fail");
         assert!(err.to_string().contains("ended before completion"));

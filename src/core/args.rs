@@ -112,6 +112,14 @@ pub struct ReceiveArgs {
     #[clap(long)]
     pub output_dir: Option<PathBuf>,
 
+    /// Maximum number of attempts for the blob download phase.
+    #[clap(long, default_value_t = 3)]
+    pub retry_limit: u32,
+
+    /// Delay in milliseconds between blob download retries.
+    #[clap(long, default_value_t = 250)]
+    pub retry_backoff_ms: u64,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 }
@@ -141,6 +149,44 @@ impl Display for Format {
             Self::Hex => write!(f, "hex"),
             Self::Cid => write!(f, "cid"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Args, Commands};
+    use clap::Parser;
+    use iroh::EndpointAddr;
+    use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
+
+    fn sample_ticket() -> String {
+        BlobTicket::new(
+            EndpointAddr::new(iroh::SecretKey::generate().public()),
+            Hash::new(b"receive argument test"),
+            BlobFormat::HashSeq,
+        )
+        .to_string()
+    }
+
+    #[test]
+    fn receive_args_accept_explicit_download_retry_values() {
+        let ticket = sample_ticket();
+        let args = Args::try_parse_from([
+            "sendmer",
+            "receive",
+            "--retry-limit",
+            "7",
+            "--retry-backoff-ms",
+            "125",
+            ticket.as_str(),
+        ])
+        .expect("valid receive arguments");
+
+        let Commands::Receive(receive) = args.command else {
+            panic!("expected receive command")
+        };
+        assert_eq!(receive.retry_limit, 7);
+        assert_eq!(receive.retry_backoff_ms, 125);
     }
 }
 

@@ -18,6 +18,8 @@ pub struct ReceiveRetryPolicy {
     pub size_fetch_retry_limit: u32,
     pub size_fetch_chunk_size: u64,
     pub size_fetch_backoff_ms: u64,
+    pub download_retry_limit: u32,
+    pub download_retry_backoff_ms: u64,
 }
 
 impl Default for ReceiveRetryPolicy {
@@ -26,12 +28,14 @@ impl Default for ReceiveRetryPolicy {
             size_fetch_retry_limit: 3,
             size_fetch_chunk_size: 1024 * 1024 * 32,
             size_fetch_backoff_ms: 250,
+            download_retry_limit: 3,
+            download_retry_backoff_ms: 250,
         }
     }
 }
 
 impl ReceiveRetryPolicy {
-    /// Validate the size-fetch settings before network and temporary-store setup begins.
+    /// Validate receive retry settings before network and temporary-store setup begins.
     pub fn validate(self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.size_fetch_retry_limit > 0,
@@ -40,6 +44,10 @@ impl ReceiveRetryPolicy {
         anyhow::ensure!(
             self.size_fetch_chunk_size > 0,
             "size-fetch chunk size must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.download_retry_limit > 0,
+            "download retry limit must be greater than zero"
         );
         Ok(())
     }
@@ -205,6 +213,8 @@ mod tests {
         assert_eq!(policy.size_fetch_retry_limit, 3);
         assert_eq!(policy.size_fetch_chunk_size, 1024 * 1024 * 32);
         assert_eq!(policy.size_fetch_backoff_ms, 250);
+        assert_eq!(policy.download_retry_limit, 3);
+        assert_eq!(policy.download_retry_backoff_ms, 250);
     }
 
     #[test]
@@ -231,6 +241,19 @@ mod tests {
             .validate()
             .expect_err("zero chunk size should be rejected");
         assert!(error.to_string().contains("chunk size"));
+    }
+
+    #[test]
+    fn receive_retry_policy_rejects_zero_download_retry_limit() {
+        let policy = ReceiveRetryPolicy {
+            download_retry_limit: 0,
+            ..Default::default()
+        };
+
+        let error = policy
+            .validate()
+            .expect_err("zero download retries should be rejected");
+        assert!(error.to_string().contains("download retry limit"));
     }
 
     #[test]

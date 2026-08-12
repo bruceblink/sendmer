@@ -106,7 +106,12 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
 /// 与 `send` 类似，`receive` 在命令行模式下决定是否创建 `CliEventEmitter`，
 /// 调用 `download` 并将结果消息输出到 stdout。
 async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
-    let opts = receive_options(args.output_dir.clone(), &args.common);
+    let opts = receive_options(
+        args.output_dir.clone(),
+        args.retry_limit,
+        args.retry_backoff_ms,
+        &args.common,
+    );
     let app_handle = cli_app_handle("[recv]", args.common.no_progress);
 
     let res = receiver::receive(args.ticket.to_string(), opts, app_handle).await?;
@@ -123,13 +128,22 @@ fn send_options(args: &SendArgs) -> SendOptions {
     }
 }
 
-fn receive_options(output_dir: Option<std::path::PathBuf>, common: &CommonArgs) -> ReceiveOptions {
+fn receive_options(
+    output_dir: Option<std::path::PathBuf>,
+    retry_limit: u32,
+    retry_backoff_ms: u64,
+    common: &CommonArgs,
+) -> ReceiveOptions {
     ReceiveOptions {
         output_dir,
         relay_mode: common.relay.clone(),
         magic_ipv4_addr: common.magic_ipv4_addr,
         magic_ipv6_addr: common.magic_ipv6_addr,
-        retry_policy: Default::default(),
+        retry_policy: sendmer::core::options::ReceiveRetryPolicy {
+            download_retry_limit: retry_limit,
+            download_retry_backoff_ms: retry_backoff_ms,
+            ..Default::default()
+        },
     }
 }
 
@@ -328,16 +342,18 @@ mod tests {
         let common = sample_common_args();
         let output = Some(PathBuf::from("explicit-output"));
 
-        let options = receive_options(output.clone(), &common);
+        let options = receive_options(output.clone(), 5, 120, &common);
 
         assert_eq!(options.output_dir, output);
+        assert_eq!(options.retry_policy.download_retry_limit, 5);
+        assert_eq!(options.retry_policy.download_retry_backoff_ms, 120);
     }
 
     #[test]
     fn receive_options_preserves_missing_output_dir() {
         let common = sample_common_args();
 
-        let options = receive_options(None, &common);
+        let options = receive_options(None, 3, 250, &common);
 
         assert!(options.output_dir.is_none());
     }

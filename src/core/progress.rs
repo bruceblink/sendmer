@@ -431,6 +431,7 @@ impl ReceiverProgressReporter {
     }
 
     pub fn on_progress(&mut self, current: u64) {
+        let current = current.min(self.tracker.total).max(self.tracker.current);
         if let Some(snapshot) = self.tracker.update(current) {
             self.emitter
                 .emit_progress(snapshot.current, snapshot.total, snapshot.speed);
@@ -442,10 +443,6 @@ impl ReceiverProgressReporter {
         let snapshot = self.tracker.snapshot();
         self.emitter
             .emit_progress(snapshot.current, snapshot.total, snapshot.speed);
-    }
-
-    pub fn emit_failed(&self, message: impl Into<String>) {
-        self.emitter.emit_failed(message);
     }
 }
 
@@ -463,7 +460,7 @@ mod tests {
     };
     use std::sync::{Arc, Mutex as StdMutex};
     use std::thread::sleep;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[derive(Default)]
     struct RecordingEmitter {
@@ -480,6 +477,30 @@ mod tests {
         fn emit(&self, event: &TransferEvent) {
             self.events.lock().expect("events lock").push(event.clone());
         }
+    }
+
+    #[test]
+    fn receiver_progress_clamps_and_never_regresses() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let mut reporter = super::ReceiverProgressReporter::new(Some(emitter.clone()), 100);
+        reporter.emit_initial_progress();
+
+        reporter.tracker.last_emit = Instant::now() - Duration::from_millis(201);
+        reporter.on_progress(60);
+        reporter.tracker.last_emit = Instant::now() - Duration::from_millis(201);
+        reporter.on_progress(20);
+        reporter.tracker.last_emit = Instant::now() - Duration::from_millis(201);
+        reporter.on_progress(120);
+
+        let progress = emitter
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                TransferEvent::Progress { processed, .. } => Some(processed),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(progress, vec![0, 60, 60, 100]);
     }
 
     #[test]

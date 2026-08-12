@@ -350,6 +350,7 @@ fn receive_connection_failure_cleans_temp_dir_after_retries() {
                 size_fetch_retry_limit: 2,
                 size_fetch_chunk_size: 1,
                 size_fetch_backoff_ms: 0,
+                ..Default::default()
             },
         };
         sendmer::receive(ticket.to_string(), opts, None).await
