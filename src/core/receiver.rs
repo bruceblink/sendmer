@@ -44,6 +44,20 @@ pub async fn receive(
     options: ReceiveOptions,
     app_handle: AppHandle,
 ) -> anyhow::Result<ReceiveResult> {
+    receive_with_cancellation(ticket_str, options, app_handle, None).await
+}
+
+/// Download a ticket while allowing the caller to request graceful cleanup.
+///
+/// The optional watch receiver is intentionally separate from `ReceiveOptions` so existing
+/// callers keep compiling. Cancellation follows the same cleanup path as Ctrl+C: the receive
+/// endpoint, store, and temporary directory are closed before the future returns.
+pub async fn receive_with_cancellation(
+    ticket_str: String,
+    options: ReceiveOptions,
+    app_handle: AppHandle,
+    cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+) -> anyhow::Result<ReceiveResult> {
     let ticket = BlobTicket::from_str(&ticket_str)?;
     info!(
         hash = %ticket.hash(),
@@ -54,24 +68,27 @@ pub async fn receive(
     let output_dir = resolve_output_dir(options.output_dir.clone())?;
     let context = ReceiveContext::prepare(ticket, &options).await?;
 
-    let artifacts = select! {
-        x = receive_once(&context, &output_dir, app_handle.clone()) => match x {
-            Ok(artifacts) => artifacts,
-            Err(error) => {
-                tracing::error!(error = %error, "download operation failed");
-                let message = receive_failed_message(&error);
-                emit_receive_failed(&app_handle, message.clone());
-                let error = finalize_failed_receive(
-                    anyhow::anyhow!(message),
-                    cleanup_failed_receive(&context).await,
-                );
-                return Err(error);
-            }
-        },
+    let receive_result = select! {
+        result = receive_once(&context, &output_dir, app_handle.clone()) => result,
+        _ = wait_for_cancellation(cancellation) => {
+            tracing::warn!("operation cancelled by caller");
+            Err(anyhow::anyhow!(receive_cancelled_message()))
+        }
         _ = tokio::signal::ctrl_c() => {
             tracing::warn!("operation cancelled by user");
-            let message = receive_cancelled_message();
-            emit_receive_failed(&app_handle, message);
+            Err(anyhow::anyhow!(receive_cancelled_message()))
+        }
+    };
+    let artifacts = match receive_result {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            tracing::error!(error = %error, "download operation failed");
+            let message = if error.to_string() == receive_cancelled_message() {
+                receive_cancelled_message().to_owned()
+            } else {
+                receive_failed_message(&error)
+            };
+            emit_receive_failed(&app_handle, message.clone());
             let error = finalize_failed_receive(
                 anyhow::anyhow!(message),
                 cleanup_failed_receive(&context).await,
@@ -83,6 +100,25 @@ pub async fn receive(
     let result = finish_receive(&context, artifacts).await?;
     info!(output = %result.file_path.display(), message = %result.message, "receive completed");
     Ok(result)
+}
+
+/// Waits until the optional cancellation watch channel is set to true.
+///
+/// A missing receiver becomes a pending future, so the normal `receive` API keeps its existing
+/// Ctrl+C-only behavior while the GPUI adapter can opt into graceful cancellation.
+async fn wait_for_cancellation(cancellation: Option<tokio::sync::watch::Receiver<bool>>) {
+    let Some(mut cancellation) = cancellation else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    loop {
+        if *cancellation.borrow() {
+            return;
+        }
+        if cancellation.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 /// 将集合中的各个 blob 导出到 `output_dir`。
@@ -1002,7 +1038,7 @@ mod tests {
         download_backoff, emit_receive_failed, finalize_cleanup, finalize_failed_receive,
         get_export_path, move_staged_root_without_replacing, process_export_stream,
         process_get_stream_with_reporter, receive_failed_message, resolve_output_dir,
-        size_fetch_backoff, validate_path_component,
+        size_fetch_backoff, validate_path_component, wait_for_cancellation,
     };
     use crate::core::events::{EventEmitter, Role, TransferEvent};
     use crate::core::options::{ReceiveOptions, RelayModeOption};
@@ -1302,6 +1338,17 @@ mod tests {
             message,
             "error: fetch remote collection sizes: connection refused"
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_wait_returns_after_signal() {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let wait = tokio::spawn(wait_for_cancellation(Some(receiver)));
+        sender.send(true).expect("send cancellation signal");
+        tokio::time::timeout(std::time::Duration::from_secs(1), wait)
+            .await
+            .expect("cancellation should wake the receive task")
+            .expect("cancellation wait task should finish");
     }
 
     #[test]

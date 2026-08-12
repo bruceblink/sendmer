@@ -11,7 +11,7 @@ pub use core::{
     args::{Args, Commands, ReceiveArgs, SendArgs},
     events::{AppHandle, EventEmitter, Role, TransferEvent, emit_event},
     options::{AddrInfoOptions, ReceiveOptions, RelayModeOption, SendOptions, apply_options},
-    receiver::receive,
+    receiver::{receive, receive_with_cancellation},
     results::{ReceiveResult, SendResult, SenderTransferStatus},
     sender::send,
 };
