@@ -24,6 +24,7 @@ use iroh_blobs::{
 use n0_future::StreamExt;
 use n0_future::{BufferedStreamExt, task::AbortOnDropHandle};
 use std::{
+    collections::{BTreeSet, HashSet},
     path::{Component, Path, PathBuf},
     time::Duration,
 };
@@ -56,6 +57,17 @@ fn prepare_temp_directory() -> anyhow::Result<PathBuf> {
 /// Validate the path to be shared
 fn validate_share_path(path: &Path) -> anyhow::Result<()> {
     let canonical_cwd = std::env::current_dir()?.canonicalize()?;
+    let source_metadata = std::fs::symlink_metadata(path).with_context(|| {
+        format!(
+            "share path {} does not exist or cannot be accessed",
+            path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        !source_metadata.file_type().is_symlink(),
+        "cannot share symbolic link {}; symbolic links are not supported",
+        path.display()
+    );
     let canonical_path = path.canonicalize().with_context(|| {
         format!(
             "share path {} does not exist or cannot be accessed",
@@ -72,6 +84,56 @@ fn validate_share_path(path: &Path) -> anyhow::Result<()> {
         "share path {} is not a file or directory",
         path.display()
     );
+
+    if canonical_path.is_dir() {
+        validate_share_directory_contents(&canonical_path)?;
+    }
+
+    Ok(())
+}
+
+/// Reject source entries that the current file-only collection format cannot preserve.
+///
+/// Each directory must contain a regular file somewhere below it. This prevents an
+/// empty directory or a symbolic link from being silently omitted during import.
+fn validate_share_directory_contents(root: &Path) -> anyhow::Result<()> {
+    let mut directories = BTreeSet::new();
+    let mut directories_with_files = HashSet::new();
+
+    for entry in WalkDir::new(root) {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type().is_dir() {
+            directories.insert(path.to_path_buf());
+            continue;
+        }
+        if entry.file_type().is_file() {
+            for ancestor in path.ancestors().skip(1) {
+                if !ancestor.starts_with(root) {
+                    break;
+                }
+                directories_with_files.insert(ancestor.to_path_buf());
+            }
+            continue;
+        }
+        if entry.file_type().is_symlink() {
+            anyhow::bail!(
+                "cannot share symbolic link {}; symbolic links are not supported",
+                path.display()
+            );
+        }
+        anyhow::bail!("cannot share unsupported source entry {}", path.display());
+    }
+
+    if let Some(empty_directory) = directories
+        .iter()
+        .find(|directory| !directories_with_files.contains(*directory))
+    {
+        anyhow::bail!(
+            "cannot share empty directory {}; empty directories are not supported",
+            empty_directory.display()
+        );
+    }
 
     Ok(())
 }
@@ -611,14 +673,29 @@ async fn show_provide_progress_with_provider_tracker(
 mod tests {
     use super::{
         ShareRequest, canonicalized_path_to_string, collect_import_sources, detect_entry_type,
-        import_parallelism, prepare_endpoint, setup_data_sharing, shutdown_started_sender_setup,
-        validate_share_path,
+        import_parallelism, prepare_endpoint, send, setup_data_sharing,
+        shutdown_started_sender_setup, validate_share_path,
     };
     use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions, apply_options};
     use crate::core::types::EntryType;
     use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
     use std::path::Path;
     use std::str::FromStr;
+
+    fn list_sender_temp_dirs() -> std::collections::HashSet<std::path::PathBuf> {
+        std::fs::read_dir(std::env::temp_dir())
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".sendmer-send-"))
+            })
+            .collect()
+    }
 
     fn sample_addr() -> iroh::EndpointAddr {
         let node_id = SecretKey::generate().public();
@@ -761,11 +838,87 @@ mod tests {
     }
 
     #[test]
-    fn validate_share_path_accepts_nested_path() {
+    fn validate_share_path_accepts_directory_with_regular_files() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let nested = temp_dir.path().join("nested").join("share");
         std::fs::create_dir_all(&nested).expect("create nested dir");
+        std::fs::write(nested.join("file.txt"), b"content").expect("write source file");
         validate_share_path(&nested).expect("nested path should be accepted");
+    }
+
+    #[test]
+    fn validate_share_path_rejects_empty_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let empty = temp_dir.path().join("empty-share");
+        std::fs::create_dir_all(&empty).expect("create empty directory");
+
+        let error = validate_share_path(&empty).expect_err("empty directory should be rejected");
+
+        assert!(error.to_string().contains("empty directory"));
+        assert!(error.to_string().contains("empty-share"));
+    }
+
+    #[test]
+    fn validate_share_path_rejects_empty_nested_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("share");
+        let empty_nested = root.join("empty");
+        std::fs::create_dir_all(&empty_nested).expect("create empty nested directory");
+        std::fs::write(root.join("file.txt"), b"content").expect("write source file");
+
+        let error =
+            validate_share_path(&root).expect_err("empty nested directory should be rejected");
+
+        assert!(error.to_string().contains("empty directory"));
+        assert!(error.to_string().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn send_rejects_empty_directory_without_creating_temp_store() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let empty = temp_dir.path().join("empty-share");
+        std::fs::create_dir_all(&empty).expect("create empty directory");
+        let before = list_sender_temp_dirs();
+
+        let result = send(
+            empty,
+            SendOptions {
+                relay_mode: RelayModeOption::Disabled,
+                ..SendOptions::default()
+            },
+            None,
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("empty directory should fail before sender setup"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("empty directory"));
+        let leaked = list_sender_temp_dirs()
+            .difference(&before)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            leaked.is_empty(),
+            "empty source validation must not create sender temporary stores: {leaked:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_share_path_rejects_symbolic_link_source() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = temp_dir.path().join("source.txt");
+        let link = temp_dir.path().join("source-link.txt");
+        std::fs::write(&source, b"content").expect("write source file");
+        symlink(&source, &link).expect("create source link");
+
+        let error = validate_share_path(&link).expect_err("symbolic link should be rejected");
+
+        assert!(error.to_string().contains("symbolic link"));
     }
 
     #[tokio::test]

@@ -292,6 +292,61 @@ fn receive_fails_on_existing_target_and_cleans_temp_dir() {
 }
 
 #[test]
+fn receive_fails_on_existing_directory_and_preserves_contents() {
+    let name = "directory-collision";
+    let src_dir = tempfile::tempdir().unwrap();
+    let tgt_dir = tempfile::tempdir().unwrap();
+    let src_root = src_dir.path().join(name);
+    std::fs::create_dir_all(&src_root).unwrap();
+    std::fs::write(src_root.join("incoming.txt"), b"incoming").unwrap();
+
+    let existing = tgt_dir.path().join(name);
+    std::fs::create_dir_all(&existing).unwrap();
+    std::fs::write(existing.join("keep.txt"), b"existing").unwrap();
+
+    let before = list_receive_temp_dirs();
+    let mut send = RunningSend::spawn(&src_root, src_dir.path()).unwrap();
+    let ticket = send.read_ticket();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let opts = sendmer::ReceiveOptions {
+        output_dir: Some(tgt_dir.path().to_path_buf()),
+        relay_mode: Default::default(),
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+        retry_policy: Default::default(),
+    };
+    let error = rt
+        .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
+        .expect_err("receive should fail when target directory already exists");
+    send.cleanup();
+
+    assert!(error.to_string().contains("already exists"));
+    assert_eq!(
+        std::fs::read(existing.join("keep.txt")).unwrap(),
+        b"existing"
+    );
+    assert!(
+        !existing.join("incoming.txt").exists(),
+        "incoming data must not merge into the existing directory"
+    );
+
+    let after = list_receive_temp_dirs();
+    let leaked = after
+        .difference(&before)
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(&ticket.hash().to_hex()))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        leaked.is_empty(),
+        "temporary receive dirs should be cleaned: {leaked:?}"
+    );
+}
+
+#[test]
 fn receive_defaults_to_current_directory_when_output_dir_is_missing() {
     let name = "default-output.bin";
     let data = vec![7u8; 128];
