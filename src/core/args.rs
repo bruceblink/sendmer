@@ -120,6 +120,18 @@ pub struct ReceiveArgs {
     #[clap(long, default_value_t = 250)]
     pub retry_backoff_ms: u64,
 
+    /// Optional connection timeout in milliseconds for each receive attempt.
+    #[clap(long)]
+    pub connect_timeout_ms: Option<u64>,
+
+    /// Optional timeout in milliseconds while fetching collection metadata.
+    #[clap(long)]
+    pub metadata_timeout_ms: Option<u64>,
+
+    /// Optional timeout in milliseconds without download-stream progress.
+    #[clap(long)]
+    pub download_idle_timeout_ms: Option<u64>,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 }
@@ -196,6 +208,12 @@ mod tests {
             "7",
             "--retry-backoff-ms",
             "125",
+            "--connect-timeout-ms",
+            "1000",
+            "--metadata-timeout-ms",
+            "2000",
+            "--download-idle-timeout-ms",
+            "3000",
             ticket.as_str(),
         ])
         .expect("valid receive arguments");
@@ -205,5 +223,8 @@ mod tests {
         };
         assert_eq!(receive.retry_limit, 7);
         assert_eq!(receive.retry_backoff_ms, 125);
+        assert_eq!(receive.connect_timeout_ms, Some(1000));
+        assert_eq!(receive.metadata_timeout_ms, Some(2000));
+        assert_eq!(receive.download_idle_timeout_ms, Some(3000));
     }
 }

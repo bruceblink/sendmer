@@ -53,6 +53,7 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32
 [dev-dependencies]
 rand = "0.9"
 tempfile = "3.23"
+tokio = { version = "1", features = ["test-util"] }
 
 [features]
 clipboard = ["dep:crossterm"]

@@ -4,6 +4,7 @@
 
 use iroh::RelayUrl;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::time::Duration;
 
 #[derive(Debug, Default)]
 pub struct SendOptions {
@@ -20,6 +21,9 @@ pub struct ReceiveRetryPolicy {
     pub size_fetch_backoff_ms: u64,
     pub download_retry_limit: u32,
     pub download_retry_backoff_ms: u64,
+    pub connect_timeout_ms: Option<u64>,
+    pub metadata_timeout_ms: Option<u64>,
+    pub download_idle_timeout_ms: Option<u64>,
 }
 
 impl Default for ReceiveRetryPolicy {
@@ -30,6 +34,9 @@ impl Default for ReceiveRetryPolicy {
             size_fetch_backoff_ms: 250,
             download_retry_limit: 3,
             download_retry_backoff_ms: 250,
+            connect_timeout_ms: None,
+            metadata_timeout_ms: None,
+            download_idle_timeout_ms: None,
         }
     }
 }
@@ -49,7 +56,32 @@ impl ReceiveRetryPolicy {
             self.download_retry_limit > 0,
             "download retry limit must be greater than zero"
         );
+        for (name, timeout_ms) in [
+            ("connect timeout", self.connect_timeout_ms),
+            ("metadata timeout", self.metadata_timeout_ms),
+            ("download idle timeout", self.download_idle_timeout_ms),
+        ] {
+            anyhow::ensure!(
+                timeout_ms != Some(0),
+                "{name} must be greater than zero when configured"
+            );
+        }
         Ok(())
+    }
+
+    /// Convert configured receive limits into durations after validation.
+    pub(crate) fn connect_timeout(self) -> Option<Duration> {
+        self.connect_timeout_ms.map(Duration::from_millis)
+    }
+
+    /// Limit metadata requests without imposing a deadline on file payloads.
+    pub(crate) fn metadata_timeout(self) -> Option<Duration> {
+        self.metadata_timeout_ms.map(Duration::from_millis)
+    }
+
+    /// Reset the download watchdog whenever the remote stream emits an item.
+    pub(crate) fn download_idle_timeout(self) -> Option<Duration> {
+        self.download_idle_timeout_ms.map(Duration::from_millis)
     }
 }
 
@@ -215,6 +247,9 @@ mod tests {
         assert_eq!(policy.size_fetch_backoff_ms, 250);
         assert_eq!(policy.download_retry_limit, 3);
         assert_eq!(policy.download_retry_backoff_ms, 250);
+        assert_eq!(policy.connect_timeout_ms, None);
+        assert_eq!(policy.metadata_timeout_ms, None);
+        assert_eq!(policy.download_idle_timeout_ms, None);
     }
 
     #[test]
@@ -266,5 +301,28 @@ mod tests {
         policy
             .validate()
             .expect("zero backoff should allow immediate retries");
+    }
+
+    #[test]
+    fn receive_retry_policy_rejects_zero_configured_timeouts() {
+        for policy in [
+            ReceiveRetryPolicy {
+                connect_timeout_ms: Some(0),
+                ..Default::default()
+            },
+            ReceiveRetryPolicy {
+                metadata_timeout_ms: Some(0),
+                ..Default::default()
+            },
+            ReceiveRetryPolicy {
+                download_idle_timeout_ms: Some(0),
+                ..Default::default()
+            },
+        ] {
+            let error = policy
+                .validate()
+                .expect_err("zero timeout should be rejected");
+            assert!(error.to_string().contains("timeout"));
+        }
     }
 }

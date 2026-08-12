@@ -21,10 +21,11 @@ use iroh_blobs::{
     ticket::BlobTicket,
 };
 use n0_future::StreamExt;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc as StdArc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::select;
 use tracing::info;
 use tracing::log::trace;
@@ -614,16 +615,28 @@ async fn execute_download_attempt(
     already_downloaded: u64,
     reporter: &mut ReceiverProgressReporter,
 ) -> anyhow::Result<()> {
-    let connection = context
-        .endpoint
-        .connect(context.addr.clone(), iroh_blobs::protocol::ALPN)
-        .await
-        .context("connect to sender for blob download")?;
+    let connection = await_receive_phase(
+        context.retry_policy.connect_timeout(),
+        "connect to sender for blob download",
+        async {
+            context
+                .endpoint
+                .connect(context.addr.clone(), iroh_blobs::protocol::ALPN)
+                .await
+                .context("connect to sender for blob download")
+        },
+    )
+    .await?;
     let get = context.db.remote().execute_get(connection, missing);
     let mut stream = get.stream();
-    process_get_stream_with_reporter(&mut stream, already_downloaded, reporter)
-        .await
-        .context("download blob stream")
+    process_get_stream_with_reporter(
+        &mut stream,
+        already_downloaded,
+        reporter,
+        context.retry_policy.download_idle_timeout(),
+    )
+    .await
+    .context("download blob stream")
 }
 
 fn collect_file_names(collection: &Collection) -> Vec<String> {
@@ -656,6 +669,26 @@ fn download_backoff(attempt: u32, retry_policy: ReceiveRetryPolicy) -> std::time
             .download_retry_backoff_ms
             .saturating_mul(u64::from(attempt)),
     )
+}
+
+/// Await one receive phase, applying an optional user-provided timeout.
+///
+/// The caller decides which retry loop handles the returned error, so timeouts
+/// reuse the same cleanup and retry behavior as connection or protocol failures.
+async fn await_receive_phase<T, F>(
+    timeout: Option<Duration>,
+    phase: &'static str,
+    future: F,
+) -> anyhow::Result<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, future)
+            .await
+            .map_err(|_| anyhow::anyhow!("{phase} timed out after {} ms", timeout.as_millis()))?,
+        None => future.await,
+    }
 }
 
 fn finalize_cleanup(
@@ -825,14 +858,22 @@ async fn get_sizes_with_retries(
 ) -> anyhow::Result<(iroh_blobs::hashseq::HashSeq, StdArc<[u64]>)> {
     let mut last_err: Option<anyhow::Error> = None;
     for attempt in 1..=retry_policy.size_fetch_retry_limit {
-        let connection = match endpoint
-            .connect(addr.clone(), iroh_blobs::protocol::ALPN)
-            .await
+        let connection = match await_receive_phase(
+            retry_policy.connect_timeout(),
+            "connect to sender for collection metadata",
+            async {
+                endpoint
+                    .connect(addr.clone(), iroh_blobs::protocol::ALPN)
+                    .await
+                    .context("connect to sender for collection metadata")
+            },
+        )
+        .await
         {
             Ok(connection) => connection,
             Err(error) => {
                 tracing::error!("Attempt {attempt} to connect for sizes failed: {error}");
-                last_err = Some(error.into());
+                last_err = Some(error);
                 if attempt < retry_policy.size_fetch_retry_limit {
                     tokio::time::sleep(size_fetch_backoff(attempt, retry_policy)).await;
                 }
@@ -840,14 +881,22 @@ async fn get_sizes_with_retries(
             }
         };
 
-        match get_hash_seq_and_sizes(&connection, hash, retry_policy.size_fetch_chunk_size, None)
-            .await
+        match await_receive_phase(
+            retry_policy.metadata_timeout(),
+            "fetch collection metadata",
+            async {
+                get_hash_seq_and_sizes(&connection, hash, retry_policy.size_fetch_chunk_size, None)
+                    .await
+                    .map_err(show_get_error)
+                    .map_err(anyhow::Error::from)
+            },
+        )
+        .await
         {
             Ok(result) => return Ok(result),
-            Err(e) => {
-                tracing::error!("Attempt {attempt} to get sizes failed: {e:?}");
-                let error = show_get_error(e);
-                last_err = Some(error.into());
+            Err(error) => {
+                tracing::error!("Attempt {attempt} to get sizes failed: {error:?}");
+                last_err = Some(error);
                 if attempt < retry_policy.size_fetch_retry_limit {
                     tokio::time::sleep(size_fetch_backoff(attempt, retry_policy)).await;
                 }
@@ -863,12 +912,13 @@ async fn process_get_stream_with_reporter<S>(
     stream: &mut S,
     already_downloaded: u64,
     reporter: &mut ReceiverProgressReporter,
+    idle_timeout: Option<Duration>,
 ) -> anyhow::Result<()>
 where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
 {
     let mut seen_done = false;
-    while let Some(item) = stream.next().await {
+    while let Some(item) = next_get_progress_item(stream, idle_timeout).await? {
         trace!("got item {item:?}");
         match item {
             GetProgressItem::Progress(offset) => {
@@ -889,6 +939,27 @@ where
     }
     anyhow::ensure!(seen_done, "download stream ended before completion");
     Ok(())
+}
+
+/// Wait for the next stream update, restarting the idle timer after each update.
+async fn next_get_progress_item<S>(
+    stream: &mut S,
+    idle_timeout: Option<Duration>,
+) -> anyhow::Result<Option<GetProgressItem>>
+where
+    S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
+{
+    match idle_timeout {
+        Some(timeout) => tokio::time::timeout(timeout, stream.next())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "download stream timed out after {} ms without progress",
+                    timeout.as_millis()
+                )
+            }),
+        None => Ok(stream.next().await),
+    }
 }
 
 /// 验证单个路径组件是否合法（不应包含分隔符 `/`）。
@@ -925,11 +996,11 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DownloadPlan, ReceiveRetryPolicy, base_endpoint_builder, close_receive_endpoint,
-        collection_root_name, commit_staged_export, completed_local_total_files,
-        completed_local_total_files_from_children, create_staging_dir, download_backoff,
-        emit_receive_failed, finalize_cleanup, finalize_failed_receive, get_export_path,
-        move_staged_root_without_replacing, process_export_stream,
+        DownloadPlan, ReceiveRetryPolicy, await_receive_phase, base_endpoint_builder,
+        close_receive_endpoint, collection_root_name, commit_staged_export,
+        completed_local_total_files, completed_local_total_files_from_children, create_staging_dir,
+        download_backoff, emit_receive_failed, finalize_cleanup, finalize_failed_receive,
+        get_export_path, move_staged_root_without_replacing, process_export_stream,
         process_get_stream_with_reporter, receive_failed_message, resolve_output_dir,
         size_fetch_backoff, validate_path_component,
     };
@@ -941,6 +1012,7 @@ mod tests {
     use n0_future::stream;
     use std::path::Path;
     use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::Duration;
 
     #[derive(Default)]
     struct RecordingEmitter {
@@ -1242,7 +1314,7 @@ mod tests {
             let mut s = stream::empty::<GetProgressItem>();
             let mut reporter = ReceiverProgressReporter::new(app_handle, 12);
             reporter.emit_initial_progress();
-            let err = process_get_stream_with_reporter(&mut s, 0, &mut reporter)
+            let err = process_get_stream_with_reporter(&mut s, 0, &mut reporter, None)
                 .await
                 .expect_err("stream ending early should fail");
             assert!(err.to_string().contains("ended before completion"));
@@ -1397,9 +1469,70 @@ mod tests {
     async fn process_get_stream_errors_if_stream_ends_before_done() {
         let mut s = stream::empty::<GetProgressItem>();
         let mut reporter = ReceiverProgressReporter::new(None, 0);
-        let err = process_get_stream_with_reporter(&mut s, 0, &mut reporter)
+        let err = process_get_stream_with_reporter(&mut s, 0, &mut reporter, None)
             .await
             .expect_err("stream ending early should fail");
         assert!(err.to_string().contains("ended before completion"));
+    }
+
+    #[tokio::test]
+    async fn receive_phase_timeout_reports_the_timed_out_operation() {
+        let error = await_receive_phase(
+            Some(Duration::from_millis(1)),
+            "connect to test sender",
+            std::future::pending::<anyhow::Result<()>>(),
+        )
+        .await
+        .expect_err("pending operation should time out");
+
+        assert!(
+            error
+                .to_string()
+                .contains("connect to test sender timed out")
+        );
+    }
+
+    #[tokio::test]
+    async fn process_get_stream_times_out_after_idle_period() {
+        let mut stream = stream::pending::<GetProgressItem>();
+        let mut reporter = ReceiverProgressReporter::new(None, 0);
+
+        let error = process_get_stream_with_reporter(
+            &mut stream,
+            0,
+            &mut reporter,
+            Some(Duration::from_millis(1)),
+        )
+        .await
+        .expect_err("idle stream should time out");
+
+        assert!(error.to_string().contains("without progress"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn process_get_stream_resets_idle_timeout_after_progress() {
+        let mut stream = Box::pin(stream::unfold(0u8, |step| async move {
+            match step {
+                0 => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    Some((GetProgressItem::Progress(5), 1))
+                }
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    Some((GetProgressItem::Done(Default::default()), 2))
+                }
+                _ => None,
+            }
+        }));
+        let mut reporter = ReceiverProgressReporter::new(None, 10);
+
+        process_get_stream_with_reporter(
+            &mut stream,
+            0,
+            &mut reporter,
+            Some(Duration::from_millis(8)),
+        )
+        .await
+        .expect("each stream item should reset the idle timer");
     }
 }
