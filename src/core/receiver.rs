@@ -221,7 +221,10 @@ fn commit_staged_export(staging_dir: &Path, output_dir: &Path, root: &str) -> an
 
     move_staged_root_without_replacing(&staged, &target)?;
 
-    std::fs::remove_dir(staging_dir)?;
+    // Moving the root is the commit point. Cleanup can fail after a successful move
+    // (for example, because another process created a file in staging), but must not
+    // turn a completed export into a retryable failure.
+    cleanup_staging_dir(staging_dir);
     Ok(())
 }
 
@@ -753,16 +756,24 @@ fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
         "final path must be within the root directory"
     );
 
-    // A dangling final symlink is invisible to `Path::exists`, but exporting to it
-    // would still follow the link and write outside the validated output root.
-    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-        anyhow::ensure!(
-            !metadata.file_type().is_symlink(),
-            "export target must not be a symbolic link"
-        );
-    }
+    ensure_export_target_is_absent(&path)?;
 
     Ok(path)
+}
+
+/// Refuse an existing staging target before the blob store writes to it.
+///
+/// `symlink_metadata` sees dangling symlinks and, on case-insensitive file systems,
+/// also catches differently cased names that would otherwise overwrite an earlier entry.
+fn ensure_export_target_is_absent(path: &Path) -> anyhow::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            anyhow::bail!("export target must not be a symbolic link")
+        }
+        Ok(_) => anyhow::bail!("export target {} already exists", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Resolve the nearest existing ancestor so symlink escapes are rejected before
@@ -1019,6 +1030,43 @@ mod tests {
     }
 
     #[test]
+    fn get_export_path_rejects_existing_regular_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("stage");
+        let target = get_export_path(&root, "already-exported.txt")
+            .expect("first staged target should be available");
+        std::fs::write(&target, b"first entry").expect("write staged target");
+
+        let error = get_export_path(&root, "already-exported.txt")
+            .expect_err("an existing staging target must not be overwritten");
+
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(
+            std::fs::read(target).expect("original file remains"),
+            b"first entry"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn get_export_path_rejects_case_insensitive_staging_collision() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("stage");
+        let first_target =
+            get_export_path(&root, "A.txt").expect("first staged target should be available");
+        std::fs::write(&first_target, b"first entry").expect("write staged target");
+
+        let error = get_export_path(&root, "a.txt")
+            .expect_err("case-insensitive aliases must not overwrite staged data");
+
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(
+            std::fs::read(first_target).expect("original file remains"),
+            b"first entry"
+        );
+    }
+
+    #[test]
     fn commit_staged_export_moves_complete_root_into_place() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("downloads");
@@ -1036,6 +1084,27 @@ mod tests {
             b"complete"
         );
         assert!(!staging_dir.exists());
+    }
+
+    #[test]
+    fn commit_staged_export_succeeds_when_staging_cleanup_is_not_empty() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("downloads");
+        std::fs::create_dir_all(&output_dir).expect("output directory");
+        let staging_dir = create_staging_dir(&output_dir).expect("staging directory");
+        let staged_root = staging_dir.join("root");
+        std::fs::create_dir_all(&staged_root).expect("staged root");
+        std::fs::write(staged_root.join("file.txt"), b"complete").expect("staged file");
+        std::fs::write(staging_dir.join("leftover.txt"), b"cleanup only").expect("leftover");
+
+        commit_staged_export(&staging_dir, &output_dir, "root")
+            .expect("the committed root must not be reported as a failure");
+
+        assert_eq!(
+            std::fs::read(output_dir.join("root/file.txt")).expect("committed file"),
+            b"complete"
+        );
+        assert!(!staging_dir.exists(), "best-effort cleanup removes staging");
     }
 
     #[test]
