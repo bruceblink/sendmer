@@ -189,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
 
 ## License
 
-[MIT](LICENSE)
+[GNU Affero 通用公共许可证 v3.0（仅限此版本，AGPL-3.0-only）](LICENSE)
 
 [![Sponsor](https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/bruceblink) [![Buy Me Coffee](https://img.shields.io/badge/Buy%20Me%20Coffee-FF5A5F?style=for-the-badge&logo=coffee&logoColor=FFFFFF)](https://buymeacoffee.com/bruceblink)
 
