@@ -111,6 +111,19 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Generate release notes
+        env:
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+        run: |
+          python3 .github/scripts/generate_release_notes.py \
+            --tag "$RELEASE_VERSION" \
+            --output release-notes.md
+
       - name: Verify release version matches Cargo package
         env:
           RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
@@ -139,12 +152,14 @@ jobs:
         run: |
           VERSION="$RELEASE_VERSION"
           if gh release view "$VERSION" >/dev/null 2>&1; then
-            echo "Release $VERSION already exists, skip create."
+            gh release edit "$VERSION" \
+              --title "$VERSION" \
+              --notes-file release-notes.md
           else
             gh release create "$VERSION" \
               --verify-tag \
               --title "$VERSION" \
-              --generate-notes
+              --notes-file release-notes.md
           fi
 
   build-release:
