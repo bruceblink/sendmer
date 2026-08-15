@@ -132,11 +132,13 @@ sendmer receive <ticket>
 `send` 和 `receive` 共同支持：
 
 - `--no-progress`：关闭 CLI 进度显示
+- `--json-events`：将基础的带类型传输事件按 JSON Lines 输出到 stderr，不显示进度条
 - `-v` / `-vv`：提高日志详细程度
 - `--relay <default|disabled|url>`：控制 relay 使用方式
 - `--magic-ipv4-addr <addr>`：绑定固定 IPv4 地址
 - `--magic-ipv6-addr <addr>`：绑定固定 IPv6 地址
 - `--show-secret`：打印当前进程使用的 secret key
+- `--format <hex|cid>`：选择 hash 输出格式；只影响 `send` 打印的 hash，`receive` 会忽略该参数
 
 仅 `receive` 支持：
 
@@ -155,33 +157,37 @@ sendmer receive <ticket>
 
 仅 `send` 支持：
 
-- `--ticket-type <id|relay-and-addresses|relay|addresses>`：控制 ticket 中包含的地址信息
+- `--ticket-type <id|RelayAndAddresses|relay|addresses>`：控制 ticket 中包含的地址信息；组合模式当前必须使用精确的 `RelayAndAddresses` 写法
 - `--max-upload-rate <bytes-per-second>`：可选地限制发送端所有接收方共享的 payload 总上传速率；不包含协议开销
-- `--json-events`：将稳定的带类型传输事件按 JSON Lines 输出到 stderr，不显示进度条
-- `--format <hex|cid>`：控制导入后 hash 的输出格式
-- `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板
+- `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板（默认启用 `clipboard` feature 时可用）
 
 ## 作为库使用
 
-该 crate 同时导出了一组简洁的 Rust API：
+该 crate 同时导出了一组简洁的 Rust API。新的 GUI 或服务集成建议使用 `SendHandle`，
+显式关闭临时 provider，而不依赖 iroh 内部句柄：
 
 ```rust
-use sendmer::{receive, send, ReceiveOptions, SendOptions};
+use std::path::PathBuf;
+use sendmer::{send_handle, SendOptions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // let send_result = send(path, SendOptions::default(), None).await?;
-    // let receive_result = receive(ticket, ReceiveOptions::default(), None).await?;
+    let handle = send_handle(PathBuf::from("./my-file"), SendOptions::default(), None).await?;
+    println!("sendmer receive {}", handle.ticket());
+    handle.close().await?;
     Ok(())
 }
 ```
+
+旧的 `send` 函数和 `SendResult::shutdown` 仍保留用于兼容。接收端可以使用 `receive`，
+或使用带取消能力的 `receive_with_cancellation` 与 `ReceiveOptions`。
 
 库层会 re-export：
 
 - 参数和选项类型
 - 传输事件类型与 `EventEmitter`
-- `send` 和 `receive`
-- `SendResult` 与 `ReceiveResult`
+- `send`、`send_handle`、`receive` 和 `receive_with_cancellation`
+- 推荐使用的 `SendHandle`，以及兼容用的 `SendResult` 与 `ReceiveResult`
 
 ## 开发
 

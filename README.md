@@ -132,11 +132,13 @@ Directories must contain regular files. sendmer rejects empty directories, direc
 Common options are available on both `send` and `receive`:
 
 - `--no-progress`: disable CLI progress output
+- `--json-events`: emit basic tagged transfer events as JSON Lines on stderr instead of a progress bar
 - `-v` / `-vv`: increase log verbosity
 - `--relay <default|disabled|url>`: control relay usage
 - `--magic-ipv4-addr <addr>`: bind a fixed IPv4 address
 - `--magic-ipv6-addr <addr>`: bind a fixed IPv6 address
 - `--show-secret`: print the secret key used for the current process
+- `--format <hex|cid>`: choose the hash format; it affects the hash printed by `send` and is ignored by `receive`
 
 Receive-specific options:
 
@@ -155,33 +157,37 @@ Retry reuses data already obtained by the current receive process, but it is not
 
 Send-specific options:
 
-- `--ticket-type <id|relay-and-addresses|relay|addresses>`: control how much addressing information is embedded in the ticket
+- `--ticket-type <id|RelayAndAddresses|relay|addresses>`: control how much addressing information is embedded in the ticket; the combined mode currently uses the exact `RelayAndAddresses` spelling
 - `--max-upload-rate <bytes-per-second>`: optionally cap the sender's total payload upload rate shared by all receivers; protocol overhead is not included
-- `--json-events`: emit stable tagged transfer events as JSON Lines on stderr instead of a progress bar
-- `--format <hex|cid>`: choose how the imported hash is printed
-- `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard
+- `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard (available in the default `clipboard` feature build)
 
 ## Library Usage
 
-The crate also exposes a small library API:
+The crate also exposes a small library API. New integrations should use `SendHandle` so the
+temporary provider is closed explicitly without depending on iroh internals:
 
 ```rust
-use sendmer::{receive, send, ReceiveOptions, SendOptions};
+use std::path::PathBuf;
+use sendmer::{send_handle, SendOptions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // let send_result = send(path, SendOptions::default(), None).await?;
-    // let receive_result = receive(ticket, ReceiveOptions::default(), None).await?;
+    let handle = send_handle(PathBuf::from("./my-file"), SendOptions::default(), None).await?;
+    println!("sendmer receive {}", handle.ticket());
+    handle.close().await?;
     Ok(())
 }
 ```
+
+The legacy `send` function and `SendResult::shutdown` remain available for compatibility. A receiver
+can use `receive` or `receive_with_cancellation` with `ReceiveOptions`.
 
 The library re-exports:
 
 - argument and option types
 - transfer event types and `EventEmitter`
-- `send` and `receive`
-- `SendResult` and `ReceiveResult`
+- `send`, `send_handle`, `receive`, and `receive_with_cancellation`
+- preferred `SendHandle`, plus legacy `SendResult` and `ReceiveResult`
 
 ## Development
 
