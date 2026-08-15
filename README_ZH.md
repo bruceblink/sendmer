@@ -25,7 +25,7 @@ sendmer 使用 256 位节点 ID，因此 ticket 在 IP 地址变化后仍可继�
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 
 # 或安装指定版本
-$env:SENDMER_VERSION="v0.6.0"
+$env:SENDMER_VERSION="v0.7.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
@@ -54,7 +54,7 @@ C:\Users\<用户名>\.sendmer\bin\sendmer.exe
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 
 # 或安装指定版本
-SENDMER_VERSION=v0.6.0 \
+SENDMER_VERSION=v0.7.0 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
@@ -157,6 +157,7 @@ sendmer receive <ticket>
 
 - `--ticket-type <id|relay-and-addresses|relay|addresses>`：控制 ticket 中包含的地址信息
 - `--max-upload-rate <bytes-per-second>`：可选地限制发送端所有接收方共享的 payload 总上传速率；不包含协议开销
+- `--json-events`：将稳定的带类型传输事件按 JSON Lines 输出到 stderr，不显示进度条
 - `--format <hex|cid>`：控制导入后 hash 的输出格式
 - `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板
 

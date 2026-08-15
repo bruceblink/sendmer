@@ -73,7 +73,7 @@ pub async fn run() -> anyhow::Result<()> {
 /// 该函数主要用于命令行程序，不作为库 API 的一部分使用。
 async fn send(args: SendArgs) -> anyhow::Result<()> {
     let opts = send_options(&args);
-    let app_handle = cli_app_handle("[send]", args.common.no_progress);
+    let app_handle = cli_app_handle("[send]", args.common.no_progress, args.common.json_events);
 
     let res = sender::send(args.path.clone(), opts, app_handle).await?;
 
@@ -115,7 +115,7 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         args.download_idle_timeout_ms,
         &args.common,
     );
-    let app_handle = cli_app_handle("[recv]", args.common.no_progress);
+    let app_handle = cli_app_handle("[recv]", args.common.no_progress, args.common.json_events);
 
     let res = receiver::receive(args.ticket.to_string(), opts, app_handle).await?;
     println!("{} in {:?}", res.message, res.file_path);
@@ -157,8 +157,10 @@ fn receive_options(
     }
 }
 
-fn cli_app_handle(prefix: &'static str, no_progress: bool) -> AppHandle {
-    if no_progress {
+fn cli_app_handle(prefix: &'static str, no_progress: bool, json_events: bool) -> AppHandle {
+    if json_events {
+        Some(Arc::new(CliEventEmitter::json_lines()))
+    } else if no_progress {
         None
     } else {
         Some(Arc::new(CliEventEmitter::new(prefix)))
@@ -344,6 +346,7 @@ mod tests {
             format: Default::default(),
             verbose: 0,
             no_progress: false,
+            json_events: false,
             relay: RelayModeOption::Default,
             show_secret: false,
         }

@@ -58,6 +58,10 @@ pub struct CommonArgs {
     #[clap(long, default_value_t = false)]
     pub no_progress: bool,
 
+    /// Emit transfer events as JSON Lines on stderr instead of progress bars.
+    #[clap(long, default_value_t = false)]
+    pub json_events: bool,
+
     /// The relay URL to use as a home relay,
     ///
     /// Can be set to "disabled" to disable relay servers and "default"
@@ -261,5 +265,16 @@ mod tests {
                 .expect_err("zero upload rate must be rejected");
 
         assert!(error.to_string().contains("invalid value"));
+    }
+
+    #[test]
+    fn common_args_accept_json_events() {
+        let args = Args::try_parse_from(["sendmer", "send", "--json-events", "example.bin"])
+            .expect("json event output should be accepted");
+
+        let Commands::Send(send) = args.command else {
+            panic!("expected send command")
+        };
+        assert!(send.common.json_events);
     }
 }

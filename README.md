@@ -25,7 +25,7 @@ sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses chan
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 
 # Or install a specific version
-$env:SENDMER_VERSION="v0.6.0"
+$env:SENDMER_VERSION="v0.7.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
@@ -54,7 +54,7 @@ After installation:
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 
 # Or install a specific version
-SENDMER_VERSION=v0.6.0 \
+SENDMER_VERSION=v0.7.0 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
@@ -157,6 +157,7 @@ Send-specific options:
 
 - `--ticket-type <id|relay-and-addresses|relay|addresses>`: control how much addressing information is embedded in the ticket
 - `--max-upload-rate <bytes-per-second>`: optionally cap the sender's total payload upload rate shared by all receivers; protocol overhead is not included
+- `--json-events`: emit stable tagged transfer events as JSON Lines on stderr instead of a progress bar
 - `--format <hex|cid>`: choose how the imported hash is printed
 - `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard
 

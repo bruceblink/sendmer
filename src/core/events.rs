@@ -27,7 +27,8 @@ pub trait EventEmitter: Send + Sync {
 /// - 这是**通知型事件**，不参与错误控制流
 /// - 不用于 `Result` / `anyhow`
 /// - payload 直接体现在枚举字段中
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum TransferEvent {
     /// 传输开始
     Started { role: Role },
@@ -97,7 +98,8 @@ impl TransferEvent {
 ///
 /// 用于区分事件来自哪一侧，
 /// 前端与 CLI 可以据此展示不同视角的状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     /// 数据发送方
     Sender,
@@ -126,5 +128,42 @@ pub type AppHandle = Option<Arc<dyn EventEmitter>>;
 pub fn emit_event(app: &AppHandle, event: &TransferEvent) {
     if let Some(handle) = app {
         handle.emit(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Role, TransferEvent};
+
+    #[test]
+    fn transfer_event_json_schema_is_stable() {
+        let event = TransferEvent::Progress {
+            role: Role::Receiver,
+            processed: 512,
+            total: 1024,
+            speed: 256.0,
+        };
+
+        let json = serde_json::to_string(&event).expect("serialize transfer event");
+        assert_eq!(
+            json,
+            r#"{"type":"progress","role":"receiver","processed":512,"total":1024,"speed":256.0}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<TransferEvent>(&json).expect("deserialize transfer event"),
+            event
+        );
+    }
+
+    #[test]
+    fn file_names_use_snake_case_event_type() {
+        let event = TransferEvent::FileNames {
+            role: Role::Sender,
+            file_names: vec!["one.txt".to_owned()],
+        };
+
+        let value = serde_json::to_value(event).expect("serialize file names event");
+        assert_eq!(value["type"], "file_names");
+        assert_eq!(value["role"], "sender");
     }
 }

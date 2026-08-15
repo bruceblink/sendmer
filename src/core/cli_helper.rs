@@ -18,6 +18,7 @@ pub struct CliEventEmitter {
     mp: Arc<MultiProgress>,
     pb: Mutex<Option<ProgressBar>>,
     prefix: String,
+    json_lines: bool,
 }
 
 impl CliEventEmitter {
@@ -29,6 +30,17 @@ impl CliEventEmitter {
             mp: Arc::new(MultiProgress::new()),
             pb: Mutex::new(None),
             prefix: prefix.to_string(),
+            json_lines: false,
+        }
+    }
+
+    /// Create an emitter that writes one stable JSON event per stderr line.
+    pub fn json_lines() -> Self {
+        Self {
+            mp: Arc::new(MultiProgress::new()),
+            pb: Mutex::new(None),
+            prefix: String::new(),
+            json_lines: true,
         }
     }
 
@@ -45,6 +57,14 @@ impl CliEventEmitter {
 
 impl EventEmitter for CliEventEmitter {
     fn emit(&self, event: &TransferEvent) {
+        if self.json_lines {
+            match serde_json::to_string(event) {
+                Ok(json) => eprintln!("{json}"),
+                Err(error) => eprintln!("failed to serialize transfer event: {error}"),
+            }
+            return;
+        }
+
         match event {
             TransferEvent::Started { .. } => {
                 let mut guard = self.pb.lock().unwrap_or_else(|error| error.into_inner());
