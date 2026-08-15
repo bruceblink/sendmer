@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use iroh_blobs::ticket::BlobTicket;
 use std::fmt::{Display, Formatter};
 use std::net::{SocketAddrV4, SocketAddrV6};
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -91,6 +92,13 @@ pub struct SendArgs {
     /// establishment work well.
     #[clap(long, default_value_t = AddrInfoOptions::RelayAndAddresses)]
     pub ticket_type: AddrInfoOptions,
+
+    /// Optional shared payload upload ceiling in bytes per second.
+    ///
+    /// The limit is shared by all receivers for this send command. It does not
+    /// include relay, QUIC, or other protocol overhead.
+    #[clap(long)]
+    pub max_upload_rate: Option<NonZeroU64>,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -188,6 +196,7 @@ mod tests {
     use clap::Parser;
     use iroh::EndpointAddr;
     use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
+    use std::num::NonZeroU64;
 
     fn sample_ticket() -> String {
         BlobTicket::new(
@@ -226,5 +235,31 @@ mod tests {
         assert_eq!(receive.connect_timeout_ms, Some(1000));
         assert_eq!(receive.metadata_timeout_ms, Some(2000));
         assert_eq!(receive.download_idle_timeout_ms, Some(3000));
+    }
+
+    #[test]
+    fn send_args_accept_non_zero_upload_rate() {
+        let args = Args::try_parse_from([
+            "sendmer",
+            "send",
+            "--max-upload-rate",
+            "1048576",
+            "example.bin",
+        ])
+        .expect("valid send arguments");
+
+        let Commands::Send(send) = args.command else {
+            panic!("expected send command")
+        };
+        assert_eq!(send.max_upload_rate.map(NonZeroU64::get), Some(1_048_576));
+    }
+
+    #[test]
+    fn send_args_reject_zero_upload_rate() {
+        let error =
+            Args::try_parse_from(["sendmer", "send", "--max-upload-rate", "0", "example.bin"])
+                .expect_err("zero upload rate must be rejected");
+
+        assert!(error.to_string().contains("invalid value"));
     }
 }

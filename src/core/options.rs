@@ -4,6 +4,7 @@
 
 use iroh::RelayUrl;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 #[derive(Debug, Default)]
@@ -12,6 +13,12 @@ pub struct SendOptions {
     pub ticket_type: AddrInfoOptions,
     pub magic_ipv4_addr: Option<SocketAddrV4>,
     pub magic_ipv6_addr: Option<SocketAddrV6>,
+    /// Optional shared payload upload ceiling for every receiver of this share.
+    ///
+    /// `None` preserves the unrestricted provider behavior. A non-zero rate is
+    /// enforced by the sender after each payload chunk, rather than by changing
+    /// QUIC transport windows or local file-import behavior.
+    pub max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
 }
 
 #[derive(Debug, Clone, Copy)]

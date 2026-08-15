@@ -156,6 +156,7 @@ Retry reuses data already obtained by the current receive process, but it is not
 Send-specific options:
 
 - `--ticket-type <id|relay-and-addresses|relay|addresses>`: control how much addressing information is embedded in the ticket
+- `--max-upload-rate <bytes-per-second>`: optionally cap the sender's total payload upload rate shared by all receivers; protocol overhead is not included
 - `--format <hex|cid>`: choose how the imported hash is printed
 - `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard
 

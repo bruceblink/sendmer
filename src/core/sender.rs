@@ -17,7 +17,7 @@ use iroh_blobs::{
         blobs::{AddPathOptions, ImportMode},
     },
     format::collection::Collection,
-    provider::events::{ConnectMode, EventMask, EventSender, RequestMode},
+    provider::events::{ConnectMode, EventMask, EventSender, RequestMode, ThrottleMode},
     store::fs::FsStore,
     ticket::BlobTicket,
 };
@@ -25,12 +25,15 @@ use n0_future::StreamExt;
 use n0_future::{BufferedStreamExt, task::AbortOnDropHandle};
 use std::{
     collections::{BTreeSet, HashSet},
+    num::NonZeroU64,
     path::{Component, Path, PathBuf},
     time::Duration,
 };
 use tokio::{
     select,
     sync::{Semaphore, mpsc, watch},
+    task::JoinSet,
+    time::Instant,
 };
 use tracing::{info, trace, warn};
 use walkdir::WalkDir;
@@ -154,7 +157,13 @@ async fn setup_data_sharing(
     let setup_future = async move {
         let store = load_fs_store(&blobs_data_dir).await?;
 
-        let blobs = BlobsProtocol::new(&store, Some(create_event_sender(progress_tx)));
+        let blobs = BlobsProtocol::new(
+            &store,
+            Some(create_event_sender(
+                progress_tx,
+                share_request.max_upload_rate_bytes_per_sec,
+            )),
+        );
 
         let imported = import(share_request.path, blobs.store()).await?;
         let size = imported.size;
@@ -164,6 +173,7 @@ async fn setup_data_sharing(
             size,
             share_request.entry_type,
             transfer_status_tx,
+            share_request.max_upload_rate_bytes_per_sec,
         );
 
         let router = iroh::protocol::Router::builder(endpoint)
@@ -214,6 +224,7 @@ struct ShareRequest {
     path: PathBuf,
     entry_type: crate::core::types::EntryType,
     app_handle: AppHandle,
+    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
 }
 
 struct SharePlan {
@@ -221,6 +232,7 @@ struct SharePlan {
     wait_for_online: bool,
     blobs_data_dir: PathBuf,
     ticket_type: AddrInfoOptions,
+    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
 }
 
 struct ImportedSource {
@@ -236,15 +248,26 @@ struct ImportedBlob {
 
 fn create_event_sender(
     progress_tx: mpsc::Sender<iroh_blobs::provider::events::ProviderMessage>,
+    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
 ) -> EventSender {
     EventSender::new(
         progress_tx,
-        EventMask {
-            connected: ConnectMode::Notify,
-            get: RequestMode::NotifyLog,
-            ..EventMask::DEFAULT
-        },
+        provider_event_mask(max_upload_rate_bytes_per_sec),
     )
+}
+
+/// Build the provider subscription mask, avoiding throttle RPCs unless a caller configured a limit.
+const fn provider_event_mask(max_upload_rate_bytes_per_sec: Option<NonZeroU64>) -> EventMask {
+    EventMask {
+        connected: ConnectMode::Notify,
+        get: RequestMode::NotifyLog,
+        throttle: if max_upload_rate_bytes_per_sec.is_some() {
+            ThrottleMode::Intercept
+        } else {
+            ThrottleMode::None
+        },
+        ..EventMask::DEFAULT
+    }
 }
 
 fn spawn_provider_progress_task(
@@ -253,6 +276,7 @@ fn spawn_provider_progress_task(
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
     transfer_status_tx: watch::Sender<SenderTransferStatus>,
+    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
 ) -> AbortOnDropHandle<anyhow::Result<()>> {
     AbortOnDropHandle::new(tokio::spawn(show_provide_progress_with_provider_tracker(
         progress_rx,
@@ -260,6 +284,7 @@ fn spawn_provider_progress_task(
         total_file_size,
         entry_type,
         transfer_status_tx,
+        max_upload_rate_bytes_per_sec,
     )))
 }
 
@@ -307,6 +332,7 @@ impl SharePlan {
             ),
             blobs_data_dir: prepare_temp_directory()?,
             ticket_type: options.ticket_type,
+            max_upload_rate_bytes_per_sec: options.max_upload_rate_bytes_per_sec,
         })
     }
 
@@ -315,6 +341,7 @@ impl SharePlan {
             path,
             entry_type: self.entry_type,
             app_handle,
+            max_upload_rate_bytes_per_sec: self.max_upload_rate_bytes_per_sec,
         }
     }
 }
@@ -389,6 +416,7 @@ pub async fn send(
         path = %path.display(),
         relay_mode = ?options.relay_mode,
         ticket_type = ?options.ticket_type,
+        max_upload_rate_bytes_per_sec = ?options.max_upload_rate_bytes_per_sec,
         "starting send"
     );
     validate_share_path(&path)?;
@@ -634,11 +662,18 @@ async fn show_provide_progress_with_provider_tracker(
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
     transfer_status_tx: watch::Sender<SenderTransferStatus>,
+    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
 ) -> anyhow::Result<()> {
     let reporter = SenderProgressReporter::new(app_handle, entry_type, transfer_status_tx);
     let request_task_limit = std::sync::Arc::new(Semaphore::new(PROVIDER_PROGRESS_TASK_LIMIT));
+    let upload_rate_limiter = max_upload_rate_bytes_per_sec
+        .map(UploadRateLimiter::new)
+        .map(std::sync::Arc::new);
+    let mut throttle_tasks = JoinSet::new();
 
     while let Some(item) = recv.recv().await {
+        while throttle_tasks.try_join_next().is_some() {}
+
         match item {
             iroh_blobs::provider::events::ProviderMessage::ClientConnectedNotify(_msg) => {}
             iroh_blobs::provider::events::ProviderMessage::ConnectionClosed(_msg) => {}
@@ -660,27 +695,124 @@ async fn show_provide_progress_with_provider_tracker(
                     }
                 });
             }
+            iroh_blobs::provider::events::ProviderMessage::Throttle(msg) => {
+                if let Some(limiter) = upload_rate_limiter.clone() {
+                    throttle_tasks.spawn(async move {
+                        limiter.wait_for_chunk(msg.size).await;
+                        let _ = msg.tx.send(Ok(())).await;
+                    });
+                } else {
+                    let _ = msg.tx.send(Ok(())).await;
+                }
+            }
             _ => {
                 // Handle other message types that we don't need to track
             }
         }
     }
 
+    // Outstanding throttle waits can be arbitrarily long at very low rates. Abort them
+    // when the provider channel closes so sender shutdown never waits for pacing sleeps.
+    throttle_tasks.abort_all();
+    while throttle_tasks.join_next().await.is_some() {}
+
     Ok(())
+}
+
+/// Serialize payload chunk reservations so every receiver shares one upload budget.
+struct UploadRateLimiter {
+    bytes_per_second: NonZeroU64,
+    next_allowed_at: tokio::sync::Mutex<Instant>,
+}
+
+impl UploadRateLimiter {
+    fn new(bytes_per_second: NonZeroU64) -> Self {
+        Self {
+            bytes_per_second,
+            next_allowed_at: tokio::sync::Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Reserve the next global pacing slot without holding the mutex while a task sleeps.
+    async fn reserve(&self, bytes: u64) -> Instant {
+        let now = Instant::now();
+        let mut next_allowed_at = self.next_allowed_at.lock().await;
+        let allowed_at = (*next_allowed_at).max(now);
+        *next_allowed_at = allowed_at
+            .checked_add(upload_delay(bytes, self.bytes_per_second))
+            .unwrap_or(allowed_at);
+        allowed_at
+    }
+
+    async fn wait_for_chunk(&self, bytes: u64) {
+        tokio::time::sleep_until(self.reserve(bytes).await).await;
+    }
+}
+
+/// Convert a payload chunk into a rounded-up pacing interval that cannot exceed the configured rate.
+fn upload_delay(bytes: u64, bytes_per_second: NonZeroU64) -> Duration {
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+
+    let byte_nanoseconds = u128::from(bytes) * NANOS_PER_SECOND;
+    let rate = u128::from(bytes_per_second.get());
+    let nanoseconds =
+        byte_nanoseconds / rate + u128::from((!byte_nanoseconds.is_multiple_of(rate)) as u8);
+    let seconds = nanoseconds / NANOS_PER_SECOND;
+    if seconds > u128::from(u64::MAX) {
+        return Duration::MAX;
+    }
+
+    Duration::new(seconds as u64, (nanoseconds % NANOS_PER_SECOND) as u32)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ShareRequest, canonicalized_path_to_string, collect_import_sources, detect_entry_type,
-        import_parallelism, prepare_endpoint, send, setup_data_sharing,
-        shutdown_started_sender_setup, validate_share_path,
+        ShareRequest, UploadRateLimiter, canonicalized_path_to_string, collect_import_sources,
+        detect_entry_type, import_parallelism, prepare_endpoint, provider_event_mask, send,
+        setup_data_sharing, shutdown_started_sender_setup, validate_share_path,
     };
     use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions, apply_options};
     use crate::core::types::EntryType;
     use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
+    use iroh_blobs::provider::events::ThrottleMode;
+    use std::num::NonZeroU64;
     use std::path::Path;
     use std::str::FromStr;
+    use std::time::Duration;
+
+    #[test]
+    fn provider_event_mask_only_enables_throttle_for_configured_limits() {
+        assert_eq!(provider_event_mask(None).throttle, ThrottleMode::None);
+        assert_eq!(
+            provider_event_mask(NonZeroU64::new(1_024)).throttle,
+            ThrottleMode::Intercept
+        );
+    }
+
+    #[test]
+    fn upload_delay_rounds_up_to_preserve_the_rate_ceiling() {
+        assert_eq!(
+            super::upload_delay(1, NonZeroU64::new(3).expect("non-zero rate")),
+            Duration::from_nanos(333_333_334)
+        );
+        assert_eq!(
+            super::upload_delay(
+                16 * 1024,
+                NonZeroU64::new(16 * 1024).expect("non-zero rate")
+            ),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn upload_rate_limiter_reserves_one_schedule_for_all_receivers() {
+        let limiter = UploadRateLimiter::new(NonZeroU64::new(100).expect("non-zero rate"));
+        let first = limiter.reserve(100).await;
+        let second = limiter.reserve(100).await;
+
+        assert_eq!(second.duration_since(first), Duration::from_secs(1));
+    }
 
     fn list_sender_temp_dirs() -> std::collections::HashSet<std::path::PathBuf> {
         std::fs::read_dir(std::env::temp_dir())
@@ -939,6 +1071,7 @@ mod tests {
             path: missing_source,
             entry_type: EntryType::File,
             app_handle: None,
+            max_upload_rate_bytes_per_sec: None,
         };
 
         let error = match setup_data_sharing(endpoint, blobs_data_dir.clone(), share_request).await
@@ -978,6 +1111,7 @@ mod tests {
                 path: source_file,
                 entry_type: EntryType::File,
                 app_handle: None,
+                max_upload_rate_bytes_per_sec: None,
             },
         )
         .await

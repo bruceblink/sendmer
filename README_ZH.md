@@ -156,6 +156,7 @@ sendmer receive <ticket>
 仅 `send` 支持：
 
 - `--ticket-type <id|relay-and-addresses|relay|addresses>`：控制 ticket 中包含的地址信息
+- `--max-upload-rate <bytes-per-second>`：可选地限制发送端所有接收方共享的 payload 总上传速率；不包含协议开销
 - `--format <hex|cid>`：控制导入后 hash 的输出格式
 - `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板
 

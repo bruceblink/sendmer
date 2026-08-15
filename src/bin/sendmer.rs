@@ -128,6 +128,7 @@ fn send_options(args: &SendArgs) -> SendOptions {
         ticket_type: args.ticket_type,
         magic_ipv4_addr: args.common.magic_ipv4_addr,
         magic_ipv6_addr: args.common.magic_ipv6_addr,
+        max_upload_rate_bytes_per_sec: args.max_upload_rate,
     }
 }
 
@@ -328,10 +329,12 @@ fn add_to_clipboard(ticket: &String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{receive_options, wait_for_send_shutdown_with_signal};
+    use super::{receive_options, send_options, wait_for_send_shutdown_with_signal};
+    use clap::Parser;
     use sendmer::core::args::CommonArgs;
     use sendmer::core::options::RelayModeOption;
     use sendmer::core::results::SenderTransferStatus;
+    use sendmer::{Args, Commands};
     use std::path::PathBuf;
 
     fn sample_common_args() -> CommonArgs {
@@ -376,6 +379,29 @@ mod tests {
         let options = receive_options(None, 3, 250, None, None, None, &common);
 
         assert!(options.output_dir.is_none());
+    }
+
+    #[test]
+    fn send_options_preserves_upload_rate() {
+        let args = Args::try_parse_from([
+            "sendmer",
+            "send",
+            "--max-upload-rate",
+            "2048",
+            "example.bin",
+        ])
+        .expect("valid send arguments");
+        let Commands::Send(send) = args.command else {
+            panic!("expected send command")
+        };
+
+        let options = send_options(&send);
+        assert_eq!(
+            options
+                .max_upload_rate_bytes_per_sec
+                .map(std::num::NonZeroU64::get),
+            Some(2_048)
+        );
     }
 
     #[tokio::test]

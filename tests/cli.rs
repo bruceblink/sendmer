@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     str::FromStr,
+    time::{Duration, Instant},
 };
 
 use iroh::EndpointAddr;
@@ -94,19 +95,28 @@ struct RunningSend {
 
 impl RunningSend {
     fn spawn(path: &Path, cwd: &Path) -> io::Result<Self> {
-        let child = Command::new(sendmer_bin())
-            .args([
-                "send",
-                "--no-progress",
-                "--relay",
-                "disabled",
-                path.to_str().unwrap(),
-            ])
+        Self::spawn_with_upload_rate(path, cwd, None)
+    }
+
+    /// Launch a sender with an optional payload cap so integration tests exercise the public CLI.
+    fn spawn_with_upload_rate(
+        path: &Path,
+        cwd: &Path,
+        max_upload_rate: Option<u64>,
+    ) -> io::Result<Self> {
+        let mut command = Command::new(sendmer_bin());
+        command
+            .args(["send", "--no-progress", "--relay", "disabled"])
             .current_dir(cwd)
             .env_remove("RUST_LOG")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        if let Some(max_upload_rate) = max_upload_rate {
+            command
+                .arg("--max-upload-rate")
+                .arg(max_upload_rate.to_string());
+        }
+        let child = command.arg(path).spawn()?;
         Ok(Self { child })
     }
 
@@ -185,6 +195,41 @@ fn send_recv_file() {
     let tgt_file = tgt_dir.path().join(name);
     let tgt_data = std::fs::read(tgt_file).unwrap();
     assert_eq!(tgt_data, data);
+}
+
+#[test]
+fn send_upload_rate_caps_local_payload_transfer() {
+    let name = "rate-limited.bin";
+    let data = vec![9u8; 256 * 1024];
+    let src_dir = tempfile::tempdir().unwrap();
+    let tgt_dir = tempfile::tempdir().unwrap();
+    let src_file = src_dir.path().join(name);
+    std::fs::write(&src_file, &data).unwrap();
+
+    let mut send =
+        RunningSend::spawn_with_upload_rate(&src_file, src_dir.path(), Some(64 * 1024)).unwrap();
+    let ticket = send.read_ticket();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let options = sendmer::ReceiveOptions {
+        output_dir: Some(tgt_dir.path().to_path_buf()),
+        relay_mode: Default::default(),
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+        retry_policy: Default::default(),
+    };
+
+    let started = Instant::now();
+    runtime
+        .block_on(sendmer::receive(ticket.to_string(), options, None))
+        .expect("rate-limited receive should succeed");
+    let elapsed = started.elapsed();
+    send.cleanup();
+
+    assert_eq!(std::fs::read(tgt_dir.path().join(name)).unwrap(), data);
+    assert!(
+        elapsed >= Duration::from_secs(2),
+        "256 KiB at a 64 KiB/s payload cap completed too quickly: {elapsed:?}"
+    );
 }
 
 #[test]
