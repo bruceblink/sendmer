@@ -45,6 +45,10 @@
 
 周期：1 至 2 周。目标是让 sendmer 可以被 GUI、脚本和其他 Rust 服务可靠嵌入。
 
+当前已落地：`SendHandle` opaque 生命周期 API、发送端共享上传限速、以及带稳定类型标签的
+JSON Lines 传输事件输出。旧的 `SendResult`/`send` API 保留作为兼容层；AlterSendmer v0.7
+优先通过 `SendHandle` 和语义化版本依赖接入。
+
 - 为 `TransferEvent` 增加 `Serialize` 和稳定 schema。
 - 增加 `transfer_id`、阶段、路径、错误码、时间戳、处理字节和总字节。
 - 提供 JSON Lines 输出，便于脚本和 GUI 消费。

@@ -33,6 +33,7 @@
 - `v0.6.0` 已完成原子 staging 导出和 native no-replace 提交：失败不会留下半目标，已有文件、目录或符号链接保持不变。
 - `v0.6.0` 已完成下载阶段重连重试和可选连接、元数据、下载空闲超时；未设置 timeout 时保持既有行为，无效 timeout 在创建 endpoint 和临时目录前失败。
 - `v0.6.0` 固化 fail-only 冲突策略，并在发送端拒绝空目录、空子目录和符号链接，避免当前 file-only collection 格式静默丢失数据。
+- v0.7 API 首批已完成：`SendHandle` 隐藏 Router/FsStore/临时目录字段，CLI 支持稳定 JSON Lines 事件；兼容的旧 API 继续保留，GUI 迁移使用 crates.io 版本号而不是 Git revision。
 
 ## Recommended approach
 
