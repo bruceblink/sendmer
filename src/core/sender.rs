@@ -6,7 +6,7 @@ use crate::core::endpoint::base_endpoint_builder;
 use crate::core::events::AppHandle;
 use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
 use crate::core::progress::{SenderProgressReporter, SenderTransferStatus, TransferId};
-use crate::core::results::SendResult;
+use crate::core::results::{SendHandle, SendResult};
 use crate::core::storage::{load_fs_store, unique_temp_dir};
 use anyhow::Context;
 use iroh::{Endpoint, address_lookup::PkarrPublisher};
@@ -493,6 +493,20 @@ pub async fn send(
         "send setup complete"
     );
     Ok(result)
+}
+
+/// Start a share and return the opaque v0.7 lifecycle handle.
+///
+/// This is the preferred embedding API for GUI and service callers. The
+/// legacy `send` function remains available for source compatibility.
+pub async fn send_handle(
+    path: PathBuf,
+    options: SendOptions,
+    app_handle: AppHandle,
+) -> anyhow::Result<SendHandle> {
+    send(path, options, app_handle)
+        .await
+        .map(SendResult::into_handle)
 }
 
 fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {

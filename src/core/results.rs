@@ -9,6 +9,15 @@ use tokio::sync::watch;
 
 pub use crate::core::progress::SenderTransferStatus;
 
+/// Opaque owner for an active send operation.
+///
+/// The handle exposes transfer metadata and lifecycle methods without leaking
+/// the Router, blob store, or temporary-directory implementation details to
+/// GUI and service callers.
+pub struct SendHandle {
+    inner: SendResult,
+}
+
 /// 发送结果结构体。
 pub struct SendResult {
     pub ticket: BlobTicket,
@@ -44,6 +53,11 @@ fn finalize_sender_shutdown(
 }
 
 impl SendResult {
+    /// Convert the legacy result into the stable lifecycle handle API.
+    pub const fn into_handle(self) -> SendHandle {
+        SendHandle { inner: self }
+    }
+
     pub fn transfer_status(&self) -> SenderTransferStatus {
         *self.transfer_status_rx.borrow()
     }
@@ -78,6 +92,48 @@ impl SendResult {
         let cleanup_result =
             normalize_sender_cleanup_result(tokio::fs::remove_dir_all(&blobs_data_dir).await);
         finalize_sender_shutdown(shutdown_result, cleanup_result)
+    }
+}
+
+impl SendHandle {
+    /// Return the ticket that peers can use to receive this share.
+    pub const fn ticket(&self) -> &BlobTicket {
+        &self.inner.ticket
+    }
+
+    /// Return the collection hash advertised by the ticket.
+    pub const fn hash(&self) -> Hash {
+        self.inner.hash
+    }
+
+    /// Return the imported payload size in bytes.
+    pub const fn size(&self) -> u64 {
+        self.inner.size
+    }
+
+    /// Return whether the share represents a single file or a directory.
+    pub const fn entry_type(&self) -> EntryType {
+        self.inner.entry_type
+    }
+
+    /// Read the current aggregate sender status.
+    pub fn transfer_status(&self) -> SenderTransferStatus {
+        self.inner.transfer_status()
+    }
+
+    /// Subscribe to aggregate sender status changes without exposing internals.
+    pub fn subscribe_transfer_status(&self) -> watch::Receiver<SenderTransferStatus> {
+        self.inner.subscribe_transfer_status()
+    }
+
+    /// Gracefully close the share and remove its temporary data.
+    pub async fn close(self) -> anyhow::Result<()> {
+        self.inner.shutdown().await
+    }
+
+    /// Cancel the share using the same ordered cleanup as `close`.
+    pub async fn cancel(self) -> anyhow::Result<()> {
+        self.close().await
     }
 }
 
@@ -139,6 +195,39 @@ mod tests {
         result.shutdown().await.expect("shutdown sender");
 
         assert!(endpoint.is_closed(), "shutdown should close the endpoint");
+        assert!(!blobs_data_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn send_handle_exposes_metadata_and_orders_cleanup() {
+        let source_dir = tempfile::tempdir().expect("source directory");
+        let source_file = source_dir.path().join("handle.bin");
+        tokio::fs::write(&source_file, b"opaque handle")
+            .await
+            .expect("write source file");
+        let options = SendOptions {
+            relay_mode: RelayModeOption::Disabled,
+            ..SendOptions::default()
+        };
+
+        let result = sender::send(source_file, options, None)
+            .await
+            .expect("start sender");
+        let expected_ticket = result.ticket.clone();
+        let expected_hash = result.hash;
+        let expected_size = result.size;
+        let expected_entry_type = result.entry_type;
+        let blobs_data_dir = result.blobs_data_dir.clone();
+        let endpoint = result.router.endpoint().clone();
+
+        let handle = result.into_handle();
+        assert_eq!(handle.ticket(), &expected_ticket);
+        assert_eq!(handle.hash(), expected_hash);
+        assert_eq!(handle.size(), expected_size);
+        assert_eq!(handle.entry_type(), expected_entry_type);
+        handle.close().await.expect("close sender handle");
+
+        assert!(endpoint.is_closed(), "close should close the endpoint");
         assert!(!blobs_data_dir.exists());
     }
 }
