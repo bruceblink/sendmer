@@ -24,7 +24,7 @@
 - sender 全局共享的 payload 上传速率上限。
 - 带会话、严格序号、阶段、单终态与结构化错误的版本化 JSON Lines 事件。
 - Linux、macOS、Windows 的测试、安装器和 GitHub Release 链路。
-- AlterSendmer 下一版本将通过 crates.io 上的 `sendmer = "0.8.0"` 消费新事件契约。
+- AlterSendmer `v0.4.0` 已通过 crates.io 上的 `sendmer = "0.8.0"` 消费新事件契约。
 
 主产品边界仍是“隐私优先的一次性文件传输”。核心传输层近期不引入账号系统、云端
 文件存储、自建控制面或后台同步服务。传输票据继续采用 bearer capability 语义：取得票据
@@ -88,17 +88,18 @@ release changelog CI 接入。事件信封迁移统一进入 `v0.4.0`，不制�
 - 保留清晰的迁移文档；由于现有 `TransferEvent` 是可穷举枚举，结构变更使用新的次版本，
   不伪装成 `v0.7.1` 补丁。
 
-验收门槛：`cargo doc --no-deps`、公开 API 示例、事件 fixture、MSRV 1.91 检查、跨平台 CI
-和现有完整门禁全部通过。发布到 crates.io 后，AlterSendmer 才能把依赖升级为
-`sendmer = "0.8.0"`；不得提交本地 path 或 Git 提交依赖作为过渡方案。
+验收结果：`cargo doc --no-deps`、公开 API 示例、事件 fixture、MSRV 1.91 检查、跨平台 CI
+和现有完整门禁均已通过；`v0.8.0` 已发布到 crates.io。AlterSendmer 随后使用正式的
+`sendmer = "0.8.0"` 完成迁移，全程未使用本地 path 或 Git 提交依赖。
 
-### AlterSendmer v0.4.0：消费 sendmer v0.8.0 契约
+### AlterSendmer v0.4.0：消费 sendmer v0.8.0 契约（已完成）
 
-- 使用核心阶段驱动 UI，不再仅靠 started/progress 事件推断生命周期。
-- 按错误码展示本地化摘要、可展开技术详情和是否可重试。
-- 历史记录增加可选会话 ID、失败阶段和错误码，并兼容已有 `history.json`。
-- 诊断信息保持隐私边界，不记录完整票据和绝对路径。
-- 依赖正式发布的 `sendmer = "0.8.0"`，完成跨项目回归后发布 `v0.4.0`。
+- 已使用 schema 版本、会话 ID、严格序号和核心阶段驱动 UI 生命周期。
+- 已按错误码展示本地化安全摘要和可重试提示。
+- 历史记录已增加可选会话 ID、失败阶段和错误码，并兼容已有 `history.json`。
+- 诊断信息继续遵守隐私边界，不记录完整票据和绝对路径。
+- 已依赖正式发布的 `sendmer = "0.8.0"`，通过跨项目 contract tests、三平台 CI 和 Windows
+  视觉验收，并发布 [`v0.4.0`](https://github.com/bruceblink/alter-sendmer/releases/tag/v0.4.0)。
 
 ### v0.9.0：持久化、规模和安全
 
@@ -142,20 +143,22 @@ AlterSendmer 必须执行 fmt、locked check、Clippy、workspace tests，以及
 3. AlterSendmer 使用该正式版本号升级依赖并完成跨项目回归。
 4. 发布 AlterSendmer，不使用本地 path 或 Git 提交依赖绕过发布顺序。
 
-## 6. 进入下一阶段的指标
+## 6. 阶段验收与进入下一阶段的指标
 
-AlterSendmer `v0.3.0` 发布前：
+AlterSendmer `v0.3.0` 已验证：
 
 - 无限速与自定义速率均可持久化并正确映射到 `SendOptions`。
 - 无效输入不会启动传输；限速不破坏取消和退出清理。
 - 设置页在默认与最小窗口尺寸下无重叠，跨平台 CI 全绿。
 
-sendmer `v0.8.0` 发布前：
+sendmer `v0.8.0` 与 AlterSendmer `v0.4.0` 已验证：
 
 - 事件 schema fixture 固定，所有事件具有同一会话 ID 和严格递增序号。
 - completed、failed、cancelled 三种终态互斥且仅发出一次。
 - 公开错误码和重试属性有 contract tests，日志与事件不泄漏敏感票据。
 - 多接收方、取消和关闭语义有文档与可重复测试覆盖。
+- 桌面客户端仅依赖 crates.io 正式版本，能够拒绝未知 schema、重复事件和序号缺口。
+- Windows、macOS、Linux 的桌面 CI 与发布资产均已通过。
 
 进入 `v0.9.0` 前：
 
