@@ -2,6 +2,7 @@
 //!
 //! 本文件定义：SendResult, ReceiveResult。
 
+use crate::core::events::{TransferError, TransferErrorCode, TransferPhase};
 use crate::core::progress::TransferEventEmitter;
 use crate::core::types::EntryType;
 use iroh_blobs::{Hash, ticket::BlobTicket};
@@ -78,7 +79,7 @@ impl SendResult {
         let result = self.shutdown_resources().await;
         match &result {
             Ok(()) => event_emitter.emit_completed(),
-            Err(error) => event_emitter.emit_internal_failure(error.to_string()),
+            Err(_) => event_emitter.emit_failed(sender_finalization_error()),
         }
         result
     }
@@ -89,7 +90,7 @@ impl SendResult {
         let result = self.shutdown_resources().await;
         match &result {
             Ok(()) => event_emitter.emit_cancelled(),
-            Err(error) => event_emitter.emit_internal_failure(error.to_string()),
+            Err(_) => event_emitter.emit_failed(sender_finalization_error()),
         }
         result
     }
@@ -118,6 +119,15 @@ impl SendResult {
             normalize_sender_cleanup_result(tokio::fs::remove_dir_all(&blobs_data_dir).await);
         finalize_sender_shutdown(shutdown_result, cleanup_result)
     }
+}
+
+fn sender_finalization_error() -> TransferError {
+    TransferError::new(
+        TransferErrorCode::Internal,
+        TransferPhase::Finalizing,
+        false,
+        "unable to finalize sender resources",
+    )
 }
 
 impl SendHandle {

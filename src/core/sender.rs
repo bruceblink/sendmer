@@ -3,7 +3,10 @@
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
 use crate::core::endpoint::base_endpoint_builder;
-use crate::core::events::{AppHandle, Role, TransferPhase};
+use crate::core::events::{
+    AppHandle, Role, TransferError, TransferErrorCode, TransferPhase, classified_transfer_error,
+    classify_transfer_error, is_transfer_cancelled, transfer_cancelled_error,
+};
 use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
 use crate::core::progress::{
     SenderProgressReporter, SenderTransferStatus, TransferEventEmitter, TransferId,
@@ -163,7 +166,15 @@ async fn setup_data_sharing(
             event_emitter,
             max_upload_rate_bytes_per_sec,
         } = share_request;
-        let store = load_fs_store(&blobs_data_dir).await?;
+        let store = load_fs_store(&blobs_data_dir).await.map_err(|error| {
+            sender_failure(
+                error,
+                TransferErrorCode::Filesystem,
+                TransferPhase::Preparing,
+                false,
+                "unable to prepare sender storage",
+            )
+        })?;
 
         let blobs = BlobsProtocol::new(
             &store,
@@ -173,7 +184,15 @@ async fn setup_data_sharing(
             )),
         );
 
-        let imported = import(path, blobs.store()).await?;
+        let imported = import(path, blobs.store()).await.map_err(|error| {
+            sender_failure(
+                error,
+                TransferErrorCode::Filesystem,
+                TransferPhase::Preparing,
+                false,
+                "unable to import shared data",
+            )
+        })?;
         let size = imported.size;
         let progress_handle = spawn_provider_progress_task(
             progress_rx,
@@ -226,6 +245,17 @@ fn finalize_failed_sender_setup(
         warn!(error = %error, "failed to clean sender temporary data after setup error");
     }
     primary_error
+}
+
+/// Pair an internal sender error with the stable details exposed to event consumers.
+fn sender_failure(
+    error: anyhow::Error,
+    code: TransferErrorCode,
+    phase: TransferPhase,
+    retryable: bool,
+    message: &'static str,
+) -> anyhow::Error {
+    classify_transfer_error(error, TransferError::new(code, phase, retryable, message))
 }
 
 struct ShareRequest {
@@ -431,10 +461,12 @@ pub async fn send(
     event_emitter.emit_started(TransferPhase::Preparing);
     let result = send_started(path, options, event_emitter.clone()).await;
     if let Err(error) = &result {
-        if error.to_string() == "Operation cancelled" {
+        if is_transfer_cancelled(error) {
             event_emitter.emit_cancelled();
+        } else if let Some(details) = classified_transfer_error(error) {
+            event_emitter.emit_failed(details);
         } else {
-            event_emitter.emit_internal_failure(error.to_string());
+            event_emitter.emit_internal_failure("send failed");
         }
     }
     result
@@ -453,10 +485,34 @@ async fn send_started(
         max_upload_rate_bytes_per_sec = ?options.max_upload_rate_bytes_per_sec,
         "starting send"
     );
-    validate_share_path(&path)?;
+    validate_share_path(&path).map_err(|error| {
+        sender_failure(
+            error,
+            TransferErrorCode::InvalidInput,
+            TransferPhase::Preparing,
+            false,
+            "invalid share path",
+        )
+    })?;
 
-    let plan = SharePlan::new(&path, &options)?;
-    let endpoint = prepare_endpoint(&options).await?;
+    let plan = SharePlan::new(&path, &options).map_err(|error| {
+        sender_failure(
+            error,
+            TransferErrorCode::Filesystem,
+            TransferPhase::Preparing,
+            false,
+            "unable to prepare sender storage",
+        )
+    })?;
+    let endpoint = prepare_endpoint(&options).await.map_err(|error| {
+        sender_failure(
+            error,
+            TransferErrorCode::ConnectionFailed,
+            TransferPhase::Connecting,
+            true,
+            "unable to initialize sender networking",
+        )
+    })?;
     let share_request = plan.build_request(path, event_emitter.clone());
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
@@ -471,7 +527,7 @@ async fn send_started(
             share_request
         ) => x,
         _ = &mut ctrl_c => {
-            Err(anyhow::anyhow!("Operation cancelled"))
+            Err(transfer_cancelled_error())
         }
     };
     let setup = match setup_result {
@@ -514,7 +570,7 @@ async fn send_started(
                 plan.entry_type,
                 plan.ticket_type,
                 event_emitter.clone(),
-                anyhow::anyhow!("Operation cancelled"),
+                transfer_cancelled_error(),
             )
             .await);
         }
@@ -822,7 +878,9 @@ mod tests {
         detect_entry_type, import_parallelism, prepare_endpoint, provider_event_mask, send,
         setup_data_sharing, shutdown_started_sender_setup, validate_share_path,
     };
-    use crate::core::events::{Role, TransferPhase};
+    use crate::core::events::{
+        EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
+    };
     use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions, apply_options};
     use crate::core::progress::TransferEventEmitter;
     use crate::core::types::EntryType;
@@ -831,7 +889,25 @@ mod tests {
     use std::num::NonZeroU64;
     use std::path::Path;
     use std::str::FromStr;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: Mutex<Vec<TransferEvent>>,
+    }
+
+    impl RecordingEmitter {
+        fn events(&self) -> Vec<TransferEvent> {
+            self.events.lock().expect("events lock").clone()
+        }
+    }
+
+    impl EventEmitter for RecordingEmitter {
+        fn emit(&self, event: &TransferEvent) {
+            self.events.lock().expect("events lock").push(event.clone());
+        }
+    }
 
     #[test]
     fn provider_event_mask_only_enables_throttle_for_configured_limits() {
@@ -1063,6 +1139,7 @@ mod tests {
         let empty = temp_dir.path().join("empty-share");
         std::fs::create_dir_all(&empty).expect("create empty directory");
         let before = list_sender_temp_dirs();
+        let emitter = Arc::new(RecordingEmitter::default());
 
         let result = send(
             empty,
@@ -1070,7 +1147,7 @@ mod tests {
                 relay_mode: RelayModeOption::Disabled,
                 ..SendOptions::default()
             },
-            None,
+            Some(emitter.clone()),
         )
         .await;
         let error = match result {
@@ -1087,6 +1164,16 @@ mod tests {
             leaked.is_empty(),
             "empty source validation must not create sender temporary stores: {leaked:?}"
         );
+        let events = emitter.events();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].event, TransferEventData::Started));
+        assert!(matches!(
+            &events[1].event,
+            TransferEventData::Failed { error }
+                if error.code == TransferErrorCode::InvalidInput
+                    && error.phase == TransferPhase::Preparing
+                    && !error.retryable
+        ));
     }
 
     #[cfg(unix)]

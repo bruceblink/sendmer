@@ -3,7 +3,10 @@
 //! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
 
 use crate::core::endpoint::base_endpoint_builder;
-use crate::core::events::{AppHandle, Role, TransferPhase};
+use crate::core::events::{
+    AppHandle, Role, TransferError, TransferErrorCode, TransferPhase, classified_transfer_error,
+    classify_transfer_error, is_transfer_cancelled, transfer_cancelled_error,
+};
 use crate::core::options::{ReceiveOptions, ReceiveRetryPolicy};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
@@ -58,48 +61,76 @@ pub async fn receive_with_cancellation(
     app_handle: AppHandle,
     cancellation: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> anyhow::Result<ReceiveResult> {
-    let ticket = BlobTicket::from_str(&ticket_str)?;
+    let event_emitter = TransferEventEmitter::new(app_handle, Role::Receiver);
+    event_emitter.emit_started(TransferPhase::Preparing);
+    let ticket = match BlobTicket::from_str(&ticket_str).map_err(|error| {
+        receive_failure(
+            error.into(),
+            TransferErrorCode::InvalidInput,
+            TransferPhase::Preparing,
+            false,
+            "invalid receive ticket",
+        )
+    }) {
+        Ok(ticket) => ticket,
+        Err(error) => {
+            emit_receive_failed(&event_emitter, &error);
+            return Err(error);
+        }
+    };
     info!(
         hash = %ticket.hash(),
         relay_addrs = ticket.addr().relay_urls().count(),
         ip_addrs = ticket.addr().ip_addrs().count(),
         "starting receive"
     );
-    let output_dir = resolve_output_dir(options.output_dir.clone())?;
-    let context = ReceiveContext::prepare(ticket, &options).await?;
-    let event_emitter = TransferEventEmitter::new(app_handle, Role::Receiver);
-    event_emitter.emit_started(TransferPhase::Connecting);
+    let output_dir = match resolve_output_dir(options.output_dir.clone()).map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::Filesystem,
+            TransferPhase::Preparing,
+            false,
+            "unable to resolve receive output directory",
+        )
+    }) {
+        Ok(output_dir) => output_dir,
+        Err(error) => {
+            emit_receive_failed(&event_emitter, &error);
+            return Err(error);
+        }
+    };
+    let context = match ReceiveContext::prepare(ticket, &options).await {
+        Ok(context) => context,
+        Err(error) => {
+            emit_receive_failed(&event_emitter, &error);
+            return Err(error);
+        }
+    };
 
     let receive_result = select! {
         result = receive_once(&context, &output_dir, event_emitter.clone()) => result,
         _ = wait_for_cancellation(cancellation) => {
             tracing::warn!("operation cancelled by caller");
-            Err(anyhow::anyhow!(receive_cancelled_message()))
+            Err(transfer_cancelled_error())
         }
         _ = tokio::signal::ctrl_c() => {
             tracing::warn!("operation cancelled by user");
-            Err(anyhow::anyhow!(receive_cancelled_message()))
+            Err(transfer_cancelled_error())
         }
     };
     let artifacts = match receive_result {
         Ok(artifacts) => artifacts,
         Err(error) => {
-            tracing::error!(error = %error, "download operation failed");
-            let cancelled = error.to_string() == receive_cancelled_message();
-            let message = if cancelled {
-                receive_cancelled_message().to_owned()
-            } else {
-                receive_failed_message(&error)
-            };
-            let error = finalize_failed_receive(
-                anyhow::anyhow!(message),
-                cleanup_failed_receive(&context).await,
-            );
+            tracing::error!(error = %receive_failed_message(&error), "download operation failed");
+            let cancelled = is_transfer_cancelled(&error);
+            let error = finalize_failed_receive(error, cleanup_failed_receive(&context).await);
             if cancelled {
                 event_emitter.emit_cancelled();
-            } else {
-                emit_receive_failed(&event_emitter, error.to_string());
+                return Err(error);
             }
+            let message = receive_failed_message(&error);
+            let error = error.context(message);
+            emit_receive_failed(&event_emitter, &error);
             return Err(error);
         }
     };
@@ -107,7 +138,16 @@ pub async fn receive_with_cancellation(
     let result = match finish_receive(&context, artifacts).await {
         Ok(result) => result,
         Err(error) => {
-            event_emitter.emit_internal_failure(receive_failed_message(&error));
+            let error = receive_failure(
+                error,
+                TransferErrorCode::Internal,
+                TransferPhase::Finalizing,
+                false,
+                "unable to finalize received data",
+            );
+            let message = receive_failed_message(&error);
+            let error = error.context(message);
+            emit_receive_failed(&event_emitter, &error);
             return Err(error);
         }
     };
@@ -171,7 +211,15 @@ async fn export_to_staging(
     staging_dir: &Path,
 ) -> anyhow::Result<()> {
     for (name, hash) in collection.iter() {
-        let target = get_export_path(staging_dir, name)?;
+        let target = get_export_path(staging_dir, name).map_err(|error| {
+            receive_failure(
+                error,
+                TransferErrorCode::RemoteRejected,
+                TransferPhase::Exporting,
+                false,
+                "received collection contains invalid paths",
+            )
+        })?;
         let mut stream = db
             .export_with_opts(ExportOptions {
                 hash: *hash,
@@ -221,8 +269,10 @@ fn ensure_export_root_available(output_dir: &Path, root: &str) -> anyhow::Result
 
     validate_path_component(root)?;
     let target = output_dir.join(root);
-    if std::fs::symlink_metadata(&target).is_ok() {
-        anyhow::bail!("target {} already exists", target.display());
+    match std::fs::symlink_metadata(&target) {
+        Ok(_) => return Err(target_conflict_error(&target)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
 
     Ok(())
@@ -264,19 +314,40 @@ fn commit_staged_export(staging_dir: &Path, output_dir: &Path, root: &str) -> an
     let staged = staging_dir.join(root);
     anyhow::ensure!(staged.exists(), "staged export root {root} is missing");
     let target = output_dir.join(root);
-    anyhow::ensure!(
-        std::fs::symlink_metadata(&target).is_err(),
-        "target {} already exists",
-        target.display()
-    );
+    match std::fs::symlink_metadata(&target) {
+        Ok(_) => return Err(target_conflict_error(&target)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
 
-    move_staged_root_without_replacing(&staged, &target)?;
+    if let Err(error) = move_staged_root_without_replacing(&staged, &target) {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            return Err(receive_failure(
+                error.into(),
+                TransferErrorCode::TargetConflict,
+                TransferPhase::Exporting,
+                false,
+                "receive target already exists",
+            ));
+        }
+        return Err(error.into());
+    }
 
     // Moving the root is the commit point. Cleanup can fail after a successful move
     // (for example, because another process created a file in staging), but must not
     // turn a completed export into a retryable failure.
     cleanup_staging_dir(staging_dir);
     Ok(())
+}
+
+fn target_conflict_error(target: &Path) -> anyhow::Error {
+    receive_failure(
+        anyhow::anyhow!("target {} already exists", target.display()),
+        TransferErrorCode::TargetConflict,
+        TransferPhase::Exporting,
+        false,
+        "receive target already exists",
+    )
 }
 
 /// Move a staged export into place while preserving any target created by another process.
@@ -420,7 +491,15 @@ struct DownloadPlan {
 
 impl ReceiveContext {
     async fn prepare(ticket: BlobTicket, options: &ReceiveOptions) -> anyhow::Result<Self> {
-        options.retry_policy.validate()?;
+        options.retry_policy.validate().map_err(|error| {
+            receive_failure(
+                error,
+                TransferErrorCode::InvalidInput,
+                TransferPhase::Preparing,
+                false,
+                "invalid receive retry policy",
+            )
+        })?;
         let addr = ticket.addr().clone();
         let (endpoint, iroh_data_dir, db) = prepare_env(&ticket, options).await?;
         Ok(Self {
@@ -441,6 +520,15 @@ impl ReceiveContext {
         Collection::load(self.hash_and_format().hash, &self.db)
             .await
             .map_err(|err| anyhow::anyhow!("{err}"))
+            .map_err(|error| {
+                receive_failure(
+                    error,
+                    TransferErrorCode::TransferInterrupted,
+                    TransferPhase::Metadata,
+                    false,
+                    "received collection metadata is unavailable",
+                )
+            })
     }
 }
 
@@ -474,11 +562,29 @@ async fn receive_once(
         .await
         .context("load received collection")?;
     emit_collection_file_names(&event_emitter, &collection);
-    let root_item_path =
-        resolve_root_item_path(output_dir, &collection).context("resolve received output path")?;
+    let root_item_path = resolve_root_item_path(output_dir, &collection)
+        .context("resolve received output path")
+        .map_err(|error| {
+            receive_failure(
+                error,
+                TransferErrorCode::RemoteRejected,
+                TransferPhase::Metadata,
+                false,
+                "received collection contains unsupported paths",
+            )
+        })?;
     export_atomically(&context.db, collection, output_dir)
         .await
-        .context("export received files")?;
+        .context("export received files")
+        .map_err(|error| {
+            receive_failure(
+                error,
+                TransferErrorCode::Filesystem,
+                TransferPhase::Exporting,
+                false,
+                "unable to export received files",
+            )
+        })?;
 
     Ok(ReceiveArtifacts {
         total_files: download.total_files,
@@ -504,12 +610,49 @@ fn receive_failed_message(error: &anyhow::Error) -> String {
     format!("error: {details}")
 }
 
-const fn receive_cancelled_message() -> &'static str {
-    "Operation cancelled"
+fn emit_receive_failed(emitter: &TransferEventEmitter, error: &anyhow::Error) {
+    if let Some(details) = classified_transfer_error(error) {
+        emitter.emit_failed(details);
+    } else {
+        emitter.emit_internal_failure("receive failed");
+    }
 }
 
-fn emit_receive_failed(emitter: &TransferEventEmitter, message: impl Into<String>) {
-    emitter.emit_internal_failure(message);
+/// Pair an internal receive error with the stable details exposed to event consumers.
+fn receive_failure(
+    error: anyhow::Error,
+    code: TransferErrorCode,
+    phase: TransferPhase,
+    retryable: bool,
+    message: &'static str,
+) -> anyhow::Error {
+    classify_transfer_error(error, TransferError::new(code, phase, retryable, message))
+}
+
+/// Classify protocol failures without asking consumers to parse `GetError` text.
+fn receive_protocol_failure(
+    error: anyhow::Error,
+    phase: TransferPhase,
+    fallback_message: &'static str,
+) -> anyhow::Error {
+    let (code, retryable, message) = match error.downcast_ref::<GetError>() {
+        Some(GetError::BadRequest { .. }) => (
+            TransferErrorCode::RemoteRejected,
+            false,
+            "sender rejected the transfer request",
+        ),
+        Some(GetError::LocalFailure { .. }) => (
+            TransferErrorCode::Internal,
+            false,
+            "local transfer processing failed",
+        ),
+        _ => (
+            TransferErrorCode::TransferInterrupted,
+            true,
+            fallback_message,
+        ),
+    };
+    receive_failure(error, code, phase, retryable, message)
 }
 
 fn finalize_failed_receive(
@@ -574,7 +717,20 @@ async fn download_missing_data(
     emitter: TransferEventEmitter,
 ) -> anyhow::Result<DownloadOutcome> {
     let hash_and_format = context.hash_and_format();
-    let local = context.db.remote().local(hash_and_format).await?;
+    let local = context
+        .db
+        .remote()
+        .local(hash_and_format)
+        .await
+        .map_err(|error| {
+            receive_failure(
+                error.into(),
+                TransferErrorCode::Filesystem,
+                TransferPhase::Transferring,
+                false,
+                "unable to inspect receiver storage",
+            )
+        })?;
     if local.is_complete() {
         let total_files = completed_local_total_files_from_children(local.children())?;
         return Ok(DownloadOutcome {
@@ -590,7 +746,14 @@ async fn download_missing_data(
         context.retry_policy,
     )
     .await
-    .context("fetch remote collection sizes")?;
+    .context("fetch remote collection sizes")
+    .map_err(|error| {
+        receive_protocol_failure(
+            error,
+            TransferPhase::Metadata,
+            "collection metadata transfer was interrupted",
+        )
+    })?;
     let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &sizes);
     execute_download_with_retries(context, &plan, &emitter).await?;
 
@@ -625,7 +788,16 @@ async fn execute_download_with_retries(
             .remote()
             .local(context.hash_and_format())
             .await
-            .context("inspect local download state")?;
+            .context("inspect local download state")
+            .map_err(|error| {
+                receive_failure(
+                    error,
+                    TransferErrorCode::Filesystem,
+                    TransferPhase::Transferring,
+                    false,
+                    "unable to inspect receiver storage",
+                )
+            })?;
         if local.is_complete() {
             reporter.emit_completed_progress();
             return Ok(());
@@ -646,7 +818,15 @@ async fn execute_download_with_retries(
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("download failed without an error")))
+    Err(last_error.unwrap_or_else(|| {
+        receive_failure(
+            anyhow::anyhow!("download failed without an error"),
+            TransferErrorCode::Internal,
+            TransferPhase::Transferring,
+            false,
+            "download failed",
+        )
+    }))
 }
 
 /// Run one download attempt using a fresh connection and the currently missing ranges.
@@ -658,6 +838,7 @@ async fn execute_download_attempt(
 ) -> anyhow::Result<()> {
     let connection = await_receive_phase(
         context.retry_policy.connect_timeout(),
+        TransferPhase::Connecting,
         "connect to sender for blob download",
         async {
             context
@@ -667,7 +848,16 @@ async fn execute_download_attempt(
                 .context("connect to sender for blob download")
         },
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::ConnectionFailed,
+            TransferPhase::Connecting,
+            true,
+            "unable to connect to the sender",
+        )
+    })?;
     let get = context.db.remote().execute_get(connection, missing);
     let mut stream = get.stream();
     process_get_stream_with_reporter(
@@ -678,6 +868,13 @@ async fn execute_download_attempt(
     )
     .await
     .context("download blob stream")
+    .map_err(|error| {
+        receive_protocol_failure(
+            error,
+            TransferPhase::Transferring,
+            "data transfer was interrupted",
+        )
+    })
 }
 
 fn collect_file_names(collection: &Collection) -> Vec<String> {
@@ -718,6 +915,7 @@ fn download_backoff(attempt: u32, retry_policy: ReceiveRetryPolicy) -> std::time
 /// reuse the same cleanup and retry behavior as connection or protocol failures.
 async fn await_receive_phase<T, F>(
     timeout: Option<Duration>,
+    transfer_phase: TransferPhase,
     phase: &'static str,
     future: F,
 ) -> anyhow::Result<T>
@@ -725,10 +923,27 @@ where
     F: Future<Output = anyhow::Result<T>>,
 {
     match timeout {
-        Some(timeout) => tokio::time::timeout(timeout, future)
-            .await
-            .map_err(|_| anyhow::anyhow!("{phase} timed out after {} ms", timeout.as_millis()))?,
+        Some(timeout) => tokio::time::timeout(timeout, future).await.map_err(|_| {
+            receive_failure(
+                anyhow::anyhow!("{phase} timed out after {} ms", timeout.as_millis()),
+                TransferErrorCode::Timeout,
+                transfer_phase,
+                true,
+                timeout_event_message(transfer_phase),
+            )
+        })?,
         None => future.await,
+    }
+}
+
+const fn timeout_event_message(phase: TransferPhase) -> &'static str {
+    match phase {
+        TransferPhase::Connecting => "connection timed out",
+        TransferPhase::Metadata => "metadata request timed out",
+        TransferPhase::Transferring => "download stalled without progress",
+        TransferPhase::Preparing | TransferPhase::Exporting | TransferPhase::Finalizing => {
+            "receive operation timed out"
+        }
     }
 }
 
@@ -872,18 +1087,51 @@ async fn prepare_env(
     ticket: &BlobTicket,
     options: &ReceiveOptions,
 ) -> anyhow::Result<(Endpoint, PathBuf, Store)> {
-    let mut builder = base_endpoint_builder(options, vec![])?;
+    let mut builder = base_endpoint_builder(options, vec![]).map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::InvalidInput,
+            TransferPhase::Preparing,
+            false,
+            "invalid receive networking options",
+        )
+    })?;
 
     if ticket.addr().relay_urls().next().is_none() && ticket.addr().ip_addrs().next().is_none() {
         builder = builder.address_lookup(DnsAddressLookup::n0_dns());
     }
-    let endpoint = builder.bind().await?;
+    let endpoint = builder.bind().await.map_err(|error| {
+        receive_failure(
+            error.into(),
+            TransferErrorCode::ConnectionFailed,
+            TransferPhase::Connecting,
+            true,
+            "unable to initialize receiver networking",
+        )
+    })?;
 
     let iroh_data_dir = unique_temp_dir(&format!(
         "{RECEIVE_TEMP_DIR_PREFIX}{}-",
         ticket.hash().to_hex()
-    ))?;
-    let db = load_fs_store(&iroh_data_dir).await?;
+    ))
+    .map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::Filesystem,
+            TransferPhase::Preparing,
+            false,
+            "unable to create receiver storage",
+        )
+    })?;
+    let db = load_fs_store(&iroh_data_dir).await.map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::Filesystem,
+            TransferPhase::Preparing,
+            false,
+            "unable to open receiver storage",
+        )
+    })?;
     Ok((endpoint, iroh_data_dir, db.into()))
 }
 
@@ -901,6 +1149,7 @@ async fn get_sizes_with_retries(
     for attempt in 1..=retry_policy.size_fetch_retry_limit {
         let connection = match await_receive_phase(
             retry_policy.connect_timeout(),
+            TransferPhase::Connecting,
             "connect to sender for collection metadata",
             async {
                 endpoint
@@ -913,6 +1162,13 @@ async fn get_sizes_with_retries(
         {
             Ok(connection) => connection,
             Err(error) => {
+                let error = receive_failure(
+                    error,
+                    TransferErrorCode::ConnectionFailed,
+                    TransferPhase::Connecting,
+                    true,
+                    "unable to connect to the sender",
+                );
                 tracing::error!("Attempt {attempt} to connect for sizes failed: {error}");
                 last_err = Some(error);
                 if attempt < retry_policy.size_fetch_retry_limit {
@@ -924,6 +1180,7 @@ async fn get_sizes_with_retries(
 
         match await_receive_phase(
             retry_policy.metadata_timeout(),
+            TransferPhase::Metadata,
             "fetch collection metadata",
             async {
                 get_hash_seq_and_sizes(&connection, hash, retry_policy.size_fetch_chunk_size, None)
@@ -936,6 +1193,11 @@ async fn get_sizes_with_retries(
         {
             Ok(result) => return Ok(result),
             Err(error) => {
+                let error = receive_protocol_failure(
+                    error,
+                    TransferPhase::Metadata,
+                    "collection metadata transfer was interrupted",
+                );
                 tracing::error!("Attempt {attempt} to get sizes failed: {error:?}");
                 last_err = Some(error);
                 if attempt < retry_policy.size_fetch_retry_limit {
@@ -945,7 +1207,15 @@ async fn get_sizes_with_retries(
         }
     }
 
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("unknown error getting sizes")))
+    Err(last_err.unwrap_or_else(|| {
+        receive_failure(
+            anyhow::anyhow!("unknown error getting sizes"),
+            TransferErrorCode::Internal,
+            TransferPhase::Metadata,
+            false,
+            "unable to fetch collection metadata",
+        )
+    }))
 }
 
 /// Consume one get stream, retaining one reporter across retries and leaving failure reporting to the caller.
@@ -994,9 +1264,15 @@ where
         Some(timeout) => tokio::time::timeout(timeout, stream.next())
             .await
             .map_err(|_| {
-                anyhow::anyhow!(
-                    "download stream timed out after {} ms without progress",
-                    timeout.as_millis()
+                receive_failure(
+                    anyhow::anyhow!(
+                        "download stream timed out after {} ms without progress",
+                        timeout.as_millis()
+                    ),
+                    TransferErrorCode::Timeout,
+                    TransferPhase::Transferring,
+                    true,
+                    "download stalled without progress",
                 )
             }),
         None => Ok(stream.next().await),
@@ -1042,11 +1318,12 @@ mod tests {
         completed_local_total_files, completed_local_total_files_from_children, create_staging_dir,
         download_backoff, emit_receive_failed, finalize_cleanup, finalize_failed_receive,
         get_export_path, move_staged_root_without_replacing, process_export_stream,
-        process_get_stream_with_reporter, receive_failed_message, resolve_output_dir,
-        size_fetch_backoff, validate_path_component, wait_for_cancellation,
+        process_get_stream_with_reporter, receive, receive_failed_message, receive_failure,
+        resolve_output_dir, size_fetch_backoff, validate_path_component, wait_for_cancellation,
     };
     use crate::core::events::{
         EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
+        classified_transfer_error,
     };
     use crate::core::options::{ReceiveOptions, RelayModeOption};
     use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
@@ -1072,6 +1349,30 @@ mod tests {
         fn emit(&self, event: &TransferEvent) {
             self.events.lock().expect("events lock").push(event.clone());
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_ticket_emits_structured_invalid_input_failure() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let error = receive(
+            "not-a-ticket".to_owned(),
+            ReceiveOptions::default(),
+            Some(emitter.clone()),
+        )
+        .await
+        .expect_err("invalid ticket should fail");
+
+        assert!(!error.to_string().is_empty());
+        let events = emitter.events();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].event, TransferEventData::Started));
+        assert!(matches!(
+            &events[1].event,
+            TransferEventData::Failed { error }
+                if error.code == TransferErrorCode::InvalidInput
+                    && error.phase == TransferPhase::Preparing
+                    && !error.retryable
+        ));
     }
 
     fn receiver_reporter(
@@ -1229,6 +1530,23 @@ mod tests {
             b"complete"
         );
         assert!(!staging_dir.exists(), "best-effort cleanup removes staging");
+    }
+
+    #[test]
+    fn commit_staged_export_classifies_existing_target() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("downloads");
+        std::fs::create_dir_all(output_dir.join("root")).expect("existing target");
+        let staging_dir = create_staging_dir(&output_dir).expect("staging directory");
+        std::fs::create_dir_all(staging_dir.join("root")).expect("staged root");
+
+        let error = commit_staged_export(&staging_dir, &output_dir, "root")
+            .expect_err("existing target should fail");
+        let details = classified_transfer_error(&error).expect("structured target conflict");
+
+        assert_eq!(details.code, TransferErrorCode::TargetConflict);
+        assert_eq!(details.phase, TransferPhase::Exporting);
+        assert!(!details.retryable);
     }
 
     #[test]
@@ -1429,8 +1747,15 @@ mod tests {
         let app_handle: crate::core::events::AppHandle = Some(emitter.clone());
         let session = TransferEventEmitter::new(app_handle, Role::Receiver);
         session.emit_started(TransferPhase::Connecting);
+        let failure = receive_failure(
+            anyhow::anyhow!("connection refused"),
+            TransferErrorCode::ConnectionFailed,
+            TransferPhase::Connecting,
+            true,
+            "unable to connect to the sender",
+        );
 
-        emit_receive_failed(&session, "boom");
+        emit_receive_failed(&session, &failure);
 
         let events = emitter.events();
         assert_eq!(events.len(), 2);
@@ -1441,8 +1766,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(*role, Role::Receiver);
-                assert_eq!(error.code, TransferErrorCode::Internal);
-                assert_eq!(error.message, "boom");
+                assert_eq!(error.code, TransferErrorCode::ConnectionFailed);
+                assert_eq!(error.phase, TransferPhase::Connecting);
+                assert!(error.retryable);
+                assert_eq!(error.message, "unable to connect to the sender");
             }
             other => panic!("expected failed event, got {other:?}"),
         }
@@ -1545,6 +1872,7 @@ mod tests {
     async fn receive_phase_timeout_reports_the_timed_out_operation() {
         let error = await_receive_phase(
             Some(Duration::from_millis(1)),
+            TransferPhase::Connecting,
             "connect to test sender",
             std::future::pending::<anyhow::Result<()>>(),
         )
@@ -1556,6 +1884,10 @@ mod tests {
                 .to_string()
                 .contains("connect to test sender timed out")
         );
+        let details = classified_transfer_error(&error).expect("structured timeout");
+        assert_eq!(details.code, TransferErrorCode::Timeout);
+        assert_eq!(details.phase, TransferPhase::Connecting);
+        assert!(details.retryable);
     }
 
     #[tokio::test]

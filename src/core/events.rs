@@ -140,6 +140,66 @@ impl TransferError {
     }
 }
 
+/// Internal wrapper that preserves the diagnostic error chain alongside safe event details.
+#[derive(Debug)]
+struct ClassifiedTransferError {
+    details: TransferError,
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl Display for ClassifiedTransferError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.source, formatter)
+    }
+}
+
+impl std::error::Error for ClassifiedTransferError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+/// Attach stable event details without discarding the original diagnostic error chain.
+pub(crate) fn classify_transfer_error(
+    error: anyhow::Error,
+    details: TransferError,
+) -> anyhow::Error {
+    if error.downcast_ref::<ClassifiedTransferError>().is_some() {
+        return error;
+    }
+    anyhow::Error::new(ClassifiedTransferError {
+        details,
+        source: error.into_boxed_dyn_error(),
+    })
+}
+
+/// Read structured details previously attached at the failure site.
+pub(crate) fn classified_transfer_error(error: &anyhow::Error) -> Option<TransferError> {
+    error
+        .downcast_ref::<ClassifiedTransferError>()
+        .map(|classified| classified.details.clone())
+}
+
+/// Marker error used to distinguish explicit cancellation from ordinary failures.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TransferCancelled;
+
+impl Display for TransferCancelled {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Operation cancelled")
+    }
+}
+
+impl std::error::Error for TransferCancelled {}
+
+pub(crate) fn transfer_cancelled_error() -> anyhow::Error {
+    anyhow::Error::new(TransferCancelled)
+}
+
+pub(crate) fn is_transfer_cancelled(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<TransferCancelled>().is_some()
+}
+
 /// Versioned event payload nested inside [`TransferEventEnvelope`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -339,6 +399,8 @@ mod tests {
     use super::{
         LegacyTransferEvent, Role, TRANSFER_EVENT_SCHEMA_VERSION, TransferError, TransferErrorCode,
         TransferEventData, TransferEventEnvelope, TransferPhase, TransferSessionId,
+        classified_transfer_error, classify_transfer_error, is_transfer_cancelled,
+        transfer_cancelled_error,
     };
     use std::str::FromStr;
 
@@ -443,5 +505,31 @@ mod tests {
         assert!(TransferEventData::Cancelled.is_terminal());
         assert!(!TransferEventData::Started.is_terminal());
         assert!(!TransferEventData::FileNames { file_names: vec![] }.is_terminal());
+    }
+
+    #[test]
+    fn classified_error_preserves_diagnostics_and_stable_details() {
+        let details = TransferError::new(
+            TransferErrorCode::ConnectionFailed,
+            TransferPhase::Connecting,
+            true,
+            "unable to connect to the sender",
+        );
+        let error = classify_transfer_error(
+            anyhow::anyhow!("connection refused").context("dial peer"),
+            details.clone(),
+        )
+        .context("receive failed");
+
+        assert_eq!(error.to_string(), "receive failed");
+        assert_eq!(classified_transfer_error(&error), Some(details));
+        assert!(format!("{error:#}").contains("connection refused"));
+    }
+
+    #[test]
+    fn cancellation_uses_a_typed_marker() {
+        let error = transfer_cancelled_error();
+        assert!(is_transfer_cancelled(&error));
+        assert_eq!(error.to_string(), "Operation cancelled");
     }
 }
