@@ -103,7 +103,6 @@ impl SendResult {
             blobs_data_dir,
             _progress_handle,
             _store,
-            event_emitter: _,
             ..
         } = self;
 
