@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "session_id": "0123456789abcdef0123456789abcdef",
+  "sequence": 3,
+  "timestamp_ms": 1786982400000,
+  "role": "receiver",
+  "phase": "transferring",
+  "event": {
+    "type": "progress",
+    "processed": 524288,
+    "total": 1048576,
+    "speed_bytes_per_sec": 262144.0
+  }
+}

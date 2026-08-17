@@ -30,7 +30,7 @@ Rust 类型使用 `UpperCamelCase`，JSON 字段和值使用 `snake_case`。本�
 公开 Rust 结构按以下字段冻结：
 
 ```rust
-pub struct TransferEvent {
+pub struct TransferEventEnvelope {
     pub schema_version: u16,
     pub session_id: TransferSessionId,
     pub sequence: u64,
@@ -142,10 +142,10 @@ pub struct TransferEvent {
 
 ## 8. 兼容与实施顺序
 
-`TransferEvent` 当前是公开可穷举枚举，因此事件信封作为 `v0.8.0` 的次版本变更发布；依赖
-`sendmer = "0.7"` 的调用方不会被 Cargo 自动升级。`EventEmitter` 和 `AppHandle` 的职责保持
-不变，但其事件参数升级为事件信封。迁移方应匹配 `event.event`，并使用会话标识和序号维护
-状态，不能继续只看错误字符串。
+`TransferEvent` 当前是公开可穷举枚举，因此新的 `TransferEventEnvelope` 作为 `v0.8.0` 的
+次版本变更发布；依赖 `sendmer = "0.7"` 的调用方不会被 Cargo 自动升级。`EventEmitter` 和
+`AppHandle` 的职责保持不变，但其事件参数升级为事件信封。迁移方应匹配 `event.event`，并
+使用会话标识和序号维护状态，不能继续只看错误字符串。
 
 实施按以下独立批次进行：
 

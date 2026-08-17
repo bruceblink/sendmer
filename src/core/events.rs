@@ -2,7 +2,207 @@
 //!
 //! 本文件定义：事件发射器 trait、传输事件枚举、角色枚举。
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 use std::sync::Arc;
+
+/// Current JSON schema version for [`TransferEventEnvelope`].
+pub const TRANSFER_EVENT_SCHEMA_VERSION: u16 = 1;
+
+/// Random application-level identifier shared by every event in one transfer session.
+///
+/// The canonical representation is 32 lowercase hexadecimal characters. It is intentionally
+/// independent from tickets, content hashes, connections, and provider request identifiers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TransferSessionId(String);
+
+impl TransferSessionId {
+    /// Generate a new opaque 128-bit session identifier.
+    pub fn new() -> Self {
+        Self(format!("{:032x}", rand::random::<u128>()))
+    }
+
+    /// Return the stable lowercase hexadecimal representation.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for TransferSessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Display for TransferSessionId {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Error returned when a transfer session ID is not in its canonical wire format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseTransferSessionIdError;
+
+impl Display for ParseTransferSessionIdError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("transfer session ID must contain 32 lowercase hexadecimal characters")
+    }
+}
+
+impl std::error::Error for ParseTransferSessionIdError {}
+
+impl FromStr for TransferSessionId {
+    type Err = ParseTransferSessionIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let is_canonical = value.len() == 32
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        if !is_canonical {
+            return Err(ParseTransferSessionIdError);
+        }
+        Ok(Self(value.to_owned()))
+    }
+}
+
+impl Serialize for TransferSessionId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for TransferSessionId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(D::Error::custom)
+    }
+}
+
+/// Stable application-level phase for a transfer event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferPhase {
+    Preparing,
+    Connecting,
+    Metadata,
+    Transferring,
+    Exporting,
+    Finalizing,
+}
+
+/// Stable error categories exposed to event consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferErrorCode {
+    InvalidInput,
+    ConnectionFailed,
+    Timeout,
+    RemoteRejected,
+    TransferInterrupted,
+    TargetConflict,
+    Filesystem,
+    Internal,
+}
+
+/// Safe error information carried by a failed terminal event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferError {
+    pub code: TransferErrorCode,
+    pub phase: TransferPhase,
+    pub retryable: bool,
+    pub message: String,
+}
+
+impl TransferError {
+    /// Build a structured error without exposing an internal error chain.
+    pub fn new(
+        code: TransferErrorCode,
+        phase: TransferPhase,
+        retryable: bool,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code,
+            phase,
+            retryable,
+            message: message.into(),
+        }
+    }
+}
+
+/// Versioned event payload nested inside [`TransferEventEnvelope`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TransferEventData {
+    Started,
+    Progress {
+        processed: u64,
+        total: u64,
+        speed_bytes_per_sec: f64,
+    },
+    FileNames {
+        file_names: Vec<String>,
+    },
+    Completed,
+    Failed {
+        error: TransferError,
+    },
+    Cancelled,
+}
+
+impl TransferEventData {
+    /// Return whether this payload permanently closes its transfer session.
+    pub const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Failed { .. } | Self::Cancelled
+        )
+    }
+}
+
+/// Stable versioned envelope for JSON Lines and external event consumers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransferEventEnvelope {
+    pub schema_version: u16,
+    pub session_id: TransferSessionId,
+    pub sequence: u64,
+    pub timestamp_ms: u64,
+    pub role: Role,
+    pub phase: TransferPhase,
+    pub event: TransferEventData,
+}
+
+impl TransferEventEnvelope {
+    /// Construct one event with explicit ordering and timestamp values.
+    pub const fn new(
+        session_id: TransferSessionId,
+        sequence: u64,
+        timestamp_ms: u64,
+        role: Role,
+        phase: TransferPhase,
+        event: TransferEventData,
+    ) -> Self {
+        Self {
+            schema_version: TRANSFER_EVENT_SCHEMA_VERSION,
+            session_id,
+            sequence,
+            timestamp_ms,
+            role,
+            phase,
+            event,
+        }
+    }
+}
 
 /// 事件发射器接口。
 ///
@@ -133,7 +333,11 @@ pub fn emit_event(app: &AppHandle, event: &TransferEvent) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Role, TransferEvent};
+    use super::{
+        Role, TRANSFER_EVENT_SCHEMA_VERSION, TransferError, TransferErrorCode, TransferEvent,
+        TransferEventData, TransferEventEnvelope, TransferPhase, TransferSessionId,
+    };
+    use std::str::FromStr;
 
     #[test]
     fn transfer_event_json_schema_is_stable() {
@@ -165,5 +369,76 @@ mod tests {
         let value = serde_json::to_value(event).expect("serialize file names event");
         assert_eq!(value["type"], "file_names");
         assert_eq!(value["role"], "sender");
+    }
+
+    #[test]
+    fn versioned_progress_event_matches_json_fixture() {
+        let event = TransferEventEnvelope::new(
+            TransferSessionId::from_str("0123456789abcdef0123456789abcdef")
+                .expect("valid fixture session ID"),
+            3,
+            1_786_982_400_000,
+            Role::Receiver,
+            TransferPhase::Transferring,
+            TransferEventData::Progress {
+                processed: 524_288,
+                total: 1_048_576,
+                speed_bytes_per_sec: 262_144.0,
+            },
+        );
+        let fixture = include_str!("../../tests/fixtures/transfer_event_v1_progress.json");
+        let fixture_value: serde_json::Value =
+            serde_json::from_str(fixture).expect("parse event fixture");
+
+        assert_eq!(
+            serde_json::to_value(&event).expect("serialize event envelope"),
+            fixture_value
+        );
+        assert_eq!(
+            serde_json::from_str::<TransferEventEnvelope>(fixture)
+                .expect("deserialize event fixture"),
+            event
+        );
+        assert_eq!(event.schema_version, TRANSFER_EVENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn transfer_session_id_rejects_noncanonical_values() {
+        for invalid in [
+            "0123456789abcdef",
+            "0123456789ABCDEF0123456789ABCDEF",
+            "0123456789abcdef0123456789abcdeg",
+        ] {
+            assert!(TransferSessionId::from_str(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn generated_session_id_round_trips_through_json() {
+        let session_id = TransferSessionId::new();
+        let json = serde_json::to_string(&session_id).expect("serialize session ID");
+        let decoded: TransferSessionId =
+            serde_json::from_str(&json).expect("deserialize session ID");
+
+        assert_eq!(session_id.as_str().len(), 32);
+        assert_eq!(decoded, session_id);
+    }
+
+    #[test]
+    fn only_completed_failed_and_cancelled_are_terminal() {
+        let failure = TransferEventData::Failed {
+            error: TransferError::new(
+                TransferErrorCode::ConnectionFailed,
+                TransferPhase::Connecting,
+                true,
+                "unable to connect to the sender",
+            ),
+        };
+
+        assert!(TransferEventData::Completed.is_terminal());
+        assert!(failure.is_terminal());
+        assert!(TransferEventData::Cancelled.is_terminal());
+        assert!(!TransferEventData::Started.is_terminal());
+        assert!(!TransferEventData::FileNames { file_names: vec![] }.is_terminal());
     }
 }
