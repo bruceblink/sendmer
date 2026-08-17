@@ -1,5 +1,6 @@
 use std::{
     io::{self, BufRead, BufReader, Read},
+    net::UdpSocket,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     str::FromStr,
@@ -140,6 +141,18 @@ impl RunningSend {
         cwd: &Path,
         max_upload_rate: Option<u64>,
     ) -> io::Result<Self> {
+        Self::spawn_with_config(path, cwd, max_upload_rate, None, None)
+    }
+
+    /// Launch a sender with a stable identity and UDP address so a later process can resume the
+    /// same ticket after the original sender is interrupted.
+    fn spawn_with_config(
+        path: &Path,
+        cwd: &Path,
+        max_upload_rate: Option<u64>,
+        secret: Option<&str>,
+        magic_ipv4_addr: Option<&str>,
+    ) -> io::Result<Self> {
         let mut command = Command::new(sendmer_bin());
         command
             .args(["send", "--no-progress", "--relay", "disabled"])
@@ -151,6 +164,13 @@ impl RunningSend {
             command
                 .arg("--max-upload-rate")
                 .arg(max_upload_rate.to_string());
+        }
+        if let Some(secret) = secret {
+            command.env("IROH_SECRET", secret);
+        }
+        if let Some(magic_ipv4_addr) = magic_ipv4_addr {
+            command.args(["--ticket-type", "addresses"]);
+            command.arg("--magic-ipv4-addr").arg(magic_ipv4_addr);
         }
         let child = command.arg(path).spawn()?;
         Ok(Self { child })
@@ -578,6 +598,156 @@ fn persistent_receive_cache_recovers_after_receiver_process_is_killed() {
     assert!(
         !cache_entry.exists(),
         "completed resumed receive must remove its cache entry"
+    );
+}
+
+#[test]
+fn persistent_receive_cache_recovers_after_sender_restart() {
+    let name = "sender-restart.bin";
+    let data = vec![29u8; 2 * 1024 * 1024];
+    let src_dir = tempfile::tempdir().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let cache_root = tempfile::tempdir().unwrap();
+    let src_file = src_dir.path().join(name);
+    std::fs::write(&src_file, &data).unwrap();
+
+    // Reusing both identity and address makes the second sender advertise the original ticket.
+    let secret_key = iroh::SecretKey::generate();
+    let secret = data_encoding::HEXLOWER.encode(&secret_key.to_bytes());
+    let port = UdpSocket::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let magic_ipv4_addr = format!("127.0.0.1:{port}");
+    let mut first_sender = RunningSend::spawn_with_config(
+        &src_file,
+        src_dir.path(),
+        Some(128 * 1024),
+        Some(secret.as_str()),
+        Some(&magic_ipv4_addr),
+    )
+    .unwrap();
+    let ticket = first_sender.read_ticket();
+    assert!(
+        ticket.addr().ip_addrs().any(|addr| addr.port() == port),
+        "sender ticket should contain the fixed test address: {ticket}"
+    );
+
+    let cache_entry = cache_root
+        .path()
+        .join("v1")
+        .join(format!("1-{}", ticket.hash().to_hex()));
+    let mut receiver = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--relay",
+            "disabled",
+            "--json-events",
+            "--retry-limit",
+            "40",
+            "--retry-backoff-ms",
+            "100",
+            "--connect-timeout-ms",
+            "500",
+            "--metadata-timeout-ms",
+            "500",
+            "--download-idle-timeout-ms",
+            "500",
+            "--cache-dir",
+            cache_root.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            &ticket.to_string(),
+        ])
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = receiver.stdout.take().expect("receive stdout");
+    let (line_sender, line_receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match stdout.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) if line_sender.send(line).is_err() => break,
+                Ok(_) => {}
+            }
+        }
+    });
+
+    let mut progress_values = Vec::new();
+    let minimum_progress = 256 * 1024;
+    loop {
+        let line = line_receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("receive should report progress before sender interruption");
+        let event: TransferEvent = serde_json::from_str(line.trim())
+            .unwrap_or_else(|error| panic!("receive emitted invalid JSON event: {error}: {line}"));
+        match event.event {
+            TransferEventData::Progress { processed, .. } => {
+                progress_values.push(processed);
+                if processed >= minimum_progress {
+                    break;
+                }
+            }
+            TransferEventData::Failed { error } => {
+                panic!("receive failed before sender interruption: {error:?}")
+            }
+            TransferEventData::Completed => {
+                panic!("receive completed before sender interruption")
+            }
+            _ => {}
+        }
+    }
+
+    first_sender.cleanup();
+    assert!(cache_entry.join("blobs.db").is_file());
+
+    let mut restarted_sender = RunningSend::spawn_with_config(
+        &src_file,
+        src_dir.path(),
+        Some(128 * 1024),
+        Some(secret.as_str()),
+        Some(&magic_ipv4_addr),
+    )
+    .expect("restart sender with the original identity and address");
+    let restarted_ticket = restarted_sender.read_ticket();
+    assert_eq!(restarted_ticket.hash(), ticket.hash());
+    assert_eq!(restarted_ticket.addr().id, ticket.addr().id);
+
+    let terminal = loop {
+        let line = line_receiver
+            .recv_timeout(Duration::from_secs(90))
+            .expect("receive should finish after sender restart");
+        let event: TransferEvent = serde_json::from_str(line.trim()).unwrap_or_else(|error| {
+            panic!("receive emitted invalid JSON event after restart: {error}: {line}")
+        });
+        if let TransferEventData::Progress { processed, .. } = event.event {
+            progress_values.push(processed);
+        } else if event.event.is_terminal() {
+            break event.event;
+        }
+    };
+    let status = receiver.wait().expect("wait for restarted receive");
+    reader.join().expect("join receive event reader");
+    restarted_sender.cleanup();
+
+    assert!(
+        matches!(terminal, TransferEventData::Completed),
+        "sender restart should lead to a completed receive, got {terminal:?}"
+    );
+    assert!(status.success(), "restarted receive exited with {status}");
+    assert_eq!(std::fs::read(output_dir.path().join(name)).unwrap(), data);
+    assert!(!cache_entry.exists());
+    assert!(
+        !progress_values
+            .windows(2)
+            .any(|values| values[1] < values[0]),
+        "progress must stay monotonic across the reconnect: {progress_values:?}"
     );
 }
 
