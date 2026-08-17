@@ -77,18 +77,26 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
 
     let res = sender::send(args.path.clone(), opts, app_handle).await?;
 
-    println!(
-        "imported {} {}, {}, hash {}",
-        res.entry_type,
-        args.path.display(),
-        HumanBytes(res.size),
-        print_hash(&res.hash, args.common.format)
+    print_command_output(
+        args.common.json_events,
+        format!(
+            "imported {} {}, {}, hash {}",
+            res.entry_type,
+            args.path.display(),
+            HumanBytes(res.size),
+            print_hash(&res.hash, args.common.format)
+        ),
     );
 
-    println!("to get this data, use");
-    println!("sendmer receive {}", res.ticket);
+    print_command_output(args.common.json_events, "to get this data, use");
+    print_command_output(
+        args.common.json_events,
+        format!("sendmer receive {}", res.ticket),
+    );
     #[cfg(feature = "clipboard")]
-    maybe_handle_key_press(args.clipboard, res.ticket.to_string());
+    if !args.common.json_events {
+        maybe_handle_key_press(args.clipboard, res.ticket.to_string());
+    }
     let wait_result = wait_for_send_shutdown(&res).await;
     let shutdown_result = res.cancel().await;
     match (wait_result, shutdown_result) {
@@ -118,8 +126,20 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
     let app_handle = cli_app_handle("[recv]", args.common.no_progress, args.common.json_events);
 
     let res = receiver::receive(args.ticket.to_string(), opts, app_handle).await?;
-    println!("{} in {:?}", res.message, res.file_path);
+    print_command_output(
+        args.common.json_events,
+        format!("{} in {:?}", res.message, res.file_path),
+    );
     Ok(())
+}
+
+/// Keep machine-readable JSONL on stdout while routing human text to stderr.
+fn print_command_output(json_events: bool, message: impl std::fmt::Display) {
+    if json_events {
+        eprintln!("{message}");
+    } else {
+        println!("{message}");
+    }
 }
 
 fn send_options(args: &SendArgs) -> SendOptions {
@@ -223,6 +243,7 @@ fn init_tracing(verbose: u8) -> anyhow::Result<()> {
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
+        .with_writer(std::io::stderr)
         .try_init();
     Ok(())
 }

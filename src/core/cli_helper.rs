@@ -6,6 +6,7 @@
 
 use crate::core::events::{EventEmitter, TransferEvent, TransferEventData};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,7 +35,7 @@ impl CliEventEmitter {
         }
     }
 
-    /// Create an emitter that writes one stable JSON event per stderr line.
+    /// Create an emitter that writes one stable JSON event per stdout line.
     pub fn json_lines() -> Self {
         Self {
             mp: Arc::new(MultiProgress::new()),
@@ -59,7 +60,13 @@ impl EventEmitter for CliEventEmitter {
     fn emit(&self, event: &TransferEvent) {
         if self.json_lines {
             match serde_json::to_string(event) {
-                Ok(json) => eprintln!("{json}"),
+                Ok(json) => {
+                    let stdout = std::io::stdout();
+                    let mut stdout = stdout.lock();
+                    if let Err(error) = writeln!(stdout, "{json}").and_then(|()| stdout.flush()) {
+                        eprintln!("failed to write transfer event: {error}");
+                    }
+                }
                 Err(error) => eprintln!("failed to serialize transfer event: {error}"),
             }
             return;

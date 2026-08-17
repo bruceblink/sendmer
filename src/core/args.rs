@@ -58,7 +58,7 @@ pub struct CommonArgs {
     #[clap(long, default_value_t = false)]
     pub no_progress: bool,
 
-    /// Emit transfer events as JSON Lines on stderr instead of progress bars.
+    /// Emit transfer events as JSON Lines on stdout instead of progress bars.
     #[clap(long, default_value_t = false)]
     pub json_events: bool,
 

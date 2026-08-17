@@ -8,6 +8,7 @@ use std::{
 
 use iroh::EndpointAddr;
 use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
+use sendmer::{TransferErrorCode, TransferEvent, TransferEventData};
 
 // Resolve the binary before changing the child working directory so parallel
 // tests cannot make the command path point at a temporary directory.
@@ -77,6 +78,41 @@ fn list_receive_temp_dirs() -> std::collections::HashSet<PathBuf> {
                 .is_some_and(|name| name.starts_with(prefix))
         })
         .collect()
+}
+
+fn parse_json_events(stdout: &[u8]) -> Vec<TransferEvent> {
+    let stdout = std::str::from_utf8(stdout).expect("JSON event stdout should be UTF-8");
+    assert!(!stdout.trim().is_empty(), "JSON event stdout was empty");
+    stdout
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            serde_json::from_str(line).unwrap_or_else(|error| {
+                panic!(
+                    "stdout line {} is not a transfer event: {error}: {line}",
+                    index + 1
+                )
+            })
+        })
+        .collect()
+}
+
+fn assert_ordered_single_session(events: &[TransferEvent]) {
+    let first = events.first().expect("started event");
+    assert!(matches!(first.event, TransferEventData::Started));
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(event.schema_version, 1);
+        assert_eq!(event.session_id, first.session_id);
+        assert_eq!(event.sequence, u64::try_from(index + 1).expect("sequence"));
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event.is_terminal())
+            .count(),
+        1
+    );
+    assert!(events.last().expect("terminal event").event.is_terminal());
 }
 
 #[test]
@@ -470,5 +506,117 @@ fn receive_connection_failure_cleans_temp_dir_after_retries() {
     assert!(
         leaked.is_empty(),
         "temporary receive dirs should be cleaned after retry failure: {leaked:?}"
+    );
+}
+
+#[test]
+fn json_events_keep_piped_stdout_machine_readable_on_receive_failure() {
+    let output_dir = tempfile::tempdir().unwrap();
+    let secret = sendmer::core::args::get_or_create_secret().unwrap();
+    let ticket = BlobTicket::new(
+        EndpointAddr::new(secret.public()),
+        Hash::new(b"sendmer-json-failure-test"),
+        BlobFormat::HashSeq,
+    );
+    let output = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--json-events",
+            "--relay",
+            "disabled",
+            "--retry-limit",
+            "1",
+            "--retry-backoff-ms",
+            "0",
+            "--output-dir",
+        ])
+        .arg(output_dir.path())
+        .arg(ticket.to_string())
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run receive failure command");
+
+    assert!(!output.status.success());
+    let events = parse_json_events(&output.stdout);
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        &events.last().expect("failed event").event,
+        TransferEventData::Failed { error }
+            if error.code == TransferErrorCode::ConnectionFailed && error.retryable
+    ));
+    assert!(!output.stderr.is_empty(), "diagnostics should use stderr");
+}
+
+#[test]
+fn json_events_keep_piped_stdout_machine_readable_on_send_failure() {
+    let source_root = tempfile::tempdir().unwrap();
+    let empty_dir = source_root.path().join("empty");
+    std::fs::create_dir(&empty_dir).unwrap();
+    let output = Command::new(sendmer_bin())
+        .args(["send", "--json-events", "--relay", "disabled"])
+        .arg(&empty_dir)
+        .current_dir(source_root.path())
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run send failure command");
+
+    assert!(!output.status.success());
+    let events = parse_json_events(&output.stdout);
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        &events.last().expect("failed event").event,
+        TransferEventData::Failed { error }
+            if error.code == TransferErrorCode::InvalidInput && !error.retryable
+    ));
+    assert!(!output.stderr.is_empty(), "diagnostics should use stderr");
+}
+
+#[test]
+fn json_events_report_success_without_human_text_on_stdout() {
+    let name = "json-success.bin";
+    let data = vec![5u8; 32 * 1024];
+    let src_dir = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    let src_file = src_dir.path().join(name);
+    std::fs::write(&src_file, &data).unwrap();
+    let mut send = RunningSend::spawn(&src_file, src_dir.path()).unwrap();
+    let ticket = send.read_ticket();
+
+    let output = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--json-events",
+            "--relay",
+            "disabled",
+            "--output-dir",
+        ])
+        .arg(target_dir.path())
+        .arg(ticket.to_string())
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run successful JSON receive");
+    send.cleanup();
+
+    assert!(
+        output.status.success(),
+        "receive failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = parse_json_events(&output.stdout);
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        events.last().map(|event| &event.event),
+        Some(TransferEventData::Completed)
+    ));
+    assert_eq!(std::fs::read(target_dir.path().join(name)).unwrap(), data);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Downloaded"),
+        "human result should use stderr in JSON mode"
     );
 }
