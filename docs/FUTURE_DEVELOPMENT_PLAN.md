@@ -1,4 +1,4 @@
-# 后续开发计划（v0.8.0 之后）
+# 后续开发计划（v0.9.0 之后）
 
 ## 1. 术语表与命名约定
 
@@ -16,15 +16,17 @@
 
 ## 2. 当前基线与产品边界
 
-当前发布基线是 `v0.8.0`。项目已经具备：
+当前发布基线是 `v0.9.0`。项目已经具备：
 
 - 基于 iroh 的文件和目录点对点传输，以及 CLI 和可复用 Rust API。
 - 原子接收导出、no-replace 冲突策略、重试、超时、取消和失败清理。
 - `SendHandle` opaque 生命周期 API 和兼容用的 `SendResult`。
 - sender 全局共享的 payload 上传速率上限。
 - 带会话、严格序号、阶段、单终态与结构化错误的版本化 JSON Lines 事件。
+- 可选持久接收缓存、TTL 清理、跨进程中断恢复和发送端重启恢复。
 - Linux、macOS、Windows 的测试、安装器和 GitHub Release 链路。
-- AlterSendmer `v0.4.0` 已通过 crates.io 上的 `sendmer = "0.8.0"` 消费新事件契约。
+- AlterSendmer `v0.4.0` 已通过 crates.io 上的 `sendmer = "0.8.0"` 消费事件契约；下一版将在
+  sendmer `v0.9.0` 发布后接入持久缓存选项。
 
 主产品边界仍是“隐私优先的一次性文件传输”。核心传输层近期不引入账号系统、云端
 文件存储、自建控制面或后台同步服务。传输票据继续采用 bearer capability 语义：取得票据
@@ -101,7 +103,7 @@ release changelog CI 接入。事件信封迁移统一进入 `v0.4.0`，不制�
 - 已依赖正式发布的 `sendmer = "0.8.0"`，通过跨项目 contract tests、三平台 CI 和 Windows
   视觉验收，并发布 [`v0.4.0`](https://github.com/bruceblink/alter-sendmer/releases/tag/v0.4.0)。
 
-### v0.9.0：持久化、规模和安全
+### v0.9.0：持久接收缓存与跨进程恢复（发布范围）
 
 周期：2 至 4 周，只有 `v0.8.0` 的会话、事件和错误契约稳定后才启动：
 
@@ -109,11 +111,16 @@ release changelog CI 接入。事件信封迁移统一进入 `v0.4.0`，不制�
   隐私边界和迁移规则见
   [PERSISTENT_RECEIVE_CACHE_DESIGN.md](PERSISTENT_RECEIVE_CACHE_DESIGN.md)。
 - cache TTL、清理命令、锁和崩溃遗留目录回收按设计文档中的四个实施阶段独立交付。
+- 通过独立进程接收端强制退出、相同身份发送端重启、Windows 文件锁和限速大文件 E2E。
+- 本版本不宣称内核级丢包/延迟注入，也不提供跨机器持久缓存共享；发送端仍需可重新连接。
+
+### v0.10.0：会话控制、规模与供应链安全（计划）
+
 - sender 会话过期、最大接收方数量和主动撤销。
 - 带宽、并发和内存上限，以及大目录和大文件基准。
 - 非 UTF-8 文件名、权限、时间戳和符号链接的跨平台策略。
 - Release 资产签名、SBOM 和构建 provenance。
-- ARM 设备、真实 relay 和弱网 smoke test。
+- ARM 设备、真实 relay 和内核级弱网实验 smoke test。
 
 ## 4. 暂不纳入主线的方向
 
@@ -162,8 +169,9 @@ sendmer `v0.8.0` 与 AlterSendmer `v0.4.0` 已验证：
 - 桌面客户端仅依赖 crates.io 正式版本，能够拒绝未知 schema、重复事件和序号缺口。
 - Windows、macOS、Linux 的桌面 CI 与发布资产均已通过。
 
-进入 `v0.9.0` 前：
+sendmer `v0.9.0` 发布前已验证：
 
-- 大文件、弱网和跨平台构建具有可重复基准。
 - cache 的所有权、TTL、锁、崩溃恢复和清理命令已有独立设计评审。
+- 独立进程接收端中断和发送端重启恢复具有可重复 E2E，且成功后缓存条目会删除。
 - 持久化格式具备版本字段和迁移策略，不依赖 GUI 私有状态。
+- Linux、macOS、Windows GNU/MSVC 的 stable、beta、nightly CI 门禁全绿。
