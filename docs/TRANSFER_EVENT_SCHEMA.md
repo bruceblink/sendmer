@@ -142,17 +142,19 @@ pub struct TransferEventEnvelope {
 
 ## 8. 兼容与实施顺序
 
-`TransferEvent` 当前是公开可穷举枚举，因此新的 `TransferEventEnvelope` 作为 `v0.8.0` 的
-次版本变更发布；依赖 `sendmer = "0.7"` 的调用方不会被 Cargo 自动升级。`EventEmitter` 和
-`AppHandle` 的职责保持不变，但其事件参数升级为事件信封。迁移方应匹配 `event.event`，并
-使用会话标识和序号维护状态，不能继续只看错误字符串。
+`TransferEvent` 在 v0.7.0 是公开可穷举枚举，因此 `TransferEventEnvelope` 作为 `v0.8.0` 的
+次版本变更发布；依赖 `sendmer = "0.7"` 的调用方不会被 Cargo 自动升级。v0.8.0 将
+`TransferEvent` 定义为事件信封的公开别名，`EventEmitter` 和 `AppHandle` 的职责保持不变，
+但事件参数升级为事件信封。迁移方应匹配 `event.event`，并使用会话标识和序号维护状态，
+不能继续只看错误字符串。已弃用的 `LegacyTransferEvent` 仅用于短期读取旧形状，不应继续
+生产新事件。
 
-实施按以下独立批次进行：
+实现已经按以下独立批次完成：
 
 1. 添加公开类型、固定 JSON fixture、会话标识解析和 Serde contract tests。
 2. 让发送/接收入口各创建一个事件状态机，接入严格序号和单终态约束。
 3. 在取消、超时、连接、传输、冲突和文件系统失败现场构造结构化错误。
 4. 更新 `--json-events`、公开 API 示例、迁移文档、MSRV 和跨平台门禁。
 
-`v0.8.0` 发布到 crates.io 后，AlterSendmer 才能使用正式版本号迁移；不得以 Git revision
-提前消费尚未冻结的事件契约。
+`v0.8.0` 发布到 crates.io 后，AlterSendmer 才能使用正式版本号迁移；迁移依赖必须写成
+`sendmer = "0.8.0"`，不得用本地 path 或 Git 提交依赖绕过发布顺序。

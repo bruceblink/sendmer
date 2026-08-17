@@ -292,6 +292,10 @@ pub trait EventEmitter: Send + Sync {
 /// - payload 直接体现在枚举字段中
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[deprecated(
+    since = "0.8.0",
+    note = "use TransferEventEnvelope and match TransferEventData instead"
+)]
 pub enum LegacyTransferEvent {
     /// 传输开始
     Started { role: Role },
@@ -321,6 +325,7 @@ pub enum LegacyTransferEvent {
     FileNames { role: Role, file_names: Vec<String> },
 }
 
+#[allow(deprecated)]
 impl LegacyTransferEvent {
     /// 返回事件状态字符串（started / progress / completed / failed）
     pub const fn state(&self) -> &'static str {
@@ -395,6 +400,7 @@ pub fn emit_event(app: &AppHandle, event: &TransferEventEnvelope) {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::{
         LegacyTransferEvent, Role, TRANSFER_EVENT_SCHEMA_VERSION, TransferError, TransferErrorCode,

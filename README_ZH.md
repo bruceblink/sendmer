@@ -12,7 +12,8 @@ Sendmer 是一个基于 [iroh](https://crates.io/crates/iroh) 和 [iroh-blobs](h
 - 通过 iroh 自动进行 NAT 穿透和打洞，失败时回退到 relay
 - 基于 `iroh-blobs` 的 blake3 校验流式传输
 - 对外暴露 `send` 和 `receive` 两个 Rust API
-- 支持 CLI 进度显示和剪贴板辅助
+- 带有有序会话和结构化错误的版本化传输事件
+- 支持 sender 共享上传限速、CLI 进度显示和剪贴板辅助
 
 sendmer 使用 256 位节点 ID，因此 ticket 在 IP 地址变化后仍可继续使用。连接使用 TLS 加密。
 
@@ -25,7 +26,7 @@ sendmer 使用 256 位节点 ID，因此 ticket 在 IP 地址变化后仍可继�
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 
 # 或安装指定版本
-$env:SENDMER_VERSION="v0.7.0"
+$env:SENDMER_VERSION="v0.8.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
@@ -54,7 +55,7 @@ C:\Users\<用户名>\.sendmer\bin\sendmer.exe
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 
 # 或安装指定版本
-SENDMER_VERSION=v0.7.0 \
+SENDMER_VERSION=v0.8.0 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
@@ -132,7 +133,7 @@ sendmer receive <ticket>
 `send` 和 `receive` 共同支持：
 
 - `--no-progress`：关闭 CLI 进度显示
-- `--json-events`：将基础的带类型传输事件按 JSON Lines 输出到 stderr，不显示进度条
+- `--json-events`：将版本化传输事件信封作为实时刷新的 JSON Lines 输出到 stdout，不显示进度条；日志和人类可读命令结果仍写入 stderr
 - `-v` / `-vv`：提高日志详细程度
 - `--relay <default|disabled|url>`：控制 relay 使用方式
 - `--magic-ipv4-addr <addr>`：绑定固定 IPv4 地址
@@ -182,6 +183,13 @@ async fn main() -> anyhow::Result<()> {
 旧的 `send` 函数和 `SendResult::shutdown` 仍保留用于兼容。接收端可以使用 `receive`，
 或使用带取消能力的 `receive_with_cancellation` 与 `ReceiveOptions`。
 
+`TransferEvent` 现在是版本化 `TransferEventEnvelope` 的公开别名。每个 send 或 receive 会话
+具有一个随机 `session_id`、严格递增的 `sequence`、显式阶段，并且 completed、failed、
+cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode`、失败阶段、可重试属性和
+安全消息。消费者应匹配 `event.event`，不得解析错误文本。参见
+[v0.8.0 迁移指南](docs/V0_8_MIGRATION.md)和可编译的
+[`event_consumer` 示例](examples/event_consumer.rs)。
+
 库层会 re-export：
 
 - 参数和选项类型
@@ -193,6 +201,8 @@ async fn main() -> anyhow::Result<()> {
 
 - [DEVELOPMENT.md](DEVELOPMENT.md)
 - [主线开发计划](docs/MAINLINE_DEVELOPMENT_PLAN.md)
+- [传输事件契约](docs/TRANSFER_EVENT_SCHEMA.md)
+- [v0.8.0 迁移指南](docs/V0_8_MIGRATION.md)
 
 ## License
 

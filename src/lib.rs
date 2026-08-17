@@ -7,6 +7,7 @@
 //! 同时也包含用于命令行工具的包装（`src/bin`）。
 pub mod core;
 
+#[allow(deprecated)]
 pub use core::{
     args::{Args, Commands, ReceiveArgs, SendArgs},
     events::{

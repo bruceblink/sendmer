@@ -1,4 +1,4 @@
-# 后续开发计划（v0.7.0 之后）
+# 后续开发计划（v0.8.0 之后）
 
 ## 1. 术语表与命名约定
 
@@ -16,15 +16,15 @@
 
 ## 2. 当前基线与产品边界
 
-当前发布基线是 `v0.7.0`。项目已经具备：
+当前发布基线是 `v0.8.0`。项目已经具备：
 
 - 基于 iroh 的文件和目录点对点传输，以及 CLI 和可复用 Rust API。
 - 原子接收导出、no-replace 冲突策略、重试、超时、取消和失败清理。
 - `SendHandle` opaque 生命周期 API 和兼容用的 `SendResult`。
 - sender 全局共享的 payload 上传速率上限。
-- 可序列化的基础 JSON Lines 事件。
+- 带会话、严格序号、阶段、单终态与结构化错误的版本化 JSON Lines 事件。
 - Linux、macOS、Windows 的测试、安装器和 GitHub Release 链路。
-- AlterSendmer 通过 crates.io 上的 `sendmer = "0.7.0"` 消费核心传输层。
+- AlterSendmer 下一版本将通过 crates.io 上的 `sendmer = "0.8.0"` 消费新事件契约。
 
 主产品边界仍是“隐私优先的一次性文件传输”。核心传输层近期不引入账号系统、云端
 文件存储、自建控制面或后台同步服务。传输票据继续采用 bearer capability 语义：取得票据
@@ -54,7 +54,7 @@
 - `SendOptions::max_upload_rate_bytes_per_sec` 与 CLI `--max-upload-rate`。
 - sender 的所有接收方共享同一 payload 上传上限。
 - `TransferEvent` 的 Serde 支持和 `--json-events` JSON Lines 输出。
-- AlterSendmer 使用正式版本依赖接入 `SendHandle`，不依赖本地路径或 Git revision。
+- AlterSendmer 使用正式版本依赖接入 `SendHandle`，不依赖本地路径或 Git 提交。
 
 上传限速的已实现语义和剩余测试见
 [TRANSFER_RATE_LIMIT_DESIGN.md](TRANSFER_RATE_LIMIT_DESIGN.md)。当前 JSON 事件仍是基础通知模型，
@@ -70,10 +70,10 @@
 - 将配置传给 `SendOptions`，不在桌面客户端实现第二套 limiter。
 - 增加配置映射、持久化、传输适配和视觉验收。
 
-AlterSendmer `v0.3.0` 继续依赖 `sendmer = "0.7.0"`。当前 `main` 上尚未发布的
-`SendHandle` 接入和 release changelog CI 一并纳入该版本，不额外制造过渡性的 `v0.2.1`。
+AlterSendmer `v0.3.0` 依赖 `sendmer = "0.7.0"`，已经完成 `SendHandle`、上传限速和
+release changelog CI 接入。事件信封迁移统一进入 `v0.4.0`，不制造中间依赖版本。
 
-### v0.8.0：版本化事件与结构化错误契约
+### v0.8.0：版本化事件与结构化错误契约（已完成）
 
 周期：1 至 2 周。目标是让桌面客户端、脚本和其他 Rust 服务可靠消费传输状态。
 字段、阶段、错误码、隐私边界和迁移顺序见
@@ -90,7 +90,7 @@ AlterSendmer `v0.3.0` 继续依赖 `sendmer = "0.7.0"`。当前 `main` 上尚未
 
 验收门槛：`cargo doc --no-deps`、公开 API 示例、事件 fixture、MSRV 1.91 检查、跨平台 CI
 和现有完整门禁全部通过。发布到 crates.io 后，AlterSendmer 才能把依赖升级为
-`sendmer = "0.8.0"`；不得提交 Git revision 依赖作为过渡方案。
+`sendmer = "0.8.0"`；不得提交本地 path 或 Git 提交依赖作为过渡方案。
 
 ### AlterSendmer v0.4.0：消费 sendmer v0.8.0 契约
 
@@ -140,7 +140,7 @@ AlterSendmer 必须执行 fmt、locked check、Clippy、workspace tests，以及
 1. 在 sendmer 完成功能、测试、文档和版本提交。
 2. 发布 sendmer crate 与 GitHub Release，并确认 crates.io 可解析该版本。
 3. AlterSendmer 使用该正式版本号升级依赖并完成跨项目回归。
-4. 发布 AlterSendmer，不使用本地 path 或 Git revision 绕过发布顺序。
+4. 发布 AlterSendmer，不使用本地 path 或 Git 提交依赖绕过发布顺序。
 
 ## 6. 进入下一阶段的指标
 

@@ -12,7 +12,8 @@ It is based on [n0-computer/sendme v0.31.0](https://github.com/n0-computer/sendm
 - NAT traversal and hole punching via iroh, with relay fallback when needed
 - Verified streaming with blake3 through `iroh-blobs`
 - Reusable Rust API via exported `send` and `receive` functions
-- Optional CLI progress output and clipboard helper
+- Versioned transfer events with ordered sessions and structured errors
+- Optional shared sender upload limit, CLI progress output, and clipboard helper
 
 sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses change during a session. Connections are encrypted with TLS.
 
@@ -25,7 +26,7 @@ sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses chan
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 
 # Or install a specific version
-$env:SENDMER_VERSION="v0.7.0"
+$env:SENDMER_VERSION="v0.8.0"
 iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
 ```
 
@@ -54,7 +55,7 @@ After installation:
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 
 # Or install a specific version
-SENDMER_VERSION=v0.7.0 \
+SENDMER_VERSION=v0.8.0 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
@@ -132,7 +133,7 @@ Directories must contain regular files. sendmer rejects empty directories, direc
 Common options are available on both `send` and `receive`:
 
 - `--no-progress`: disable CLI progress output
-- `--json-events`: emit basic tagged transfer events as JSON Lines on stderr instead of a progress bar
+- `--json-events`: emit versioned transfer event envelopes as flushed JSON Lines on stdout instead of a progress bar; logs and human-readable command output remain on stderr
 - `-v` / `-vv`: increase log verbosity
 - `--relay <default|disabled|url>`: control relay usage
 - `--magic-ipv4-addr <addr>`: bind a fixed IPv4 address
@@ -182,6 +183,13 @@ async fn main() -> anyhow::Result<()> {
 The legacy `send` function and `SendResult::shutdown` remain available for compatibility. A receiver
 can use `receive` or `receive_with_cancellation` with `ReceiveOptions`.
 
+`TransferEvent` is now the versioned `TransferEventEnvelope` alias. Each send or receive session has
+one random `session_id`, strictly increasing `sequence` values, an explicit phase, and at most one of
+completed, failed, or cancelled. Failed events contain `TransferErrorCode`, failure phase,
+retryability, and a safe message. Consumers should match `event.event` and must not parse error text.
+See the [v0.8.0 migration guide](docs/V0_8_MIGRATION.md) and the buildable
+[`event_consumer` example](examples/event_consumer.rs).
+
 The library re-exports:
 
 - argument and option types
@@ -193,6 +201,8 @@ The library re-exports:
 
 - [DEVELOPMENT.md](DEVELOPMENT.md)
 - [Mainline Development Plan](docs/MAINLINE_DEVELOPMENT_PLAN.md)
+- [Transfer Event Contract](docs/TRANSFER_EVENT_SCHEMA.md)
+- [v0.8.0 Migration Guide](docs/V0_8_MIGRATION.md)
 
 ## License
 
