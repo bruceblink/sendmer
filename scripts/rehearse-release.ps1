@@ -115,7 +115,19 @@ function Invoke-QualityGate {
         },
         @{
             Description = "cargo check"
-            Arguments   = @("check", "--workspace", "--all-features", "--bins")
+            Arguments   = @("check", "--locked", "--workspace", "--all-features", "--bins", "--examples")
+        },
+        @{
+            Description = "cargo doc"
+            Arguments   = @("doc", "--locked", "--workspace", "--all-features", "--no-deps")
+        },
+        @{
+            Description = "cargo rustdoc warnings"
+            Arguments   = @("rustdoc", "--locked", "--all-features", "--", "-D", "warnings")
+        },
+        @{
+            Description = "cargo doc tests"
+            Arguments   = @("test", "--locked", "--doc", "--all-features")
         },
         @{
             Description = "cargo package"
