@@ -164,7 +164,7 @@ Expired entries are pruned automatically when a persistent cache is opened. You 
 sendmer cache prune --cache-dir <path>
 ```
 
-Pruning uses each entry's recorded TTL, skips active entries, and preserves malformed or future-schema data instead of guessing. The cache format, privacy boundary, and interruption/restart E2E are tracked in [the persistent receive-cache design](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md).
+Pruning uses each entry's recorded TTL, skips active entries, and preserves malformed or future-schema data instead of guessing. The cache format, privacy boundary, and interruption/restart E2E are defined in the [mainline design and development plan](docs/MAINLINE.md).
 
 Send-specific options:
 
@@ -210,8 +210,7 @@ The library re-exports:
 ## Development
 
 - [DEVELOPMENT.md](DEVELOPMENT.md)
-- [Mainline Development Plan](docs/MAINLINE_DEVELOPMENT_PLAN.md)
-- [Transfer Event Contract](docs/TRANSFER_EVENT_SCHEMA.md)
+- [Mainline Design and Development Plan](docs/MAINLINE.md)
 - [v0.8.0 Migration Guide](docs/V0_8_MIGRATION.md)
 
 ## License

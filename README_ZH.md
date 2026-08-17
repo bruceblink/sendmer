@@ -164,7 +164,7 @@ sendmer receive <ticket>
 sendmer cache prune --cache-dir <path>
 ```
 
-清理使用每个条目记录的 TTL，跳过活跃条目，并保留损坏或未来 schema 数据而不进行猜测。缓存格式、隐私边界以及中断/重启 E2E 见[持久接收缓存设计](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md)。
+清理使用每个条目记录的 TTL，跳过活跃条目，并保留损坏或未来 schema 数据而不进行猜测。缓存格式、隐私边界以及中断/重启 E2E 统一定义在[主线设计与开发计划](docs/MAINLINE.md)中。
 
 仅 `send` 支持：
 
@@ -210,8 +210,7 @@ cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode
 ## 开发
 
 - [DEVELOPMENT.md](DEVELOPMENT.md)
-- [主线开发计划](docs/MAINLINE_DEVELOPMENT_PLAN.md)
-- [传输事件契约](docs/TRANSFER_EVENT_SCHEMA.md)
+- [主线设计与开发计划](docs/MAINLINE.md)
 - [v0.8.0 迁移指南](docs/V0_8_MIGRATION.md)
 
 ## License

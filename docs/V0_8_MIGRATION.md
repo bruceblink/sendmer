@@ -130,4 +130,4 @@ v0.8.0 的版本化行：
 - `session_id` 只用于关联应用层事件，不能替代内容 hash 或访问控制。
 
 完整字段、错误码和隐私边界见
-[`TRANSFER_EVENT_SCHEMA.md`](TRANSFER_EVENT_SCHEMA.md)。
+[`MAINLINE.md`](MAINLINE.md#44-事件信封与结构化错误)。
