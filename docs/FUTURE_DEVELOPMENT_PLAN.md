@@ -76,6 +76,8 @@ AlterSendmer `v0.3.0` 继续依赖 `sendmer = "0.7.0"`。当前 `main` 上尚未
 ### v0.8.0：版本化事件与结构化错误契约
 
 周期：1 至 2 周。目标是让桌面客户端、脚本和其他 Rust 服务可靠消费传输状态。
+字段、阶段、错误码、隐私边界和迁移顺序见
+[TRANSFER_EVENT_SCHEMA.md](TRANSFER_EVENT_SCHEMA.md)。
 
 - 引入版本化事件信封，至少包含 schema 版本、传输会话 ID、事件序号、时间戳、角色和阶段。
 - 区分 started、progress、file names、completed、failed 和 cancelled，保证每个会话仅有一个终态。
