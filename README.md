@@ -156,7 +156,15 @@ Receive-specific options:
 
 The only conflict policy in this release is **fail**. If the destination root already exists as a file, directory, or symbolic link, receive fails and leaves it unchanged; sendmer never merges into, renames, skips, or overwrites an existing target. Collections with multiple top-level roots are also rejected because they cannot be committed as one atomic destination.
 
-Retry reuses data already obtained by the current receive process. Cross-process resume is opt-in: configure the same private `--cache-dir` for a later receive of the same content. Failed or cancelled receives preserve verified ranges, successful receives remove their completed cache entry, and the sender still needs to be reachable. The first cache slice records TTL metadata but does not yet expose the explicit prune command; cache management and interruption E2E are tracked in [the persistent receive-cache design](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md).
+Retry reuses data already obtained by the current receive process. Cross-process resume is opt-in: configure the same private `--cache-dir` for a later receive of the same content. Failed or cancelled receives preserve verified ranges, successful receives remove their completed cache entry, and the sender still needs to be reachable.
+
+Expired entries are pruned automatically when a persistent cache is opened. You can run the same maintenance explicitly:
+
+```bash
+sendmer cache prune --cache-dir <path>
+```
+
+Pruning uses each entry's recorded TTL, skips active entries, and preserves malformed or future-schema data instead of guessing. The cache format, privacy boundary, and remaining interruption E2E are tracked in [the persistent receive-cache design](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md).
 
 Send-specific options:
 

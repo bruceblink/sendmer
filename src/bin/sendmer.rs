@@ -10,7 +10,8 @@ use indicatif::HumanBytes;
 #[cfg(feature = "clipboard")]
 use n0_future::StreamExt;
 use sendmer::core::args::{
-    Args, Commands, CommonArgs, ReceiveArgs, SendArgs, get_or_create_secret, print_hash,
+    Args, CacheArgs, CacheCommands, Commands, CommonArgs, ReceiveArgs, SendArgs,
+    get_or_create_secret, print_hash,
 };
 use sendmer::core::cli_helper::CliEventEmitter;
 use sendmer::core::results::SenderTransferStatus;
@@ -55,12 +56,34 @@ pub async fn run() -> anyhow::Result<()> {
         )
     });
 
-    init_tracing(common_args(&args.command).verbose)?;
-    maybe_show_secret(common_args(&args.command))?;
+    if let Some(common) = common_args(&args.command) {
+        init_tracing(common.verbose)?;
+        maybe_show_secret(common)?;
+    } else {
+        init_tracing(0)?;
+    }
 
     match args.command {
         Commands::Send(args) => send(args).await,
         Commands::Receive(args) => receive(args).await,
+        Commands::Cache(args) => cache(args).await,
+    }
+}
+
+/// Run cache maintenance through the same public API available to GUI clients.
+async fn cache(args: CacheArgs) -> anyhow::Result<()> {
+    match args.command {
+        CacheCommands::Prune(args) => {
+            let report = sendmer::prune_receive_cache(args.cache_dir).await?;
+            println!(
+                "Removed {} expired entries; retained {}, active {}, unknown {}",
+                report.removed_entries,
+                report.retained_entries,
+                report.active_entries,
+                report.unknown_entries
+            );
+            Ok(())
+        }
     }
 }
 
@@ -213,10 +236,11 @@ where
     }
 }
 
-fn common_args(command: &Commands) -> &CommonArgs {
+fn common_args(command: &Commands) -> Option<&CommonArgs> {
     match command {
-        Commands::Send(args) => &args.common,
-        Commands::Receive(args) => &args.common,
+        Commands::Send(args) => Some(&args.common),
+        Commands::Receive(args) => Some(&args.common),
+        Commands::Cache(_) => None,
     }
 }
 

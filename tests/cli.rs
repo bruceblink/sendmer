@@ -613,6 +613,45 @@ fn invalid_receive_cache_ttl_fails_before_creating_cache_root() {
 }
 
 #[test]
+fn cache_prune_cli_removes_expired_entry_and_reports_counts() {
+    let cache_root = tempfile::tempdir().unwrap();
+    let cache_key = format!("0-{}", "a".repeat(64));
+    let entry = cache_root.path().join("v1").join(&cache_key);
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::write(
+        entry.join("manifest.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "cache_key": cache_key,
+            "created_at_unix_seconds": 0,
+            "ttl_seconds": 1
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(entry.join(".lock"), b"0\n").unwrap();
+
+    let output = Command::new(sendmer_bin())
+        .args([
+            "cache",
+            "prune",
+            "--cache-dir",
+            cache_root.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "cache prune failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Removed 1 expired entries"));
+    assert!(!entry.exists());
+}
+
+#[test]
 fn json_events_keep_piped_stdout_machine_readable_on_receive_failure() {
     let output_dir = tempfile::tempdir().unwrap();
     let secret = sendmer::core::args::get_or_create_secret().unwrap();

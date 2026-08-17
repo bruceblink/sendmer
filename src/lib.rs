@@ -19,6 +19,7 @@ pub use core::{
         AddrInfoOptions, ReceiveCacheOptions, ReceiveOptions, RelayModeOption, SendOptions,
         apply_options,
     },
+    receive_cache::{ReceiveCachePruneReport, prune_receive_cache},
     receiver::{receive, receive_with_cancellation},
     results::{ReceiveResult, SendHandle, SendResult, SenderTransferStatus},
     sender::{send, send_handle},

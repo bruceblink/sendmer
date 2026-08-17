@@ -156,7 +156,15 @@ sendmer receive <ticket>
 
 本版本唯一支持的冲突策略是 **fail**。最终目标已存在为文件、目录或符号链接时，接收会失败并保持原内容不变；sendmer 不会合并、重命名、跳过或覆盖已有目标。含多个顶层根的外部 collection 也会被拒绝，因为它们不能作为一个原子目标提交。
 
-重试会复用同一次 receive 进程已经获得的数据。跨进程续传必须显式启用：后续 receive 为相同内容配置同一个私有 `--cache-dir`。失败或取消会保留已验证范围，成功接收会删除已完成的缓存条目，且发送端仍需在线。首个缓存切片只记录 TTL 元数据，尚未公开显式 prune 命令；缓存管理和真实中断 E2E 见[持久接收缓存设计](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md)。
+重试会复用同一次 receive 进程已经获得的数据。跨进程续传必须显式启用：后续 receive 为相同内容配置同一个私有 `--cache-dir`。失败或取消会保留已验证范围，成功接收会删除已完成的缓存条目，且发送端仍需在线。
+
+打开持久缓存时会自动清理过期条目，也可以显式执行同一套维护逻辑：
+
+```bash
+sendmer cache prune --cache-dir <path>
+```
+
+清理使用每个条目记录的 TTL，跳过活跃条目，并保留损坏或未来 schema 数据而不进行猜测。缓存格式、隐私边界和剩余的真实中断 E2E 见[持久接收缓存设计](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md)。
 
 仅 `send` 支持：
 

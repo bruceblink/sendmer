@@ -7,7 +7,7 @@ use iroh_blobs::HashAndFormat;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,6 +15,7 @@ const CACHE_LAYOUT_DIR: &str = "v1";
 const CACHE_SCHEMA_VERSION: u32 = 1;
 const CACHE_MANIFEST_FILE: &str = "manifest.json";
 const CACHE_LOCK_FILE: &str = ".lock";
+const CACHE_ROOT_LOCK_FILE: &str = ".prune.lock";
 const MANIFEST_TEMP_PREFIX: &str = ".manifest-";
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -23,6 +24,47 @@ struct ReceiveCacheManifest {
     cache_key: String,
     created_at_unix_seconds: u64,
     ttl_seconds: u64,
+}
+
+/// Summary returned by receive-cache maintenance.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReceiveCachePruneReport {
+    pub removed_entries: u64,
+    pub retained_entries: u64,
+    pub active_entries: u64,
+    pub unknown_entries: u64,
+}
+
+/// Remove expired receive-cache entries without touching active or unknown data.
+///
+/// Each entry uses the TTL recorded in its versioned manifest. A missing root
+/// is treated as an empty cache; symlinks, future schemas, and malformed entry
+/// names are preserved rather than guessed at.
+pub async fn prune_receive_cache(
+    root_dir: impl AsRef<Path>,
+) -> anyhow::Result<ReceiveCachePruneReport> {
+    let root_dir = root_dir.as_ref().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        match std::fs::symlink_metadata(&root_dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ReceiveCachePruneReport::default());
+            }
+            Err(error) => return Err(error).context("inspect receive cache root"),
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    !metadata.file_type().is_symlink(),
+                    "receive cache root must not be a symbolic link"
+                );
+                anyhow::ensure!(metadata.is_dir(), "receive cache root must be a directory");
+            }
+        }
+        let canonical_root = root_dir
+            .canonicalize()
+            .context("canonicalize receive cache root")?;
+        prune_cache_root(&canonical_root)
+    })
+    .await
+    .context("join receive cache prune task")?
 }
 
 /// Holds the advisory lock for one content-addressed receive-cache entry.
@@ -43,6 +85,24 @@ impl ReceiveCacheLease {
     ) -> anyhow::Result<Self> {
         options.validate()?;
         let cache_root = prepare_cache_root(&options.root_dir)?;
+        match prune_cache_root(&cache_root) {
+            Ok(report) if report.removed_entries > 0 => tracing::info!(
+                removed_entries = report.removed_entries,
+                "removed expired receive cache entries"
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(error = %error, "unable to prune receive cache"),
+        }
+        let root_lock = open_lock_file(&cache_root.join(CACHE_ROOT_LOCK_FILE))?;
+        match FileExt::try_lock_shared(&root_lock) {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                anyhow::bail!("receive cache maintenance is already in progress")
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(error).context("lock receive cache root");
+            }
+        }
         let layout_dir = prepare_plain_directory(&cache_root.join(CACHE_LAYOUT_DIR))?.0;
         let canonical_layout = layout_dir
             .canonicalize()
@@ -81,6 +141,7 @@ impl ReceiveCacheLease {
             entry_created,
         )?;
         touch_lock_file(&mut lock_file)?;
+        FileExt::unlock(&root_lock).context("unlock receive cache root")?;
 
         Ok(Self {
             entry_dir: canonical_entry,
@@ -114,6 +175,155 @@ impl ReceiveCacheLease {
             Err(error) => Err(error).context("remove completed receive cache entry"),
         }
     }
+}
+
+fn prune_cache_root(cache_root: &Path) -> anyhow::Result<ReceiveCachePruneReport> {
+    let layout_dir = cache_root.join(CACHE_LAYOUT_DIR);
+    match std::fs::symlink_metadata(&layout_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ReceiveCachePruneReport::default());
+        }
+        Err(error) => return Err(error).context("inspect receive cache layout"),
+        Ok(metadata) => {
+            anyhow::ensure!(
+                !metadata.file_type().is_symlink() && metadata.is_dir(),
+                "receive cache layout must be a plain directory"
+            );
+        }
+    }
+
+    let root_lock = open_lock_file(&cache_root.join(CACHE_ROOT_LOCK_FILE))?;
+    match FileExt::try_lock(&root_lock) {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            anyhow::bail!("receive cache maintenance is already in progress")
+        }
+        Err(TryLockError::Error(error)) => {
+            return Err(error).context("lock receive cache root for pruning");
+        }
+    }
+
+    let scan_result = prune_cache_entries(&layout_dir);
+    let unlock_result =
+        FileExt::unlock(&root_lock).context("unlock receive cache root after prune");
+    match (scan_result, unlock_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(report), Ok(())) => Ok(report),
+    }
+}
+
+fn prune_cache_entries(layout_dir: &Path) -> anyhow::Result<ReceiveCachePruneReport> {
+    let mut report = ReceiveCachePruneReport::default();
+    let now = unix_seconds()?;
+    for item in std::fs::read_dir(layout_dir).context("scan receive cache layout")? {
+        let item = item.context("read receive cache entry")?;
+        let entry_dir = item.path();
+        let Some(entry_name) = item.file_name().to_str().map(ToOwned::to_owned) else {
+            report.unknown_entries += 1;
+            continue;
+        };
+        let metadata = item
+            .file_type()
+            .context("inspect receive cache entry type")?;
+        if !metadata.is_dir() || !is_cache_key(&entry_name) {
+            report.unknown_entries += 1;
+            continue;
+        }
+        let Some(ttl_seconds) = read_prunable_manifest(&entry_dir, &entry_name)? else {
+            report.unknown_entries += 1;
+            continue;
+        };
+        let Some(mut lock_file) = open_existing_lock_file(&entry_dir.join(CACHE_LOCK_FILE))? else {
+            report.unknown_entries += 1;
+            continue;
+        };
+        match FileExt::try_lock(&lock_file) {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                report.active_entries += 1;
+                continue;
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(error).context("lock expired receive cache entry");
+            }
+        }
+
+        let Some(last_used) = read_lock_heartbeat(&mut lock_file)? else {
+            FileExt::unlock(&lock_file).context("unlock unknown receive cache entry")?;
+            report.unknown_entries += 1;
+            continue;
+        };
+        if now.saturating_sub(last_used) < ttl_seconds {
+            FileExt::unlock(&lock_file).context("unlock retained receive cache entry")?;
+            report.retained_entries += 1;
+            continue;
+        }
+
+        FileExt::unlock(&lock_file).context("unlock expired receive cache entry")?;
+        drop(lock_file);
+        std::fs::remove_dir_all(&entry_dir).context("remove expired receive cache entry")?;
+        report.removed_entries += 1;
+    }
+    Ok(report)
+}
+
+/// `None` means the entry is malformed or owned by a future schema and must be kept.
+fn read_prunable_manifest(entry_dir: &Path, expected_key: &str) -> anyhow::Result<Option<u64>> {
+    let manifest: ReceiveCacheManifest = match std::fs::read(entry_dir.join(CACHE_MANIFEST_FILE)) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(manifest) => manifest,
+            Err(_) => return Ok(None),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("read receive cache manifest during prune"),
+    };
+    if manifest.schema_version != CACHE_SCHEMA_VERSION
+        || manifest.cache_key != expected_key
+        || manifest.ttl_seconds == 0
+    {
+        return Ok(None);
+    }
+    Ok(Some(manifest.ttl_seconds))
+}
+
+fn open_existing_lock_file(path: &Path) -> anyhow::Result<Option<File>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Ok(None);
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspect receive cache heartbeat"),
+    }
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .context("open receive cache heartbeat")
+        .map(Some)
+}
+
+/// Read through the same handle that owns the lock; Windows rejects a second
+/// handle reading a byte range protected by `LockFileEx`.
+fn read_lock_heartbeat(file: &mut File) -> anyhow::Result<Option<u64>> {
+    let mut heartbeat = String::new();
+    file.seek(SeekFrom::Start(0))
+        .context("seek receive cache heartbeat")?;
+    file.read_to_string(&mut heartbeat)
+        .context("read receive cache heartbeat")?;
+    Ok(heartbeat.trim().parse::<u64>().ok())
+}
+
+fn is_cache_key(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() == 66
+        && matches!(bytes[0], b'0' | b'1')
+        && bytes[1] == b'-'
+        && bytes[2..]
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 /// Create the configured root, then reject a final symlink or non-directory.
@@ -292,7 +502,7 @@ fn unix_seconds() -> anyhow::Result<u64> {
 mod tests {
     use super::{
         CACHE_MANIFEST_FILE, CACHE_SCHEMA_VERSION, ReceiveCacheLease, ReceiveCacheManifest,
-        cache_key,
+        cache_key, prune_receive_cache,
     };
     use crate::core::options::ReceiveCacheOptions;
     use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
@@ -357,6 +567,83 @@ mod tests {
 
         lease.remove().await.expect("remove completed entry");
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn prune_removes_expired_unlocked_entry() {
+        let root = tempfile::tempdir().expect("cache root");
+        let options =
+            ReceiveCacheOptions::new(root.path()).with_ttl(std::time::Duration::from_secs(1));
+        let lease = ReceiveCacheLease::open(&options, hash_and_format(BlobFormat::HashSeq))
+            .expect("cache lease");
+        let entry = lease.entry_dir().to_path_buf();
+        lease.preserve().expect("release cache entry");
+        std::fs::write(entry.join(".lock"), b"0\n").expect("expire cache heartbeat");
+        assert_eq!(
+            std::fs::read_to_string(entry.join(".lock")).expect("read expired heartbeat"),
+            "0\n"
+        );
+
+        let report = prune_receive_cache(root.path()).await.expect("prune cache");
+
+        assert_eq!(report.removed_entries, 1);
+        assert_eq!(report.active_entries, 0);
+        assert!(!entry.exists());
+    }
+
+    #[tokio::test]
+    async fn prune_skips_active_entry() {
+        let root = tempfile::tempdir().expect("cache root");
+        let options = ReceiveCacheOptions::new(root.path());
+        let lease = ReceiveCacheLease::open(&options, hash_and_format(BlobFormat::HashSeq))
+            .expect("cache lease");
+        let entry = lease.entry_dir().to_path_buf();
+
+        let report = prune_receive_cache(root.path()).await.expect("prune cache");
+
+        assert_eq!(report.removed_entries, 0);
+        assert_eq!(report.active_entries, 1);
+        assert!(entry.exists());
+        lease.preserve().expect("release cache entry");
+    }
+
+    #[tokio::test]
+    async fn prune_preserves_unknown_and_future_entries() {
+        let root = tempfile::tempdir().expect("cache root");
+        let options = ReceiveCacheOptions::new(root.path());
+        let lease = ReceiveCacheLease::open(&options, hash_and_format(BlobFormat::HashSeq))
+            .expect("cache lease");
+        let entry = lease.entry_dir().to_path_buf();
+        lease.preserve().expect("release cache entry");
+
+        let manifest_path = entry.join(CACHE_MANIFEST_FILE);
+        let mut manifest: ReceiveCacheManifest =
+            serde_json::from_slice(&std::fs::read(&manifest_path).expect("read manifest"))
+                .expect("parse manifest");
+        manifest.schema_version = CACHE_SCHEMA_VERSION + 1;
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+        )
+        .expect("write future manifest");
+        std::fs::write(entry.join(".lock"), b"0\n").expect("expire cache heartbeat");
+        std::fs::create_dir_all(root.path().join("v1").join("not-an-entry"))
+            .expect("unknown entry");
+
+        let report = prune_receive_cache(root.path()).await.expect("prune cache");
+
+        assert_eq!(report.removed_entries, 0);
+        assert_eq!(report.unknown_entries, 2);
+        assert!(entry.exists());
+    }
+
+    #[tokio::test]
+    async fn prune_missing_root_is_a_noop() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let missing = temp.path().join("missing-cache");
+        let report = prune_receive_cache(&missing).await.expect("empty prune");
+        assert_eq!(report, Default::default());
+        assert!(!missing.exists());
     }
 
     #[test]

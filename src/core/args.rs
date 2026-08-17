@@ -30,6 +30,27 @@ pub enum Commands {
     /// Receive a file or directory.
     #[clap(visible_alias = "recv")]
     Receive(ReceiveArgs),
+    /// Inspect and maintain persistent receive-cache data.
+    Cache(CacheArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct CacheArgs {
+    #[clap(subcommand)]
+    pub command: CacheCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CacheCommands {
+    /// Remove expired entries while preserving active or unknown data.
+    Prune(CachePruneArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct CachePruneArgs {
+    /// Persistent receive-cache root to inspect.
+    #[clap(long)]
+    pub cache_dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -291,5 +312,18 @@ mod tests {
             panic!("expected send command")
         };
         assert!(send.common.json_events);
+    }
+
+    #[test]
+    fn cache_prune_args_require_explicit_root() {
+        let args =
+            Args::try_parse_from(["sendmer", "cache", "prune", "--cache-dir", "receive-cache"])
+                .expect("valid cache prune arguments");
+
+        let Commands::Cache(cache) = args.command else {
+            panic!("expected cache command")
+        };
+        let super::CacheCommands::Prune(prune) = cache.command;
+        assert_eq!(prune.cache_dir, PathBuf::from("receive-cache"));
     }
 }

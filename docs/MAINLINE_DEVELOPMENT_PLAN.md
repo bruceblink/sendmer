@@ -42,8 +42,11 @@
   单条目排他锁、失败保留、成功删除、TTL 清理和版本化 manifest 均已明确。
 - `v0.9.0` 第一阶段已完成：`ReceiveCacheOptions`、`--cache-dir`、`--cache-ttl-seconds`、跨平台
   advisory lock、schema v1 manifest、失败保留与成功删除均已实现；Windows 回归已验证关闭
-  `FsStore` 后解锁再删目录。下一批实现显式/自动 prune 与缓存诊断；在真实独立进程中断恢复和
-  弱网 E2E 完成前不发布版本。
+  `FsStore` 后解锁再删目录。
+- `v0.9.0` 第二阶段已完成：缓存根维护锁与条目租约锁使用固定锁顺序；打开缓存会自动清理，
+  `sendmer cache prune --cache-dir <path>` 和公开 `prune_receive_cache` API 返回 removed、retained、
+  active、unknown 诊断计数。清理按 manifest TTL 执行，活跃、损坏和未来 schema 条目均保留。
+  下一批补真实独立进程中断恢复和弱网 E2E，在完成前不发布版本。
 
 ## Recommended approach
 
