@@ -89,7 +89,13 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Cargo check
-        run: cargo check --workspace --all-features --bins
+        run: cargo check --locked --workspace --all-features --bins --examples
+      - name: Cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --all-features --no-deps
+      - name: Cargo doc tests
+        run: cargo test --locked --doc --all-features
       - name: Cargo package
         run: cargo package --locked --no-verify
       - name: Cargo test
