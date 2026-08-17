@@ -37,7 +37,10 @@
 - `v0.7.0` 已发布：发送端共享上传限速、receive 取消、opaque 生命周期和基础 JSON 事件均已进入正式版本；AlterSendmer 已通过 `sendmer = "0.7.0"` 接入。
 - `v0.8.0` 已完成版本化事件信封、严格序号、单终态、结构化错误和 stdout JSONL 契约，并有 fixture、多接收方、取消、失败和管道测试。
 - AlterSendmer `v0.4.0` 已使用正式的 `sendmer = "0.8.0"` 完成阶段、结构化错误与历史记录迁移，并通过三平台发布门禁。
-- 下一批回到 sendmer `v0.9.0` 的持久 cache 与跨进程续传设计；在所有权、TTL、锁、崩溃恢复和清理契约评审完成前不进入实现。
+- sendmer `v0.9.0` 的持久 cache 与跨进程续传契约已冻结在
+  [PERSISTENT_RECEIVE_CACHE_DESIGN.md](PERSISTENT_RECEIVE_CACHE_DESIGN.md)：默认临时缓存、显式启用、
+  单条目排他锁、失败保留、成功删除、TTL 清理和版本化 manifest 均已明确。下一批进入缓存租约
+  与公开选项实现；在真实跨进程恢复和 Windows 文件锁 E2E 完成前不发布版本。
 
 ## Recommended approach
 

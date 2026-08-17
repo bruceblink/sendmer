@@ -105,8 +105,10 @@ release changelog CI 接入。事件信封迁移统一进入 `v0.4.0`，不制�
 
 周期：2 至 4 周，只有 `v0.8.0` 的会话、事件和错误契约稳定后才启动：
 
-- 可选持久 receive cache 和真正的跨进程断点续传。
-- cache TTL、清理命令、锁和崩溃遗留目录回收。
+- 可选持久 receive cache 和真正的跨进程断点续传；所有权、目录布局、锁、TTL、崩溃恢复、
+  隐私边界和迁移规则见
+  [PERSISTENT_RECEIVE_CACHE_DESIGN.md](PERSISTENT_RECEIVE_CACHE_DESIGN.md)。
+- cache TTL、清理命令、锁和崩溃遗留目录回收按设计文档中的四个实施阶段独立交付。
 - sender 会话过期、最大接收方数量和主动撤销。
 - 带宽、并发和内存上限，以及大目录和大文件基准。
 - 非 UTF-8 文件名、权限、时间戳和符号链接的跨平台策略。
