@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read},
+    io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     str::FromStr,
@@ -435,6 +435,149 @@ fn persistent_receive_cache_survives_failure_then_reopens_and_cleans_on_success(
     assert!(
         !cache_entry.exists(),
         "successful receive must delete its completed cache entry"
+    );
+}
+
+#[test]
+fn persistent_receive_cache_recovers_after_receiver_process_is_killed() {
+    let name = "cross-process-resume.bin";
+    let data = vec![11u8; 1024 * 1024];
+    let src_dir = tempfile::tempdir().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let cache_root = tempfile::tempdir().unwrap();
+    let src_file = src_dir.path().join(name);
+    std::fs::write(&src_file, &data).unwrap();
+
+    let mut send =
+        RunningSend::spawn_with_upload_rate(&src_file, src_dir.path(), Some(256 * 1024)).unwrap();
+    let ticket = send.read_ticket();
+    let cache_entry = cache_root
+        .path()
+        .join("v1")
+        .join(format!("1-{}", ticket.hash().to_hex()));
+
+    let mut first_receive = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--relay",
+            "disabled",
+            "--json-events",
+            "--cache-dir",
+            cache_root.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            &ticket.to_string(),
+        ])
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = first_receive.stdout.take().expect("receive stdout");
+    let (line_sender, line_receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match stdout.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) if line_sender.send(line).is_err() => break,
+                Ok(_) => {}
+            }
+        }
+    });
+
+    let minimum_progress = 256 * 1024;
+    loop {
+        let line = match line_receiver.recv_timeout(Duration::from_secs(20)) {
+            Ok(line) => line,
+            Err(error) => {
+                let _ = first_receive.kill();
+                let _ = first_receive.wait();
+                let mut stderr = String::new();
+                if let Some(mut pipe) = first_receive.stderr.take() {
+                    let _ = pipe.read_to_string(&mut stderr);
+                }
+                panic!("timed out waiting for partial receive data: {error}; {stderr}");
+            }
+        };
+        let event: TransferEvent = serde_json::from_str(line.trim()).unwrap_or_else(|error| {
+            panic!("receive emitted invalid JSON event before interruption: {error}: {line}")
+        });
+        match event.event {
+            TransferEventData::Progress { processed, .. } if processed >= minimum_progress => {
+                break;
+            }
+            TransferEventData::Failed { error } => {
+                panic!("receive failed before interruption: {error:?}")
+            }
+            TransferEventData::Completed => {
+                panic!("rate-limited receive completed before it could be interrupted")
+            }
+            _ => {}
+        }
+    }
+
+    // The progress event precedes the filesystem actor's durable metadata update.
+    // Give the rate-limited transfer one short flush window before simulating a crash.
+    std::thread::sleep(Duration::from_secs(1));
+    first_receive.kill().expect("kill first receive process");
+    first_receive.wait().expect("wait for killed receive");
+    reader.join().expect("join receive event reader");
+    assert!(!output_dir.path().join(name).exists());
+    assert!(cache_entry.join("blobs.db").is_file());
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (durable_bytes, missing_request) = runtime.block_on(async {
+        let store = iroh_blobs::store::fs::FsStore::load(&cache_entry)
+            .await
+            .expect("reopen iroh cache after process crash");
+        let local = store
+            .remote()
+            .local(ticket.hash_and_format())
+            .await
+            .expect("inspect durable cache ranges");
+        let local_bytes = local.local_bytes();
+        let missing = local.missing();
+        store.shutdown().await.expect("shutdown inspected cache");
+        (local_bytes, missing)
+    });
+    assert!(
+        durable_bytes >= 128 * 1024,
+        "the killed receive must leave meaningful verified ranges on disk, got {durable_bytes}"
+    );
+    assert_ne!(
+        missing_request,
+        iroh_blobs::protocol::GetRequest::all(ticket.hash()),
+        "the resumed process must request fewer ranges than a fresh receive"
+    );
+
+    let resumed = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--relay",
+            "disabled",
+            "--no-progress",
+            "--cache-dir",
+            cache_root.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            &ticket.to_string(),
+        ])
+        .env_remove("RUST_LOG")
+        .output()
+        .unwrap();
+    send.cleanup();
+
+    assert!(
+        resumed.status.success(),
+        "resumed receive failed: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert_eq!(std::fs::read(output_dir.path().join(name)).unwrap(), data);
+    assert!(
+        !cache_entry.exists(),
+        "completed resumed receive must remove its cache entry"
     );
 }
 
