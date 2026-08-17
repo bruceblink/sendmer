@@ -204,9 +204,12 @@ impl TransferEventEnvelope {
     }
 }
 
+/// Public event type emitted by sendmer v0.8 integrations.
+pub type TransferEvent = TransferEventEnvelope;
+
 /// 事件发射器接口。
 ///
-/// 库代码通过该 trait 将 [`TransferEvent`]
+/// 库代码通过该 trait 将 [`TransferEventEnvelope`]
 /// 发送到 CLI / Tauri / GUI 等不同前端实现。
 ///
 /// 设计约束：
@@ -215,7 +218,7 @@ impl TransferEventEnvelope {
 /// - 实现应尽量做到非阻塞
 pub trait EventEmitter: Send + Sync {
     /// 发射一个传输事件。
-    fn emit(&self, event: &TransferEvent);
+    fn emit(&self, event: &TransferEventEnvelope);
 }
 
 /// 传输过程中对外发送的统一事件模型。
@@ -229,7 +232,7 @@ pub trait EventEmitter: Send + Sync {
 /// - payload 直接体现在枚举字段中
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum TransferEvent {
+pub enum LegacyTransferEvent {
     /// 传输开始
     Started { role: Role },
 
@@ -258,7 +261,7 @@ pub enum TransferEvent {
     FileNames { role: Role, file_names: Vec<String> },
 }
 
-impl TransferEvent {
+impl LegacyTransferEvent {
     /// 返回事件状态字符串（started / progress / completed / failed）
     pub const fn state(&self) -> &'static str {
         match self {
@@ -325,7 +328,7 @@ pub type AppHandle = Option<Arc<dyn EventEmitter>>;
 /// 安全地向前端发送事件。
 ///
 /// 若未配置事件发射器或发送失败，将被忽略。
-pub fn emit_event(app: &AppHandle, event: &TransferEvent) {
+pub fn emit_event(app: &AppHandle, event: &TransferEventEnvelope) {
     if let Some(handle) = app {
         handle.emit(event);
     }
@@ -334,14 +337,14 @@ pub fn emit_event(app: &AppHandle, event: &TransferEvent) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Role, TRANSFER_EVENT_SCHEMA_VERSION, TransferError, TransferErrorCode, TransferEvent,
+        LegacyTransferEvent, Role, TRANSFER_EVENT_SCHEMA_VERSION, TransferError, TransferErrorCode,
         TransferEventData, TransferEventEnvelope, TransferPhase, TransferSessionId,
     };
     use std::str::FromStr;
 
     #[test]
     fn transfer_event_json_schema_is_stable() {
-        let event = TransferEvent::Progress {
+        let event = LegacyTransferEvent::Progress {
             role: Role::Receiver,
             processed: 512,
             total: 1024,
@@ -354,14 +357,14 @@ mod tests {
             r#"{"type":"progress","role":"receiver","processed":512,"total":1024,"speed":256.0}"#
         );
         assert_eq!(
-            serde_json::from_str::<TransferEvent>(&json).expect("deserialize transfer event"),
+            serde_json::from_str::<LegacyTransferEvent>(&json).expect("deserialize transfer event"),
             event
         );
     }
 
     #[test]
     fn file_names_use_snake_case_event_type() {
-        let event = TransferEvent::FileNames {
+        let event = LegacyTransferEvent::FileNames {
             role: Role::Sender,
             file_names: vec!["one.txt".to_owned()],
         };

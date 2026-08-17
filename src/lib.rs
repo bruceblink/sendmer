@@ -10,9 +10,9 @@ pub mod core;
 pub use core::{
     args::{Args, Commands, ReceiveArgs, SendArgs},
     events::{
-        AppHandle, EventEmitter, Role, TRANSFER_EVENT_SCHEMA_VERSION, TransferError,
-        TransferErrorCode, TransferEvent, TransferEventData, TransferEventEnvelope, TransferPhase,
-        TransferSessionId, emit_event,
+        AppHandle, EventEmitter, LegacyTransferEvent, Role, TRANSFER_EVENT_SCHEMA_VERSION,
+        TransferError, TransferErrorCode, TransferEvent, TransferEventData, TransferEventEnvelope,
+        TransferPhase, TransferSessionId, emit_event,
     },
     options::{AddrInfoOptions, ReceiveOptions, RelayModeOption, SendOptions, apply_options},
     receiver::{receive, receive_with_cancellation},

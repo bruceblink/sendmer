@@ -4,7 +4,7 @@
 //! 以及一个命令行环境下的事件发射器实现 `CliEventEmitter`，
 //! 用于在控制台显示文件传输进度条。
 
-use crate::core::events::{EventEmitter, TransferEvent};
+use crate::core::events::{EventEmitter, TransferEvent, TransferEventData};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -65,8 +65,8 @@ impl EventEmitter for CliEventEmitter {
             return;
         }
 
-        match event {
-            TransferEvent::Started { .. } => {
+        match &event.event {
+            TransferEventData::Started => {
                 let mut guard = self.pb.lock().unwrap_or_else(|error| error.into_inner());
                 if guard.is_none() {
                     let pb = self.mp.add(ProgressBar::new(0));
@@ -77,11 +77,10 @@ impl EventEmitter for CliEventEmitter {
                 }
             }
 
-            TransferEvent::Progress {
+            TransferEventData::Progress {
                 processed,
                 total,
-                speed,
-                ..
+                speed_bytes_per_sec,
             } => {
                 let mut guard = self.pb.lock().unwrap_or_else(|error| error.into_inner());
 
@@ -99,11 +98,11 @@ impl EventEmitter for CliEventEmitter {
                 if let Some(pb) = guard.as_ref() {
                     pb.set_length(*total);
                     pb.set_position(*processed);
-                    pb.set_message(human_bytes_per_sec(*speed));
+                    pb.set_message(human_bytes_per_sec(*speed_bytes_per_sec));
                 }
             }
 
-            TransferEvent::Completed { .. } => {
+            TransferEventData::Completed => {
                 let value = self
                     .pb
                     .lock()
@@ -114,7 +113,7 @@ impl EventEmitter for CliEventEmitter {
                 }
             }
 
-            TransferEvent::Failed { message, .. } => {
+            TransferEventData::Failed { error } => {
                 let value = self
                     .pb
                     .lock()
@@ -123,9 +122,20 @@ impl EventEmitter for CliEventEmitter {
                 if let Some(pb) = value {
                     pb.abandon();
                 }
-                eprintln!("Transfer failed: {message}");
+                eprintln!("Transfer failed: {}", error.message);
             }
-            TransferEvent::FileNames { .. } => {
+            TransferEventData::Cancelled => {
+                let value = self
+                    .pb
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                if let Some(pb) = value {
+                    pb.abandon();
+                }
+                eprintln!("Transfer cancelled");
+            }
+            TransferEventData::FileNames { .. } => {
                 // skipping
             }
         }

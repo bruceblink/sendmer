@@ -3,7 +3,7 @@
 //! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
 
 use crate::core::endpoint::base_endpoint_builder;
-use crate::core::events::AppHandle;
+use crate::core::events::{AppHandle, Role, TransferPhase};
 use crate::core::options::{ReceiveOptions, ReceiveRetryPolicy};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::results::ReceiveResult;
@@ -67,9 +67,11 @@ pub async fn receive_with_cancellation(
     );
     let output_dir = resolve_output_dir(options.output_dir.clone())?;
     let context = ReceiveContext::prepare(ticket, &options).await?;
+    let event_emitter = TransferEventEmitter::new(app_handle, Role::Receiver);
+    event_emitter.emit_started(TransferPhase::Connecting);
 
     let receive_result = select! {
-        result = receive_once(&context, &output_dir, app_handle.clone()) => result,
+        result = receive_once(&context, &output_dir, event_emitter.clone()) => result,
         _ = wait_for_cancellation(cancellation) => {
             tracing::warn!("operation cancelled by caller");
             Err(anyhow::anyhow!(receive_cancelled_message()))
@@ -83,21 +85,33 @@ pub async fn receive_with_cancellation(
         Ok(artifacts) => artifacts,
         Err(error) => {
             tracing::error!(error = %error, "download operation failed");
-            let message = if error.to_string() == receive_cancelled_message() {
+            let cancelled = error.to_string() == receive_cancelled_message();
+            let message = if cancelled {
                 receive_cancelled_message().to_owned()
             } else {
                 receive_failed_message(&error)
             };
-            emit_receive_failed(&app_handle, message.clone());
             let error = finalize_failed_receive(
                 anyhow::anyhow!(message),
                 cleanup_failed_receive(&context).await,
             );
+            if cancelled {
+                event_emitter.emit_cancelled();
+            } else {
+                emit_receive_failed(&event_emitter, error.to_string());
+            }
             return Err(error);
         }
     };
 
-    let result = finish_receive(&context, artifacts).await?;
+    let result = match finish_receive(&context, artifacts).await {
+        Ok(result) => result,
+        Err(error) => {
+            event_emitter.emit_internal_failure(receive_failed_message(&error));
+            return Err(error);
+        }
+    };
+    event_emitter.emit_completed();
     info!(output = %result.file_path.display(), message = %result.message, "receive completed");
     Ok(result)
 }
@@ -450,13 +464,11 @@ impl DownloadPlan {
 async fn receive_once(
     context: &ReceiveContext,
     output_dir: &Path,
-    app_handle: AppHandle,
+    event_emitter: TransferEventEmitter,
 ) -> anyhow::Result<ReceiveArtifacts> {
     trace!("load done!");
 
-    let event_emitter =
-        TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
-    let download = download_missing_data(context, app_handle).await?;
+    let download = download_missing_data(context, event_emitter.clone()).await?;
     let collection = context
         .load_collection()
         .await
@@ -467,7 +479,6 @@ async fn receive_once(
     export_atomically(&context.db, collection, output_dir)
         .await
         .context("export received files")?;
-    event_emitter.emit_completed();
 
     Ok(ReceiveArtifacts {
         total_files: download.total_files,
@@ -497,10 +508,8 @@ const fn receive_cancelled_message() -> &'static str {
     "Operation cancelled"
 }
 
-fn emit_receive_failed(app_handle: &AppHandle, message: impl Into<String>) {
-    let emitter =
-        TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
-    emitter.emit_failed(message);
+fn emit_receive_failed(emitter: &TransferEventEmitter, message: impl Into<String>) {
+    emitter.emit_internal_failure(message);
 }
 
 fn finalize_failed_receive(
@@ -562,22 +571,18 @@ async fn remove_temp_receive_dir(path: &Path) -> anyhow::Result<()> {
 
 async fn download_missing_data(
     context: &ReceiveContext,
-    app_handle: AppHandle,
+    emitter: TransferEventEmitter,
 ) -> anyhow::Result<DownloadOutcome> {
-    let emitter =
-        TransferEventEmitter::new(app_handle.clone(), crate::core::events::Role::Receiver);
     let hash_and_format = context.hash_and_format();
     let local = context.db.remote().local(hash_and_format).await?;
     if local.is_complete() {
         let total_files = completed_local_total_files_from_children(local.children())?;
-        emitter.emit_started();
         return Ok(DownloadOutcome {
             total_files,
             payload_size: 0,
         });
     }
 
-    emitter.emit_started();
     let (hash_seq, sizes) = get_sizes_with_retries(
         &context.endpoint,
         &context.addr,
@@ -587,7 +592,7 @@ async fn download_missing_data(
     .await
     .context("fetch remote collection sizes")?;
     let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &sizes);
-    execute_download_with_retries(context, &plan, &app_handle).await?;
+    execute_download_with_retries(context, &plan, &emitter).await?;
 
     Ok(DownloadOutcome {
         total_files: plan.total_files,
@@ -609,10 +614,10 @@ fn completed_local_total_files_from_children(children: Option<u64>) -> anyhow::R
 async fn execute_download_with_retries(
     context: &ReceiveContext,
     plan: &DownloadPlan,
-    app_handle: &AppHandle,
+    emitter: &TransferEventEmitter,
 ) -> anyhow::Result<()> {
     let mut last_error = None;
-    let mut reporter = ReceiverProgressReporter::new(app_handle.clone(), plan.transfer_total);
+    let mut reporter = ReceiverProgressReporter::new(emitter.clone(), plan.transfer_total);
     reporter.emit_initial_progress();
     for attempt in 1..=context.retry_policy.download_retry_limit {
         let local = context
@@ -1040,9 +1045,11 @@ mod tests {
         process_get_stream_with_reporter, receive_failed_message, resolve_output_dir,
         size_fetch_backoff, validate_path_component, wait_for_cancellation,
     };
-    use crate::core::events::{EventEmitter, Role, TransferEvent};
+    use crate::core::events::{
+        EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
+    };
     use crate::core::options::{ReceiveOptions, RelayModeOption};
-    use crate::core::progress::ReceiverProgressReporter;
+    use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
     use iroh_blobs::Hash;
     use iroh_blobs::api::{blobs::ExportProgressItem, remote::GetProgressItem};
     use n0_future::stream;
@@ -1065,6 +1072,15 @@ mod tests {
         fn emit(&self, event: &TransferEvent) {
             self.events.lock().expect("events lock").push(event.clone());
         }
+    }
+
+    fn receiver_reporter(
+        app_handle: crate::core::events::AppHandle,
+        total: u64,
+    ) -> ReceiverProgressReporter {
+        let emitter = TransferEventEmitter::new(app_handle, Role::Receiver);
+        emitter.emit_started(TransferPhase::Transferring);
+        ReceiverProgressReporter::new(emitter, total)
     }
 
     #[test]
@@ -1359,7 +1375,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         runtime.block_on(async {
             let mut s = stream::empty::<GetProgressItem>();
-            let mut reporter = ReceiverProgressReporter::new(app_handle, 12);
+            let mut reporter = receiver_reporter(app_handle, 12);
             reporter.emit_initial_progress();
             let err = process_get_stream_with_reporter(&mut s, 0, &mut reporter, None)
                 .await
@@ -1369,23 +1385,19 @@ mod tests {
 
         let events = emitter.events();
         assert!(matches!(
-            events.first(),
-            Some(TransferEvent::Progress {
-                role: Role::Receiver,
-                processed: 0,
-                total: 12,
-                ..
-            })
+            events.get(1),
+            Some(event)
+                if event.role == Role::Receiver
+                    && matches!(
+                        &event.event,
+                        TransferEventData::Progress {
+                            processed: 0,
+                            total: 12,
+                            ..
+                        }
+                    )
         ));
-        assert!(!events.iter().any(|event| matches!(
-            event,
-            TransferEvent::Failed {
-                role: Role::Receiver,
-                ..
-            } | TransferEvent::Completed {
-                role: Role::Receiver
-            }
-        )));
+        assert!(!events.iter().any(|event| event.event.is_terminal()));
     }
 
     #[test]
@@ -1415,15 +1427,22 @@ mod tests {
     fn emit_receive_failed_emits_receiver_failed_event() {
         let emitter = Arc::new(RecordingEmitter::default());
         let app_handle: crate::core::events::AppHandle = Some(emitter.clone());
+        let session = TransferEventEmitter::new(app_handle, Role::Receiver);
+        session.emit_started(TransferPhase::Connecting);
 
-        emit_receive_failed(&app_handle, "boom");
+        emit_receive_failed(&session, "boom");
 
         let events = emitter.events();
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            TransferEvent::Failed { role, message } => {
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            TransferEvent {
+                role,
+                event: TransferEventData::Failed { error },
+                ..
+            } => {
                 assert_eq!(*role, Role::Receiver);
-                assert_eq!(message, "boom");
+                assert_eq!(error.code, TransferErrorCode::Internal);
+                assert_eq!(error.message, "boom");
             }
             other => panic!("expected failed event, got {other:?}"),
         }
@@ -1515,7 +1534,7 @@ mod tests {
     #[tokio::test]
     async fn process_get_stream_errors_if_stream_ends_before_done() {
         let mut s = stream::empty::<GetProgressItem>();
-        let mut reporter = ReceiverProgressReporter::new(None, 0);
+        let mut reporter = receiver_reporter(None, 0);
         let err = process_get_stream_with_reporter(&mut s, 0, &mut reporter, None)
             .await
             .expect_err("stream ending early should fail");
@@ -1542,7 +1561,7 @@ mod tests {
     #[tokio::test]
     async fn process_get_stream_times_out_after_idle_period() {
         let mut stream = stream::pending::<GetProgressItem>();
-        let mut reporter = ReceiverProgressReporter::new(None, 0);
+        let mut reporter = receiver_reporter(None, 0);
 
         let error = process_get_stream_with_reporter(
             &mut stream,
@@ -1571,7 +1590,7 @@ mod tests {
                 _ => None,
             }
         }));
-        let mut reporter = ReceiverProgressReporter::new(None, 10);
+        let mut reporter = receiver_reporter(None, 10);
 
         process_get_stream_with_reporter(
             &mut stream,

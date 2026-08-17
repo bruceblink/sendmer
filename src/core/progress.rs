@@ -1,8 +1,11 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::core::events::{AppHandle, Role, TransferEvent, emit_event};
+use crate::core::events::{
+    AppHandle, Role, TransferError, TransferEventData, TransferEventEnvelope, TransferPhase,
+    TransferSessionId, emit_event,
+};
 use crate::core::types::EntryType;
 use tokio::sync::{Mutex, watch};
 
@@ -23,58 +26,136 @@ pub struct ProgressSnapshot {
 pub struct TransferEventEmitter {
     app_handle: AppHandle,
     role: Role,
+    state: Arc<StdMutex<TransferEventState>>,
+}
+
+struct TransferEventState {
+    session_id: TransferSessionId,
+    next_sequence: u64,
+    started: bool,
+    terminal: bool,
+    current_phase: TransferPhase,
 }
 
 impl TransferEventEmitter {
     pub fn new(app_handle: AppHandle, role: Role) -> Self {
-        Self { app_handle, role }
+        Self {
+            app_handle,
+            role,
+            state: Arc::new(StdMutex::new(TransferEventState {
+                session_id: TransferSessionId::new(),
+                next_sequence: 1,
+                started: false,
+                terminal: false,
+                current_phase: TransferPhase::Preparing,
+            })),
+        }
     }
 
-    pub fn emit_started(&self) {
-        emit_event(
-            &self.app_handle,
-            &TransferEvent::Started { role: self.role },
-        );
+    /// Start one session before any progress or terminal event is emitted.
+    pub fn emit_started(&self, phase: TransferPhase) {
+        self.emit_data(phase, TransferEventData::Started);
     }
 
     pub fn emit_progress(&self, processed: u64, total: u64, speed: f64) {
-        emit_event(
-            &self.app_handle,
-            &TransferEvent::Progress {
-                role: self.role,
+        self.emit_data(
+            TransferPhase::Transferring,
+            TransferEventData::Progress {
                 processed,
                 total,
-                speed,
+                speed_bytes_per_sec: speed,
             },
         );
     }
 
     pub fn emit_completed(&self) {
-        emit_event(
-            &self.app_handle,
-            &TransferEvent::Completed { role: self.role },
-        );
+        self.emit_data(TransferPhase::Finalizing, TransferEventData::Completed);
     }
 
-    pub fn emit_failed(&self, message: impl Into<String>) {
-        emit_event(
-            &self.app_handle,
-            &TransferEvent::Failed {
-                role: self.role,
-                message: message.into(),
-            },
-        );
+    pub fn emit_failed(&self, error: TransferError) {
+        self.emit_data(error.phase, TransferEventData::Failed { error });
+    }
+
+    /// Emit a conservative failure until the caller has a more specific error mapping.
+    pub fn emit_internal_failure(&self, message: impl Into<String>) {
+        self.emit_failed(TransferError::new(
+            crate::core::events::TransferErrorCode::Internal,
+            self.current_phase(),
+            false,
+            message,
+        ));
+    }
+
+    pub fn emit_cancelled(&self) {
+        let phase = self.current_phase();
+        self.emit_data(phase, TransferEventData::Cancelled);
     }
 
     pub fn emit_file_names(&self, file_names: Vec<String>) {
-        emit_event(
-            &self.app_handle,
-            &TransferEvent::FileNames {
-                role: self.role,
-                file_names,
-            },
+        self.emit_data(
+            TransferPhase::Metadata,
+            TransferEventData::FileNames { file_names },
         );
     }
+
+    fn current_phase(&self) -> TransferPhase {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .current_phase
+    }
+
+    /// Assign sequence and timestamp while holding the session lock through emission.
+    ///
+    /// Keeping both operations under one lock ensures concurrent provider callbacks are
+    /// observed in the same order as their sequence numbers.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the state lock deliberately preserves emission order"
+    )]
+    fn emit_data(&self, phase: TransferPhase, event: TransferEventData) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let is_started = matches!(event, TransferEventData::Started);
+        if state.terminal || (is_started && state.started) || (!is_started && !state.started) {
+            tracing::debug!(
+                session_id = %state.session_id,
+                ?phase,
+                ?event,
+                "ignored transfer event that violates session lifecycle"
+            );
+            return false;
+        }
+        let Some(next_sequence) = state.next_sequence.checked_add(1) else {
+            tracing::warn!(
+                session_id = %state.session_id,
+                "transfer event sequence exhausted"
+            );
+            state.terminal = true;
+            return false;
+        };
+        let envelope = TransferEventEnvelope::new(
+            state.session_id.clone(),
+            state.next_sequence,
+            unix_timestamp_ms(),
+            self.role,
+            phase,
+            event,
+        );
+        state.next_sequence = next_sequence;
+        state.started |= is_started;
+        state.terminal |= envelope.event.is_terminal();
+        state.current_phase = phase;
+        emit_event(&self.app_handle, &envelope);
+        true
+    }
+}
+
+fn unix_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or_default()
 }
 
 impl ProgressTracker {
@@ -313,43 +394,30 @@ pub struct SenderProgressReporter {
 
 struct SenderProgressState {
     tracker: ProviderProgressTracker,
-    has_emitted_started: bool,
 }
 
 impl SenderProgressReporter {
     pub fn new(
-        app_handle: AppHandle,
+        emitter: TransferEventEmitter,
         entry_type: EntryType,
         status_tx: watch::Sender<SenderTransferStatus>,
     ) -> Self {
         Self {
-            emitter: TransferEventEmitter::new(app_handle, Role::Sender),
+            emitter,
             state: Arc::new(Mutex::new(SenderProgressState {
                 tracker: ProviderProgressTracker::new(entry_type),
-                has_emitted_started: false,
             })),
             status_tx,
         }
     }
 
     pub async fn on_request_received(&self, transfer_id: TransferId, total_file_size: u64) {
-        let should_emit_started = {
-            let mut state = self.state.lock().await;
-            state
-                .tracker
-                .on_request_started(transfer_id, total_file_size);
-            if state.has_emitted_started {
-                false
-            } else {
-                state.has_emitted_started = true;
-                true
-            }
-        };
-
-        if should_emit_started {
-            self.emitter.emit_started();
-            let _ = self.status_tx.send(SenderTransferStatus::Started);
-        }
+        let mut state = self.state.lock().await;
+        state
+            .tracker
+            .on_request_started(transfer_id, total_file_size);
+        drop(state);
+        let _ = self.status_tx.send(SenderTransferStatus::Started);
     }
 
     pub async fn on_request_update(
@@ -372,7 +440,6 @@ impl SenderProgressReporter {
                     let mut state = self.state.lock().await;
                     match state.tracker.on_request_completed(transfer_id) {
                         CompletionStatus::Completed => {
-                            self.emitter.emit_completed();
                             let _ = self.status_tx.send(SenderTransferStatus::Completed);
                             None
                         }
@@ -391,21 +458,13 @@ impl SenderProgressReporter {
                         state.tracker.evaluate_completion(),
                         CompletionStatus::Completed
                     ) {
-                        self.emitter.emit_completed();
                         let _ = self.status_tx.send(SenderTransferStatus::Completed);
                     }
                 }
             }
             iroh_blobs::provider::events::RequestUpdate::Aborted(_) => {
-                let should_emit_failed = {
-                    let mut state = self.state.lock().await;
-                    state.tracker.on_request_aborted(transfer_id)
-                };
-
-                if should_emit_failed {
-                    let _ = self.status_tx.send(SenderTransferStatus::Aborted);
-                    self.emitter.emit_failed("transfer aborted");
-                }
+                let mut state = self.state.lock().await;
+                state.tracker.on_request_aborted(transfer_id);
             }
         }
     }
@@ -417,13 +476,10 @@ pub struct ReceiverProgressReporter {
 }
 
 impl ReceiverProgressReporter {
-    pub fn new(app_handle: AppHandle, total: u64) -> Self {
+    pub fn new(emitter: TransferEventEmitter, total: u64) -> Self {
         let mut tracker = ProgressTracker::new();
         tracker.set_total(total);
-        Self {
-            tracker,
-            emitter: TransferEventEmitter::new(app_handle, Role::Receiver),
-        }
+        Self { tracker, emitter }
     }
 
     pub fn emit_initial_progress(&self) {
@@ -450,9 +506,12 @@ impl ReceiverProgressReporter {
 mod tests {
     use super::{
         CompletionStatus, ProviderProgressTracker, SenderProgressReporter, SenderTransferStatus,
-        TransferId,
+        TransferEventEmitter, TransferId,
     };
-    use crate::core::events::{EventEmitter, Role, TransferEvent};
+    use crate::core::events::{
+        EventEmitter, Role, TransferError, TransferErrorCode, TransferEvent, TransferEventData,
+        TransferPhase,
+    };
     use crate::core::types::EntryType;
     use iroh_blobs::provider::{
         TransferStats,
@@ -479,10 +538,17 @@ mod tests {
         }
     }
 
+    fn started_emitter(sink: Arc<RecordingEmitter>, role: Role) -> TransferEventEmitter {
+        let emitter = TransferEventEmitter::new(Some(sink), role);
+        emitter.emit_started(TransferPhase::Transferring);
+        emitter
+    }
+
     #[test]
     fn receiver_progress_clamps_and_never_regresses() {
         let emitter = Arc::new(RecordingEmitter::default());
-        let mut reporter = super::ReceiverProgressReporter::new(Some(emitter.clone()), 100);
+        let session = started_emitter(emitter.clone(), Role::Receiver);
+        let mut reporter = super::ReceiverProgressReporter::new(session, 100);
         reporter.emit_initial_progress();
 
         reporter.tracker.last_emit = Instant::now() - Duration::from_millis(201);
@@ -495,8 +561,8 @@ mod tests {
         let progress = emitter
             .events()
             .into_iter()
-            .filter_map(|event| match event {
-                TransferEvent::Progress { processed, .. } => Some(processed),
+            .filter_map(|event| match event.event {
+                TransferEventData::Progress { processed, .. } => Some(processed),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -592,10 +658,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sender_progress_reporter_emits_started_and_completed() {
+    async fn sender_progress_reporter_keeps_session_open_after_request_completes() {
         let sink = Arc::new(RecordingEmitter::default());
         let (status_tx, _status_rx) = tokio::sync::watch::channel(SenderTransferStatus::Idle);
-        let reporter = SenderProgressReporter::new(Some(sink.clone()), EntryType::File, status_tx);
+        let session = started_emitter(sink.clone(), Role::Sender);
+        let reporter = SenderProgressReporter::new(session, EntryType::File, status_tx);
         let id = TransferId::new(10, 1);
 
         reporter.on_request_received(id, 128).await;
@@ -612,20 +679,19 @@ mod tests {
         let events = sink.events();
         assert!(matches!(
             events.first(),
-            Some(TransferEvent::Started { role: Role::Sender })
+            Some(event)
+                if event.role == Role::Sender
+                    && matches!(&event.event, TransferEventData::Started)
         ));
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, TransferEvent::Completed { role: Role::Sender }))
-        );
+        assert!(!events.iter().any(|event| event.event.is_terminal()));
     }
 
     #[tokio::test]
-    async fn sender_progress_reporter_publishes_aborted_status() {
+    async fn sender_progress_reporter_keeps_session_open_after_request_abort() {
         let sink = Arc::new(RecordingEmitter::default());
         let (status_tx, mut status_rx) = tokio::sync::watch::channel(SenderTransferStatus::Idle);
-        let reporter = SenderProgressReporter::new(Some(sink.clone()), EntryType::File, status_tx);
+        let session = started_emitter(sink.clone(), Role::Sender);
+        let reporter = SenderProgressReporter::new(session, EntryType::File, status_tx);
         let id = TransferId::new(11, 1);
 
         reporter.on_request_received(id, 128).await;
@@ -640,15 +706,68 @@ mod tests {
 
         assert_eq!(
             *status_rx.borrow_and_update(),
-            SenderTransferStatus::Aborted
+            SenderTransferStatus::Started
         );
 
         let events = sink.events();
-        assert!(events.iter().any(|event| matches!(
-            event,
-            TransferEvent::Failed { role: Role::Sender, message }
-                if message == "transfer aborted"
-        )));
+        assert!(!events.iter().any(|event| event.event.is_terminal()));
+    }
+
+    #[test]
+    fn transfer_event_emitter_orders_concurrent_callbacks() {
+        let sink = Arc::new(RecordingEmitter::default());
+        let emitter = started_emitter(sink.clone(), Role::Sender);
+        let threads = (0..8)
+            .map(|value| {
+                let emitter = emitter.clone();
+                std::thread::spawn(move || emitter.emit_progress(value, 8, 1.0))
+            })
+            .collect::<Vec<_>>();
+
+        for thread in threads {
+            thread.join().expect("progress callback");
+        }
+        emitter.emit_completed();
+
+        let events = sink.events();
+        let session_id = events.first().expect("started event").session_id.clone();
+        assert_eq!(events.len(), 10);
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event.session_id, session_id);
+            assert_eq!(event.sequence, u64::try_from(index + 1).expect("sequence"));
+        }
+        assert!(matches!(events[0].event, TransferEventData::Started));
+        assert!(matches!(
+            events.last().map(|event| &event.event),
+            Some(TransferEventData::Completed)
+        ));
+    }
+
+    #[test]
+    fn transfer_event_emitter_allows_only_one_terminal_event() {
+        let sink = Arc::new(RecordingEmitter::default());
+        let emitter = started_emitter(sink.clone(), Role::Receiver);
+
+        emitter.emit_completed();
+        emitter.emit_cancelled();
+        emitter.emit_failed(TransferError::new(
+            TransferErrorCode::Internal,
+            TransferPhase::Finalizing,
+            false,
+            "late failure",
+        ));
+        emitter.emit_progress(1, 1, 1.0);
+
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event.is_terminal())
+                .count(),
+            1
+        );
+        assert!(matches!(events[1].event, TransferEventData::Completed));
     }
 
     fn transfer_stats(payload_bytes_sent: u64) -> Box<TransferStats> {

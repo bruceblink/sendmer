@@ -2,6 +2,7 @@
 //!
 //! 本文件定义：SendResult, ReceiveResult。
 
+use crate::core::progress::TransferEventEmitter;
 use crate::core::types::EntryType;
 use iroh_blobs::{Hash, ticket::BlobTicket};
 use std::path::PathBuf;
@@ -32,6 +33,7 @@ pub struct SendResult {
     pub _progress_handle: n0_future::task::AbortOnDropHandle<anyhow::Result<()>>, // Keeps event channel open
     pub _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
     pub(crate) transfer_status_rx: watch::Receiver<SenderTransferStatus>,
+    pub(crate) event_emitter: TransferEventEmitter,
 }
 
 fn normalize_sender_cleanup_result(cleanup_result: std::io::Result<()>) -> anyhow::Result<()> {
@@ -72,12 +74,35 @@ impl SendResult {
     /// connection. Wait for that shutdown so file-backed handles are released before
     /// removing the sender-owned directory.
     pub async fn shutdown(self) -> anyhow::Result<()> {
+        let event_emitter = self.event_emitter.clone();
+        let result = self.shutdown_resources().await;
+        match &result {
+            Ok(()) => event_emitter.emit_completed(),
+            Err(error) => event_emitter.emit_internal_failure(error.to_string()),
+        }
+        result
+    }
+
+    /// Cancel the active share and emit the mutually exclusive cancelled terminal event.
+    pub async fn cancel(self) -> anyhow::Result<()> {
+        let event_emitter = self.event_emitter.clone();
+        let result = self.shutdown_resources().await;
+        match &result {
+            Ok(()) => event_emitter.emit_cancelled(),
+            Err(error) => event_emitter.emit_internal_failure(error.to_string()),
+        }
+        result
+    }
+
+    /// Release sender resources without deciding the public session terminal state.
+    pub(crate) async fn shutdown_resources(self) -> anyhow::Result<()> {
         let Self {
             router,
             temp_tag,
             blobs_data_dir,
             _progress_handle,
             _store,
+            event_emitter: _,
             ..
         } = self;
 
@@ -133,7 +158,7 @@ impl SendHandle {
 
     /// Cancel the share using the same ordered cleanup as `close`.
     pub async fn cancel(self) -> anyhow::Result<()> {
-        self.close().await
+        self.inner.cancel().await
     }
 }
 
@@ -148,9 +173,28 @@ pub struct ReceiveResult {
 mod tests {
     use super::{finalize_sender_shutdown, normalize_sender_cleanup_result};
     use crate::core::{
+        events::{EventEmitter, TransferEvent, TransferEventData},
         options::{RelayModeOption, SendOptions},
         sender,
     };
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: Mutex<Vec<TransferEvent>>,
+    }
+
+    impl RecordingEmitter {
+        fn events(&self) -> Vec<TransferEvent> {
+            self.events.lock().expect("events lock").clone()
+        }
+    }
+
+    impl EventEmitter for RecordingEmitter {
+        fn emit(&self, event: &TransferEvent) {
+            self.events.lock().expect("events lock").push(event.clone());
+        }
+    }
 
     #[test]
     fn normalize_sender_cleanup_result_ignores_not_found() {
@@ -184,8 +228,9 @@ mod tests {
             relay_mode: RelayModeOption::Disabled,
             ..SendOptions::default()
         };
+        let emitter = Arc::new(RecordingEmitter::default());
 
-        let result = sender::send(source_file, options, None)
+        let result = sender::send(source_file, options, Some(emitter.clone()))
             .await
             .expect("start sender");
         let blobs_data_dir = result.blobs_data_dir.clone();
@@ -196,10 +241,15 @@ mod tests {
 
         assert!(endpoint.is_closed(), "shutdown should close the endpoint");
         assert!(!blobs_data_dir.exists());
+        let events = emitter.events();
+        assert!(matches!(events[0].event, TransferEventData::Started));
+        assert!(matches!(events[1].event, TransferEventData::Completed));
+        assert_eq!(events[0].session_id, events[1].session_id);
+        assert_eq!([events[0].sequence, events[1].sequence], [1, 2]);
     }
 
     #[tokio::test]
-    async fn send_handle_exposes_metadata_and_orders_cleanup() {
+    async fn send_handle_cancel_emits_cancelled_and_orders_cleanup() {
         let source_dir = tempfile::tempdir().expect("source directory");
         let source_file = source_dir.path().join("handle.bin");
         tokio::fs::write(&source_file, b"opaque handle")
@@ -209,8 +259,9 @@ mod tests {
             relay_mode: RelayModeOption::Disabled,
             ..SendOptions::default()
         };
+        let emitter = Arc::new(RecordingEmitter::default());
 
-        let result = sender::send(source_file, options, None)
+        let result = sender::send(source_file, options, Some(emitter.clone()))
             .await
             .expect("start sender");
         let expected_ticket = result.ticket.clone();
@@ -225,9 +276,14 @@ mod tests {
         assert_eq!(handle.hash(), expected_hash);
         assert_eq!(handle.size(), expected_size);
         assert_eq!(handle.entry_type(), expected_entry_type);
-        handle.close().await.expect("close sender handle");
+        handle.cancel().await.expect("cancel sender handle");
 
-        assert!(endpoint.is_closed(), "close should close the endpoint");
+        assert!(endpoint.is_closed(), "cancel should close the endpoint");
         assert!(!blobs_data_dir.exists());
+        let events = emitter.events();
+        assert!(matches!(events[0].event, TransferEventData::Started));
+        assert!(matches!(events[1].event, TransferEventData::Cancelled));
+        assert_eq!(events[0].session_id, events[1].session_id);
+        assert_eq!([events[0].sequence, events[1].sequence], [1, 2]);
     }
 }

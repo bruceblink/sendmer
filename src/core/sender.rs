@@ -3,9 +3,11 @@
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
 use crate::core::endpoint::base_endpoint_builder;
-use crate::core::events::AppHandle;
+use crate::core::events::{AppHandle, Role, TransferPhase};
 use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
-use crate::core::progress::{SenderProgressReporter, SenderTransferStatus, TransferId};
+use crate::core::progress::{
+    SenderProgressReporter, SenderTransferStatus, TransferEventEmitter, TransferId,
+};
 use crate::core::results::{SendHandle, SendResult};
 use crate::core::storage::{load_fs_store, unique_temp_dir};
 use anyhow::Context;
@@ -155,25 +157,31 @@ async fn setup_data_sharing(
     let (transfer_status_tx, transfer_status_rx) = watch::channel(SenderTransferStatus::Idle);
 
     let setup_future = async move {
+        let ShareRequest {
+            path,
+            entry_type,
+            event_emitter,
+            max_upload_rate_bytes_per_sec,
+        } = share_request;
         let store = load_fs_store(&blobs_data_dir).await?;
 
         let blobs = BlobsProtocol::new(
             &store,
             Some(create_event_sender(
                 progress_tx,
-                share_request.max_upload_rate_bytes_per_sec,
+                max_upload_rate_bytes_per_sec,
             )),
         );
 
-        let imported = import(share_request.path, blobs.store()).await?;
+        let imported = import(path, blobs.store()).await?;
         let size = imported.size;
         let progress_handle = spawn_provider_progress_task(
             progress_rx,
-            share_request.app_handle,
+            event_emitter,
             size,
-            share_request.entry_type,
+            entry_type,
             transfer_status_tx,
-            share_request.max_upload_rate_bytes_per_sec,
+            max_upload_rate_bytes_per_sec,
         );
 
         let router = iroh::protocol::Router::builder(endpoint)
@@ -223,7 +231,7 @@ fn finalize_failed_sender_setup(
 struct ShareRequest {
     path: PathBuf,
     entry_type: crate::core::types::EntryType,
-    app_handle: AppHandle,
+    event_emitter: TransferEventEmitter,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
 }
 
@@ -272,7 +280,7 @@ const fn provider_event_mask(max_upload_rate_bytes_per_sec: Option<NonZeroU64>) 
 
 fn spawn_provider_progress_task(
     progress_rx: mpsc::Receiver<iroh_blobs::provider::events::ProviderMessage>,
-    app_handle: AppHandle,
+    event_emitter: TransferEventEmitter,
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
     transfer_status_tx: watch::Sender<SenderTransferStatus>,
@@ -280,7 +288,7 @@ fn spawn_provider_progress_task(
 ) -> AbortOnDropHandle<anyhow::Result<()>> {
     AbortOnDropHandle::new(tokio::spawn(show_provide_progress_with_provider_tracker(
         progress_rx,
-        app_handle,
+        event_emitter,
         total_file_size,
         entry_type,
         transfer_status_tx,
@@ -336,11 +344,15 @@ impl SharePlan {
         })
     }
 
-    fn build_request(&self, path: PathBuf, app_handle: AppHandle) -> ShareRequest {
+    const fn build_request(
+        &self,
+        path: PathBuf,
+        event_emitter: TransferEventEmitter,
+    ) -> ShareRequest {
         ShareRequest {
             path,
             entry_type: self.entry_type,
-            app_handle,
+            event_emitter,
             max_upload_rate_bytes_per_sec: self.max_upload_rate_bytes_per_sec,
         }
     }
@@ -351,6 +363,7 @@ impl SharingSetup {
         self,
         entry_type: crate::core::types::EntryType,
         ticket_type: AddrInfoOptions,
+        event_emitter: TransferEventEmitter,
     ) -> SendResult {
         let Self {
             router,
@@ -379,6 +392,7 @@ impl SharingSetup {
             _progress_handle: progress_handle,
             _store: store,
             transfer_status_rx,
+            event_emitter,
         }
     }
 }
@@ -391,11 +405,12 @@ async fn shutdown_started_sender_setup(
     setup: SharingSetup,
     entry_type: crate::core::types::EntryType,
     ticket_type: AddrInfoOptions,
+    event_emitter: TransferEventEmitter,
     primary_error: anyhow::Error,
 ) -> anyhow::Error {
     let cleanup_result = setup
-        .into_send_result(entry_type, ticket_type)
-        .shutdown()
+        .into_send_result(entry_type, ticket_type, event_emitter)
+        .shutdown_resources()
         .await;
     finalize_failed_sender_setup(primary_error, cleanup_result)
 }
@@ -412,6 +427,25 @@ pub async fn send(
     options: SendOptions,
     app_handle: AppHandle,
 ) -> anyhow::Result<SendResult> {
+    let event_emitter = TransferEventEmitter::new(app_handle, Role::Sender);
+    event_emitter.emit_started(TransferPhase::Preparing);
+    let result = send_started(path, options, event_emitter.clone()).await;
+    if let Err(error) = &result {
+        if error.to_string() == "Operation cancelled" {
+            event_emitter.emit_cancelled();
+        } else {
+            event_emitter.emit_internal_failure(error.to_string());
+        }
+    }
+    result
+}
+
+/// Run sender setup after the public entry point has opened its observable session.
+async fn send_started(
+    path: PathBuf,
+    options: SendOptions,
+    event_emitter: TransferEventEmitter,
+) -> anyhow::Result<SendResult> {
     info!(
         path = %path.display(),
         relay_mode = ?options.relay_mode,
@@ -423,7 +457,7 @@ pub async fn send(
 
     let plan = SharePlan::new(&path, &options)?;
     let endpoint = prepare_endpoint(&options).await?;
-    let share_request = plan.build_request(path, app_handle);
+    let share_request = plan.build_request(path, event_emitter.clone());
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
 
@@ -469,6 +503,7 @@ pub async fn send(
                 setup,
                 plan.entry_type,
                 plan.ticket_type,
+                event_emitter.clone(),
                 error,
             )
             .await);
@@ -478,13 +513,14 @@ pub async fn send(
                 setup,
                 plan.entry_type,
                 plan.ticket_type,
+                event_emitter.clone(),
                 anyhow::anyhow!("Operation cancelled"),
             )
             .await);
         }
     }
 
-    let result = setup.into_send_result(plan.entry_type, plan.ticket_type);
+    let result = setup.into_send_result(plan.entry_type, plan.ticket_type, event_emitter);
 
     info!(
         hash = %result.hash,
@@ -672,13 +708,13 @@ pub fn canonicalized_path_to_string(
 /// 该函数使用ProviderProgressTracker来管理多个并发传输的进度，并根据完成状态发射相应的事件。
 async fn show_provide_progress_with_provider_tracker(
     mut recv: mpsc::Receiver<iroh_blobs::provider::events::ProviderMessage>,
-    app_handle: AppHandle,
+    event_emitter: TransferEventEmitter,
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
     transfer_status_tx: watch::Sender<SenderTransferStatus>,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
 ) -> anyhow::Result<()> {
-    let reporter = SenderProgressReporter::new(app_handle, entry_type, transfer_status_tx);
+    let reporter = SenderProgressReporter::new(event_emitter, entry_type, transfer_status_tx);
     let request_task_limit = std::sync::Arc::new(Semaphore::new(PROVIDER_PROGRESS_TASK_LIMIT));
     let upload_rate_limiter = max_upload_rate_bytes_per_sec
         .map(UploadRateLimiter::new)
@@ -786,7 +822,9 @@ mod tests {
         detect_entry_type, import_parallelism, prepare_endpoint, provider_event_mask, send,
         setup_data_sharing, shutdown_started_sender_setup, validate_share_path,
     };
+    use crate::core::events::{Role, TransferPhase};
     use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions, apply_options};
+    use crate::core::progress::TransferEventEmitter;
     use crate::core::types::EntryType;
     use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
     use iroh_blobs::provider::events::ThrottleMode;
@@ -1084,7 +1122,7 @@ mod tests {
         let share_request = ShareRequest {
             path: missing_source,
             entry_type: EntryType::File,
-            app_handle: None,
+            event_emitter: started_sender_emitter(),
             max_upload_rate_bytes_per_sec: None,
         };
 
@@ -1124,7 +1162,7 @@ mod tests {
             ShareRequest {
                 path: source_file,
                 entry_type: EntryType::File,
-                app_handle: None,
+                event_emitter: started_sender_emitter(),
                 max_upload_rate_bytes_per_sec: None,
             },
         )
@@ -1135,6 +1173,7 @@ mod tests {
             setup,
             EntryType::File,
             AddrInfoOptions::RelayAndAddresses,
+            started_sender_emitter(),
             anyhow::anyhow!("Operation cancelled"),
         )
         .await;
@@ -1144,5 +1183,11 @@ mod tests {
             !blobs_data_dir.exists(),
             "cancelling a started sender should remove its blob store"
         );
+    }
+
+    fn started_sender_emitter() -> TransferEventEmitter {
+        let emitter = TransferEventEmitter::new(None, Role::Sender);
+        emitter.emit_started(TransferPhase::Preparing);
+        emitter
     }
 }
