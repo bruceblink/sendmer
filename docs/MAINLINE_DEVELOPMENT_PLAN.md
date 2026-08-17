@@ -6,7 +6,7 @@
 
 `v0.6.0` 已建立可靠接收基线：send/receive 主流程、失败清理、路径安全、原子导出、重连重试、超时控制、并发接收、事件通知和 GitHub Release 门禁均已落地。后续主线应先稳定库 API 和可观测性，再探索持久化会话、安全增强和更大规模传输，避免在同一版本同时引入协议、GUI 和服务端架构。
 
-## 当前进度（2026-08-11）
+## 当前进度（2026-08-17）
 
 - M1 的默认输出目录、失败事件和临时目录清理已完成，并有 CLI/单元回归覆盖。
 - M2 已完成：重试参数边界、每次尝试重新建连、symlink/containment 防护、endpoint 关闭和失败后的临时目录清理均已落地并通过门禁。
@@ -34,6 +34,8 @@
 - `v0.6.0` 已完成下载阶段重连重试和可选连接、元数据、下载空闲超时；未设置 timeout 时保持既有行为，无效 timeout 在创建 endpoint 和临时目录前失败。
 - `v0.6.0` 固化 fail-only 冲突策略，并在发送端拒绝空目录、空子目录和符号链接，避免当前 file-only collection 格式静默丢失数据。
 - v0.7 API 首批已完成：`SendHandle` 隐藏 Router/FsStore/临时目录字段，CLI 支持稳定 JSON Lines 事件；兼容的旧 API 继续保留，GUI 迁移使用 crates.io 版本号而不是 Git revision。
+- `v0.7.0` 已发布：发送端共享上传限速、receive 取消、opaque 生命周期和基础 JSON 事件均已进入正式版本；AlterSendmer 已通过 `sendmer = "0.7.0"` 接入。
+- 下一批先由 AlterSendmer `v0.3.0` 消费已发布的上传限速，再由 sendmer `v0.8.0` 建立版本化事件信封和结构化错误契约；持久 cache 与跨进程续传顺延至 `v0.9.0`。
 
 ## Recommended approach
 

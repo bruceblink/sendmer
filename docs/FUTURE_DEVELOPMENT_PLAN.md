@@ -1,86 +1,126 @@
-# 后续开发计划（v0.6.0 之后）
+# 后续开发计划（v0.7.0 之后）
 
-## 1. 基线与产品边界
+## 1. 术语表与命名约定
 
-当前基线是 `v0.6.0`。项目已经具备：
+| 规范名称 | English / 缩写 | 职责边界 | 不代表什么 |
+| --- | --- | --- | --- |
+| 核心传输层 | sendmer Core | 负责 ticket、点对点传输、限速、重试、路径安全和资源清理 | 不负责桌面界面、账号或云端文件托管 |
+| 桌面客户端 | AlterSendmer Desktop | 负责 GPUI 交互、配置、状态展示、历史和平台集成 | 不复制传输协议或资源清理逻辑 |
+| 传输会话 | Transfer Session | 一次 send 或 receive 操作的应用层生命周期 | 不等同于单条 QUIC 连接或 provider request |
+| 事件信封 | Event Envelope | 带 schema 版本、会话标识、顺序和阶段的稳定事件结构 | 不参与传输控制流，也不替代函数返回值 |
+| 结构化错误 | Transfer Error | 提供错误码、失败阶段、可重试属性和展示消息 | 不等同于本地化 UI 文案或底层错误字符串 |
+| 传输票据 | Ticket | 允许接收方连接和请求内容的 bearer capability | 不是账号、长期授权或云端分享链接 |
 
-- 基于 iroh 的文件和目录点对点传输。
-- CLI 和可复用 Rust API 两种入口。
-- relay、ticket、路径 containment、失败清理和多接收方基础支持。
-- Linux、macOS、Windows 的测试和发布链路。
-- GitHub Release、安装器校验、SHA-256 sidecar 和本地 release rehearsal。
+本文后续统一使用上述规范名称。AlterSendmer 只能通过核心传输层的公开 API 消费能力；
+内部 iroh 类型、临时存储和 Router 生命周期不得泄漏到桌面客户端。
 
-当前推荐的产品边界仍是“隐私优先的一次性文件传输”。sendmer 不在近期引入账号系统、云端文件存储或自建控制面。GUI、Tauri 和其他 Rust 服务应先作为稳定库 API 的消费者，而不是先改变核心传输协议。
+## 2. 当前基线与产品边界
 
-## 2. 版本路线
+当前发布基线是 `v0.7.0`。项目已经具备：
+
+- 基于 iroh 的文件和目录点对点传输，以及 CLI 和可复用 Rust API。
+- 原子接收导出、no-replace 冲突策略、重试、超时、取消和失败清理。
+- `SendHandle` opaque 生命周期 API 和兼容用的 `SendResult`。
+- sender 全局共享的 payload 上传速率上限。
+- 可序列化的基础 JSON Lines 事件。
+- Linux、macOS、Windows 的测试、安装器和 GitHub Release 链路。
+- AlterSendmer 通过 crates.io 上的 `sendmer = "0.7.0"` 消费核心传输层。
+
+主产品边界仍是“隐私优先的一次性文件传输”。核心传输层近期不引入账号系统、云端
+文件存储、自建控制面或后台同步服务。传输票据继续采用 bearer capability 语义：取得票据
+即可使用，因此 UI 和文档必须提醒用户只通过可信渠道分享。
+
+## 3. 版本路线
 
 ### v0.6.0：可靠接收与数据完整性（已完成）
 
-本版本已完成原子 staging 导出、目标 no-replace 提交、下载阶段重连重试、进度不倒退、连接/元数据/下载空闲超时参数，以及失败后的临时目录清理。
+本版本完成原子 staging 导出、目标 no-replace 提交、下载阶段重连重试、单调进度、连接/
+元数据/下载空闲超时，以及失败后的临时目录清理。
 
-本版冻结以下安全契约：
+冻结的安全契约：
 
 - 冲突策略仅支持 `fail`；已有文件、目录或符号链接绝不覆盖、合并或重命名。
 - 单次 receive 会复用临时 store 中已获得的数据，但不承诺跨进程断点续传。
-- 当前 collection 格式只表示常规文件；发送端会拒绝空目录、空子目录和符号链接，避免静默丢失目录元数据。
-- 多顶层根 collection 会被拒绝，因为它们无法作为一个原子目标发布。
+- collection 只表示常规文件；发送端拒绝空目录、空子目录和符号链接。
+- 多顶层根 collection 会被拒绝，避免无法原子提交的部分结果。
 
-遗留的 Windows 文件锁和真实弱网故障注入回归会继续在 `v0.7.0` 的 contract/可靠性测试中扩展。
+### v0.7.0：嵌入式 API、取消与发送限速（已完成）
 
-### v0.6.1：可配置发送速率
+本版本已经发布并完成：
 
-这是一个可以独立交付的小功能，建议放在 v0.6.0 的接收可靠性完成之后。详细评估见 [TRANSFER_RATE_LIMIT_DESIGN.md](TRANSFER_RATE_LIMIT_DESIGN.md)。
+- `SendHandle` 隐藏 Router、FsStore、TempTag 和临时目录字段。
+- 明确的 `cancel`、`close`、`status` 生命周期与旧 API 兼容层。
+- receive watch cancellation 和退出时有序清理。
+- `SendOptions::max_upload_rate_bytes_per_sec` 与 CLI `--max-upload-rate`。
+- sender 的所有接收方共享同一 payload 上传上限。
+- `TransferEvent` 的 Serde 支持和 `--json-events` JSON Lines 输出。
+- AlterSendmer 使用正式版本依赖接入 `SendHandle`，不依赖本地路径或 Git revision。
 
-第一版只支持发送端的全局上传上限：
+上传限速的已实现语义和剩余测试见
+[TRANSFER_RATE_LIMIT_DESIGN.md](TRANSFER_RATE_LIMIT_DESIGN.md)。当前 JSON 事件仍是基础通知模型，
+不包含稳定的会话标识、阶段、事件序号或结构化错误；这些能力属于 `v0.8.0`。
 
-- `SendOptions` 增加可选的 bytes-per-second 上限。
-- CLI 增加 `--max-upload-rate <BYTES_PER_SECOND>`。
-- 一个 sender 的所有接收方共享同一个上限，避免多接收方把总出口带宽放大。
-- 不承诺精确吞吐，只承诺尽量不超过配置上限。
-- 不在第一版提供 `--max-download-rate`，也不把本地导入和磁盘写入混入网络限速。
+### AlterSendmer v0.3.0：上传速率配置闭环
 
-验收重点：单接收方速率、并行接收方总速率、关闭限速时的行为、取消和 shutdown 清理。
+桌面客户端先消费核心传输层已经发布的能力，不修改协议：
 
-### v0.7.0：稳定库 API 与可观测性
+- 提供“无限制”或自定义 MiB/s 的发送端上传上限。
+- 对用户输入执行非零、范围和整数溢出校验，再转换为 bytes/s。
+- 持久化配置，并在设置面板显示当前有效值。
+- 将配置传给 `SendOptions`，不在桌面客户端实现第二套 limiter。
+- 增加配置映射、持久化、传输适配和视觉验收。
 
-周期：1 至 2 周。目标是让 sendmer 可以被 GUI、脚本和其他 Rust 服务可靠嵌入。
+AlterSendmer `v0.3.0` 继续依赖 `sendmer = "0.7.0"`。当前 `main` 上尚未发布的
+`SendHandle` 接入和 release changelog CI 一并纳入该版本，不额外制造过渡性的 `v0.2.1`。
 
-当前已落地：`SendHandle` opaque 生命周期 API、发送端共享上传限速、以及带稳定类型标签的
-JSON Lines 传输事件输出。旧的 `SendResult`/`send` API 保留作为兼容层；AlterSendmer v0.7
-优先通过 `SendHandle` 和语义化版本依赖接入。
+### v0.8.0：版本化事件与结构化错误契约
 
-- 为 `TransferEvent` 增加 `Serialize` 和稳定 schema。
-- 增加 `transfer_id`、阶段、路径、错误码、时间戳、处理字节和总字节。
-- 提供 JSON Lines 输出，便于脚本和 GUI 消费。
-- 用 opaque `SendHandle` 隐藏 Router、FsStore、TempTag 等 iroh 内部字段。
-- 提供明确的 `cancel`、`close`、`status` 生命周期契约，并为旧 API 提供兼容过渡。
-- 引入结构化错误类型，减少上层依赖错误字符串。
-- 增加多接收方、取消、失败和事件顺序的 API contract tests。
+周期：1 至 2 周。目标是让桌面客户端、脚本和其他 Rust 服务可靠消费传输状态。
 
-验收门槛：`cargo doc --no-deps`、公开 API 示例、事件 schema fixture、MSRV 1.91 检查和现有完整门禁全部通过。
+- 引入版本化事件信封，至少包含 schema 版本、传输会话 ID、事件序号、时间戳、角色和阶段。
+- 区分 started、progress、file names、completed、failed 和 cancelled，保证每个会话仅有一个终态。
+- 引入公开的结构化错误，提供错误码、失败阶段、可重试属性和安全展示消息。
+- 默认不在事件中暴露完整传输票据、绝对路径或底层连接密钥。
+- sender 多接收方仍以一个传输会话聚合；底层 connection/request ID 不冒充应用层会话 ID。
+- 提供 JSON schema fixture、事件顺序、取消、失败和多接收方 contract tests。
+- 保留清晰的迁移文档；由于现有 `TransferEvent` 是可穷举枚举，结构变更使用新的次版本，
+  不伪装成 `v0.7.1` 补丁。
 
-### v0.8.0：持久化、规模和安全
+验收门槛：`cargo doc --no-deps`、公开 API 示例、事件 fixture、MSRV 1.91 检查、跨平台 CI
+和现有完整门禁全部通过。发布到 crates.io 后，AlterSendmer 才能把依赖升级为
+`sendmer = "0.8.0"`；不得提交 Git revision 依赖作为过渡方案。
 
-周期：2 至 4 周，是否启动取决于 v0.6 的可靠性指标和 v0.7 的 API 稳定性。
+### AlterSendmer v0.4.0：消费 sendmer v0.8.0 契约
 
-- 可选持久 receive cache 和真正的断点续传。
+- 使用核心阶段驱动 UI，不再仅靠 started/progress 事件推断生命周期。
+- 按错误码展示本地化摘要、可展开技术详情和是否可重试。
+- 历史记录增加可选会话 ID、失败阶段和错误码，并兼容已有 `history.json`。
+- 诊断信息保持隐私边界，不记录完整票据和绝对路径。
+- 依赖正式发布的 `sendmer = "0.8.0"`，完成跨项目回归后发布 `v0.4.0`。
+
+### v0.9.0：持久化、规模和安全
+
+周期：2 至 4 周，只有 `v0.8.0` 的会话、事件和错误契约稳定后才启动：
+
+- 可选持久 receive cache 和真正的跨进程断点续传。
 - cache TTL、清理命令、锁和崩溃遗留目录回收。
-- sender 会话过期、最大接收方数量、主动撤销和更明确的 bearer-ticket 警告。
-- 带宽、并发和内存上限，大目录和大文件基准。
+- sender 会话过期、最大接收方数量和主动撤销。
+- 带宽、并发和内存上限，以及大目录和大文件基准。
 - 非 UTF-8 文件名、权限、时间戳和符号链接的跨平台策略。
 - Release 资产签名、SBOM 和构建 provenance。
 - ARM 设备、真实 relay 和弱网 smoke test。
 
-## 3. 暂不纳入主线的方向
+## 4. 暂不纳入主线的方向
 
-- GUI 或 Tauri 主界面：等稳定事件 API 后作为独立消费者开发。
-- 后台 daemon 或同步服务：这会引入持久状态、冲突解决、认证和升级运维，属于第二个产品方向。
-- 自建 relay、云端文件存储和多租户控制面：当前 iroh relay 已满足主线需求，不应提前承担运维成本。
-- 默认覆盖、静默权限修改和不透明的 ticket 共享：这些会扩大数据丢失和安全风险。
+- 后台 daemon 或同步服务：它需要持久状态、冲突解决、认证和升级运维，属于第二个产品方向。
+- 自建 relay、云端文件存储和多租户控制面：当前主线不承担对应运维成本。
+- 默认覆盖、静默权限修改和不透明的票据共享：这些会扩大数据丢失和安全风险。
+- 接收端应用层 sleep 限速：没有明确 backpressure 前，不把不稳定行为包装为下载限速。
+- GUI 改写核心协议：桌面客户端只能消费稳定 API，不能成为协议语义的第二来源。
 
-## 4. 质量和提交规则
+## 5. 质量、提交与发布顺序
 
-每个小功能单独提交，提交前至少执行：
+每个小功能独立提交。核心传输层提交前至少执行：
 
 ```text
 cargo fmt --all -- --check
@@ -89,28 +129,34 @@ cargo test --locked --workspace --all-features --bins --tests --examples
 cargo check --workspace --all-features --bins
 ```
 
-涉及 CLI、安装器或 workflow 时，再执行：
+涉及 CLI、安装器或 workflow 时，再执行相应 actionlint、安装器测试和 release rehearsal。
+AlterSendmer 必须执行 fmt、locked check、Clippy、workspace tests，以及受影响界面的 Windows
+截图验收。成功提交后立即推送；版本 tag 只能指向已经通过全部发布门禁的提交。
 
-```text
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
-bash ./tests/release-version.sh
-bash ./tests/install-target.sh
-powershell -NoProfile -ExecutionPolicy Bypass -File tests/install.ps1
-```
+跨项目发布顺序固定为：
 
-里程碑完成后使用 `scripts/rehearse-release.ps1` 在临时 worktree 中复现发布门禁。成功提交后立即推送当前分支；发布 tag 必须指向已经通过质量门的提交。
+1. 在 sendmer 完成功能、测试、文档和版本提交。
+2. 发布 sendmer crate 与 GitHub Release，并确认 crates.io 可解析该版本。
+3. AlterSendmer 使用该正式版本号升级依赖并完成跨项目回归。
+4. 发布 AlterSendmer，不使用本地 path 或 Git revision 绕过发布顺序。
 
-## 5. 进入下一阶段的指标
+## 6. 进入下一阶段的指标
 
-v0.6.0 进入 v0.7.0 前，至少要有：
+AlterSendmer `v0.3.0` 发布前：
 
-- 导出失败后的 partial 目标残留数为零。
-- 接收临时目录泄漏回归为零。
-- 真实下载重试和取消测试稳定通过。
-- 并行接收方不会互相错误终止。
+- 无限速与自定义速率均可持久化并正确映射到 `SendOptions`。
+- 无效输入不会启动传输；限速不破坏取消和退出清理。
+- 设置页在默认与最小窗口尺寸下无重叠，跨平台 CI 全绿。
 
-v0.7.0 进入 v0.8.0 前，至少要有：
+sendmer `v0.8.0` 发布前：
 
-- 事件 schema 和公开 API contract 固定。
-- 多接收方状态、取消和关闭语义有文档和测试覆盖。
-- 大文件、弱网和跨平台构建有可重复基准。
+- 事件 schema fixture 固定，所有事件具有同一会话 ID 和严格递增序号。
+- completed、failed、cancelled 三种终态互斥且仅发出一次。
+- 公开错误码和重试属性有 contract tests，日志与事件不泄漏敏感票据。
+- 多接收方、取消和关闭语义有文档与可重复测试覆盖。
+
+进入 `v0.9.0` 前：
+
+- 大文件、弱网和跨平台构建具有可重复基准。
+- cache 的所有权、TTL、锁、崩溃恢复和清理命令已有独立设计评审。
+- 持久化格式具备版本字段和迁移策略，不依赖 GUI 私有状态。
