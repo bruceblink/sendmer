@@ -164,7 +164,7 @@ sendmer receive <ticket>
 sendmer cache prune --cache-dir <path>
 ```
 
-清理使用每个条目记录的 TTL，跳过活跃条目，并保留损坏或未来 schema 数据而不进行猜测。缓存格式、隐私边界和剩余的真实中断 E2E 见[持久接收缓存设计](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md)。
+清理使用每个条目记录的 TTL，跳过活跃条目，并保留损坏或未来 schema 数据而不进行猜测。缓存格式、隐私边界以及中断/重启 E2E 见[持久接收缓存设计](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md)。
 
 仅 `send` 支持：
 

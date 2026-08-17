@@ -148,12 +148,14 @@ cargo test --locked --workspace --all-features --bins --tests --examples
 cargo check --workspace --all-features --bins
 ```
 
-在真实跨进程中断恢复、Windows 文件锁和 TTL 清理 E2E 完成前，不发布 `v0.9.0`，也不让
-AlterSendmer 宣称“断点续传已完成”。
+独立进程接收端强制退出、发送端使用相同身份和地址重启、Windows 文件锁释放顺序和 TTL
+清理 E2E 已完成；这些测试通过后可以进入 `v0.9.0` 发布门禁。当前弱网验收使用限速传输
+加发送端中断/重启作为可重复的连接恢复场景；它不等同于内核级丢包、延迟或带宽抖动注入，
+后者保留给后续跨平台网络实验批次。
 
 ## 10. 分阶段实施顺序
 
 1. 增加版本化缓存租约、公开选项、失败保留/成功删除和确定性单元测试。（已完成）
 2. 增加显式清理命令、自动清理和缓存诊断报告。（已完成）
-3. 增加真实跨进程中断恢复、Windows 文件锁、弱网和大文件 E2E。
-4. 完成 sendmer `v0.9.0` 发布，再由 AlterSendmer 使用 crates.io 正式版本接入 UI。
+3. 增加真实跨进程中断恢复、发送端重启恢复、Windows 文件锁和限速大文件 E2E。（已完成）
+4. 完成 sendmer `v0.9.0` 发布，再由 AlterSendmer 使用 crates.io 正式版本接入 UI。（待执行）

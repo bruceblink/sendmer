@@ -46,7 +46,10 @@
 - `v0.9.0` 第二阶段已完成：缓存根维护锁与条目租约锁使用固定锁顺序；打开缓存会自动清理，
   `sendmer cache prune --cache-dir <path>` 和公开 `prune_receive_cache` API 返回 removed、retained、
   active、unknown 诊断计数。清理按 manifest TTL 执行，活跃、损坏和未来 schema 条目均保留。
-  下一批补真实独立进程中断恢复和弱网 E2E，在完成前不发布版本。
+- `v0.9.0` 第三阶段已完成：独立进程接收端强制退出后复用已落盘范围，发送端使用相同身份和
+  固定地址重启后由接收端重连完成；测试同时验证 Windows 可用的 store/锁释放顺序、缓存成功
+  删除和重连后的进度单调性。限速传输用于构造可重复的恢复窗口，不宣称已经完成内核级丢包注入。
+  下一步进入 v0.9.0 发布演练与 crates.io/GitHub Release 门禁。
 
 ## Recommended approach
 
