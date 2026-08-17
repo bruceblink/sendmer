@@ -515,7 +515,7 @@ mod tests {
     use crate::core::types::EntryType;
     use iroh_blobs::provider::{
         TransferStats,
-        events::{RequestUpdate, TransferAborted, TransferCompleted},
+        events::{RequestUpdate, TransferAborted, TransferCompleted, TransferProgress},
     };
     use std::sync::{Arc, Mutex as StdMutex};
     use std::thread::sleep;
@@ -711,6 +711,66 @@ mod tests {
 
         let events = sink.events();
         assert!(!events.iter().any(|event| event.event.is_terminal()));
+    }
+
+    #[tokio::test]
+    async fn sender_session_aggregates_multiple_receivers_until_explicit_close() {
+        let sink = Arc::new(RecordingEmitter::default());
+        let (status_tx, _status_rx) = tokio::sync::watch::channel(SenderTransferStatus::Idle);
+        let session = started_emitter(sink.clone(), Role::Sender);
+        let reporter = SenderProgressReporter::new(session.clone(), EntryType::File, status_tx);
+        let first = TransferId::new(21, 1);
+        let second = TransferId::new(22, 1);
+
+        reporter.on_request_received(first, 128).await;
+        reporter
+            .on_request_update(
+                first,
+                RequestUpdate::Progress(TransferProgress { end_offset: 32 }),
+            )
+            .await;
+        reporter
+            .on_request_update(
+                first,
+                RequestUpdate::Aborted(TransferAborted {
+                    stats: transfer_stats(32),
+                }),
+            )
+            .await;
+        reporter.on_request_received(second, 128).await;
+        reporter
+            .on_request_update(
+                second,
+                RequestUpdate::Progress(TransferProgress { end_offset: 96 }),
+            )
+            .await;
+        reporter
+            .on_request_update(
+                second,
+                RequestUpdate::Completed(TransferCompleted {
+                    stats: transfer_stats(128),
+                }),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(550)).await;
+
+        assert!(!sink.events().iter().any(|event| event.event.is_terminal()));
+        session.emit_completed();
+
+        let events = sink.events();
+        let session_id = events.first().expect("started event").session_id.clone();
+        assert!(events.iter().all(|event| event.session_id == session_id));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event.is_terminal())
+                .count(),
+            1
+        );
+        assert!(matches!(
+            events.last().map(|event| &event.event),
+            Some(TransferEventData::Completed)
+        ));
     }
 
     #[test]
