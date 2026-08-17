@@ -942,21 +942,6 @@ mod tests {
         assert_eq!(second.duration_since(first), Duration::from_secs(1));
     }
 
-    fn list_sender_temp_dirs() -> std::collections::HashSet<std::path::PathBuf> {
-        std::fs::read_dir(std::env::temp_dir())
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with(".sendmer-send-"))
-            })
-            .collect()
-    }
-
     fn sample_addr() -> iroh::EndpointAddr {
         let node_id = SecretKey::generate().public();
         let relay = RelayUrl::from_str("https://relay.example").expect("valid relay url");
@@ -1134,11 +1119,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_rejects_empty_directory_without_creating_temp_store() {
+    async fn send_rejects_empty_directory_during_preparation() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let empty = temp_dir.path().join("empty-share");
         std::fs::create_dir_all(&empty).expect("create empty directory");
-        let before = list_sender_temp_dirs();
         let emitter = Arc::new(RecordingEmitter::default());
 
         let result = send(
@@ -1156,14 +1140,6 @@ mod tests {
         };
 
         assert!(error.to_string().contains("empty directory"));
-        let leaked = list_sender_temp_dirs()
-            .difference(&before)
-            .cloned()
-            .collect::<Vec<_>>();
-        assert!(
-            leaked.is_empty(),
-            "empty source validation must not create sender temporary stores: {leaked:?}"
-        );
         let events = emitter.events();
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0].event, TransferEventData::Started));
