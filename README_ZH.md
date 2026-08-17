@@ -124,7 +124,7 @@ sendmer receive <ticket>
 sendmer receive <ticket>
 ```
 
-接收过程中会先将数据写入系统临时目录下的临时缓存目录。只有所有导出条目都报告完成后，才会把文件或目录发布到最终目标；接收失败会清理临时数据，不会替换已有目标。
+接收过程默认使用临时 iroh store。只有所有导出条目都报告完成后，才会把文件或目录发布到最终目标；接收失败会清理临时数据，不会替换已有目标。使用 `--cache-dir <path>` 可显式保留失败或取消前已经验证的数据；后续进程接收相同内容时会重新打开该 store，成功导出后则删除已完成的缓存条目。
 
 目录必须包含常规文件。由于当前 collection 格式不能安全保留目录元数据，sendmer 会拒绝空目录、含空子目录的目录和符号链接。
 
@@ -149,12 +149,14 @@ sendmer receive <ticket>
 - `--connect-timeout-ms <milliseconds>`：每次连接发送端的可选超时
 - `--metadata-timeout-ms <milliseconds>`：获取 collection 元数据的可选超时
 - `--download-idle-timeout-ms <milliseconds>`：下载流长期没有更新时的可选超时
+- `--cache-dir <path>`：显式启用按内容寻址的持久接收缓存，用于跨进程续传
+- `--cache-ttl-seconds <seconds>`：记录供后续清理使用的缓存 TTL（默认：`604800`；仅与 `--cache-dir` 一起生效）
 
 ### 接收安全语义
 
 本版本唯一支持的冲突策略是 **fail**。最终目标已存在为文件、目录或符号链接时，接收会失败并保持原内容不变；sendmer 不会合并、重命名、跳过或覆盖已有目标。含多个顶层根的外部 collection 也会被拒绝，因为它们不能作为一个原子目标提交。
 
-重试会复用同一次 receive 进程已获得的数据，但不代表跨进程的断点续传；持久化 cache 和真正续传会在后续版本实现。
+重试会复用同一次 receive 进程已经获得的数据。跨进程续传必须显式启用：后续 receive 为相同内容配置同一个私有 `--cache-dir`。失败或取消会保留已验证范围，成功接收会删除已完成的缓存条目，且发送端仍需在线。首个缓存切片只记录 TTL 元数据，尚未公开显式 prune 命令；缓存管理和真实中断 E2E 见[持久接收缓存设计](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md)。
 
 仅 `send` 支持：
 

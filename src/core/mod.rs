@@ -8,6 +8,7 @@ mod endpoint;
 pub mod events;
 pub mod options;
 mod progress;
+mod receive_cache;
 pub mod receiver;
 pub mod results;
 pub mod sender;

@@ -144,6 +144,14 @@ pub struct ReceiveArgs {
     #[clap(long)]
     pub download_idle_timeout_ms: Option<u64>,
 
+    /// Optional directory for receive data that can resume in a later process.
+    #[clap(long)]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Lifetime in seconds recorded for a persistent receive-cache entry.
+    #[clap(long, default_value_t = 7 * 24 * 60 * 60)]
+    pub cache_ttl_seconds: u64,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 }
@@ -201,6 +209,7 @@ mod tests {
     use iroh::EndpointAddr;
     use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
     use std::num::NonZeroU64;
+    use std::path::PathBuf;
 
     fn sample_ticket() -> String {
         BlobTicket::new(
@@ -227,6 +236,10 @@ mod tests {
             "2000",
             "--download-idle-timeout-ms",
             "3000",
+            "--cache-dir",
+            "receive-cache",
+            "--cache-ttl-seconds",
+            "86400",
             ticket.as_str(),
         ])
         .expect("valid receive arguments");
@@ -239,6 +252,8 @@ mod tests {
         assert_eq!(receive.connect_timeout_ms, Some(1000));
         assert_eq!(receive.metadata_timeout_ms, Some(2000));
         assert_eq!(receive.download_idle_timeout_ms, Some(3000));
+        assert_eq!(receive.cache_dir, Some(PathBuf::from("receive-cache")));
+        assert_eq!(receive.cache_ttl_seconds, 86_400);
     }
 
     #[test]

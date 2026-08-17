@@ -5,6 +5,7 @@
 use iroh::RelayUrl;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Default)]
@@ -92,6 +93,60 @@ impl ReceiveRetryPolicy {
     }
 }
 
+/// Opt-in persistent storage for receive-side verified blob data.
+///
+/// A cache entry is keyed by content hash and blob format. Failed or cancelled
+/// receives keep the entry for a later process, while a successful export
+/// removes it to avoid retaining a second copy of the user's data.
+#[derive(Debug, Clone)]
+pub struct ReceiveCacheOptions {
+    pub root_dir: PathBuf,
+    pub ttl: Duration,
+}
+
+impl ReceiveCacheOptions {
+    pub const DEFAULT_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+    /// Create persistent receive-cache options with the default seven-day TTL.
+    pub fn new(root_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            root_dir: root_dir.into(),
+            ttl: Self::DEFAULT_TTL,
+        }
+    }
+
+    /// Replace the default TTL used by later cache-pruning operations.
+    pub const fn with_ttl(mut self, ttl: Duration) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
+    /// Reject unsafe or meaningless cache settings before network setup begins.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.root_dir.as_os_str().is_empty(),
+            "receive cache root must not be empty"
+        );
+        anyhow::ensure!(
+            !self.ttl.is_zero(),
+            "receive cache TTL must be greater than zero"
+        );
+
+        match std::fs::symlink_metadata(&self.root_dir) {
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    !metadata.file_type().is_symlink(),
+                    "receive cache root must not be a symbolic link"
+                );
+                anyhow::ensure!(metadata.is_dir(), "receive cache root must be a directory");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ReceiveOptions {
     pub output_dir: Option<std::path::PathBuf>,
@@ -99,6 +154,7 @@ pub struct ReceiveOptions {
     pub magic_ipv4_addr: Option<SocketAddrV4>,
     pub magic_ipv6_addr: Option<SocketAddrV6>,
     pub retry_policy: ReceiveRetryPolicy,
+    pub receive_cache: Option<ReceiveCacheOptions>,
 }
 
 pub trait EndpointOptions: BindAddressOptions {
@@ -244,7 +300,8 @@ pub fn apply_options(addr: &mut iroh::EndpointAddr, opts: AddrInfoOptions) {
 
 #[cfg(test)]
 mod tests {
-    use super::ReceiveRetryPolicy;
+    use super::{ReceiveCacheOptions, ReceiveRetryPolicy};
+    use std::time::Duration;
 
     #[test]
     fn receive_retry_policy_defaults_match_receiver_expectations() {
@@ -331,5 +388,31 @@ mod tests {
                 .expect_err("zero timeout should be rejected");
             assert!(error.to_string().contains("timeout"));
         }
+    }
+
+    #[test]
+    fn receive_cache_options_default_to_seven_days() {
+        let options = ReceiveCacheOptions::new("cache");
+        assert_eq!(options.ttl, Duration::from_secs(7 * 24 * 60 * 60));
+        options.validate().expect("default cache options");
+    }
+
+    #[test]
+    fn receive_cache_options_reject_zero_ttl() {
+        let options = ReceiveCacheOptions::new("cache").with_ttl(Duration::ZERO);
+        let error = options.validate().expect_err("zero TTL must fail");
+        assert!(error.to_string().contains("TTL"));
+    }
+
+    #[test]
+    fn receive_cache_options_reject_file_root() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let file = temp.path().join("cache-file");
+        std::fs::write(&file, b"not a directory").expect("cache file");
+
+        let error = ReceiveCacheOptions::new(file)
+            .validate()
+            .expect_err("file cache root must fail");
+        assert!(error.to_string().contains("directory"));
     }
 }

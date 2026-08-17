@@ -39,8 +39,11 @@
 - AlterSendmer `v0.4.0` 已使用正式的 `sendmer = "0.8.0"` 完成阶段、结构化错误与历史记录迁移，并通过三平台发布门禁。
 - sendmer `v0.9.0` 的持久 cache 与跨进程续传契约已冻结在
   [PERSISTENT_RECEIVE_CACHE_DESIGN.md](PERSISTENT_RECEIVE_CACHE_DESIGN.md)：默认临时缓存、显式启用、
-  单条目排他锁、失败保留、成功删除、TTL 清理和版本化 manifest 均已明确。下一批进入缓存租约
-  与公开选项实现；在真实跨进程恢复和 Windows 文件锁 E2E 完成前不发布版本。
+  单条目排他锁、失败保留、成功删除、TTL 清理和版本化 manifest 均已明确。
+- `v0.9.0` 第一阶段已完成：`ReceiveCacheOptions`、`--cache-dir`、`--cache-ttl-seconds`、跨平台
+  advisory lock、schema v1 manifest、失败保留与成功删除均已实现；Windows 回归已验证关闭
+  `FsStore` 后解锁再删目录。下一批实现显式/自动 prune 与缓存诊断；在真实独立进程中断恢复和
+  弱网 E2E 完成前不发布版本。
 
 ## Recommended approach
 

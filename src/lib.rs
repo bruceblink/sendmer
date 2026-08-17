@@ -15,7 +15,10 @@ pub use core::{
         TransferError, TransferErrorCode, TransferEvent, TransferEventData, TransferEventEnvelope,
         TransferPhase, TransferSessionId, emit_event,
     },
-    options::{AddrInfoOptions, ReceiveOptions, RelayModeOption, SendOptions, apply_options},
+    options::{
+        AddrInfoOptions, ReceiveCacheOptions, ReceiveOptions, RelayModeOption, SendOptions,
+        apply_options,
+    },
     receiver::{receive, receive_with_cancellation},
     results::{ReceiveResult, SendHandle, SendResult, SenderTransferStatus},
     sender::{send, send_handle},

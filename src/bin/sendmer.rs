@@ -15,7 +15,7 @@ use sendmer::core::args::{
 use sendmer::core::cli_helper::CliEventEmitter;
 use sendmer::core::results::SenderTransferStatus;
 use sendmer::core::{receiver, sender};
-use sendmer::{AppHandle, ReceiveOptions, SendOptions};
+use sendmer::{AppHandle, ReceiveCacheOptions, ReceiveOptions, SendOptions};
 #[cfg(feature = "clipboard")]
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -114,15 +114,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
 /// 与 `send` 类似，`receive` 在命令行模式下决定是否创建 `CliEventEmitter`，
 /// 调用 `download` 并将结果消息输出到 stdout。
 async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
-    let opts = receive_options(
-        args.output_dir.clone(),
-        args.retry_limit,
-        args.retry_backoff_ms,
-        args.connect_timeout_ms,
-        args.metadata_timeout_ms,
-        args.download_idle_timeout_ms,
-        &args.common,
-    );
+    let opts = receive_options(&args);
     let app_handle = cli_app_handle("[recv]", args.common.no_progress, args.common.json_events);
 
     let res = receiver::receive(args.ticket.to_string(), opts, app_handle).await?;
@@ -152,28 +144,24 @@ fn send_options(args: &SendArgs) -> SendOptions {
     }
 }
 
-fn receive_options(
-    output_dir: Option<std::path::PathBuf>,
-    retry_limit: u32,
-    retry_backoff_ms: u64,
-    connect_timeout_ms: Option<u64>,
-    metadata_timeout_ms: Option<u64>,
-    download_idle_timeout_ms: Option<u64>,
-    common: &CommonArgs,
-) -> ReceiveOptions {
+fn receive_options(args: &ReceiveArgs) -> ReceiveOptions {
     ReceiveOptions {
-        output_dir,
-        relay_mode: common.relay.clone(),
-        magic_ipv4_addr: common.magic_ipv4_addr,
-        magic_ipv6_addr: common.magic_ipv6_addr,
+        output_dir: args.output_dir.clone(),
+        relay_mode: args.common.relay.clone(),
+        magic_ipv4_addr: args.common.magic_ipv4_addr,
+        magic_ipv6_addr: args.common.magic_ipv6_addr,
         retry_policy: sendmer::core::options::ReceiveRetryPolicy {
-            download_retry_limit: retry_limit,
-            download_retry_backoff_ms: retry_backoff_ms,
-            connect_timeout_ms,
-            metadata_timeout_ms,
-            download_idle_timeout_ms,
+            download_retry_limit: args.retry_limit,
+            download_retry_backoff_ms: args.retry_backoff_ms,
+            connect_timeout_ms: args.connect_timeout_ms,
+            metadata_timeout_ms: args.metadata_timeout_ms,
+            download_idle_timeout_ms: args.download_idle_timeout_ms,
             ..Default::default()
         },
+        receive_cache: args.cache_dir.clone().map(|root_dir| {
+            ReceiveCacheOptions::new(root_dir)
+                .with_ttl(std::time::Duration::from_secs(args.cache_ttl_seconds))
+        }),
     }
 }
 
@@ -354,7 +342,9 @@ fn add_to_clipboard(ticket: &String) {
 mod tests {
     use super::{receive_options, send_options, wait_for_send_shutdown_with_signal};
     use clap::Parser;
-    use sendmer::core::args::CommonArgs;
+    use iroh::EndpointAddr;
+    use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
+    use sendmer::core::args::{CommonArgs, ReceiveArgs};
     use sendmer::core::options::RelayModeOption;
     use sendmer::core::results::SenderTransferStatus;
     use sendmer::{Args, Commands};
@@ -373,20 +363,39 @@ mod tests {
         }
     }
 
+    fn sample_receive_args() -> ReceiveArgs {
+        ReceiveArgs {
+            ticket: BlobTicket::new(
+                EndpointAddr::new(iroh::SecretKey::generate().public()),
+                Hash::new(b"receive option mapping"),
+                BlobFormat::HashSeq,
+            ),
+            output_dir: None,
+            retry_limit: 3,
+            retry_backoff_ms: 250,
+            connect_timeout_ms: None,
+            metadata_timeout_ms: None,
+            download_idle_timeout_ms: None,
+            cache_dir: None,
+            cache_ttl_seconds: 604_800,
+            common: sample_common_args(),
+        }
+    }
+
     #[test]
     fn receive_options_keeps_explicit_output_dir() {
-        let common = sample_common_args();
         let output = Some(PathBuf::from("explicit-output"));
+        let mut args = sample_receive_args();
+        args.output_dir = output.clone();
+        args.retry_limit = 5;
+        args.retry_backoff_ms = 120;
+        args.connect_timeout_ms = Some(1_000);
+        args.metadata_timeout_ms = Some(2_000);
+        args.download_idle_timeout_ms = Some(3_000);
+        args.cache_dir = Some(PathBuf::from("receive-cache"));
+        args.cache_ttl_seconds = 86_400;
 
-        let options = receive_options(
-            output.clone(),
-            5,
-            120,
-            Some(1_000),
-            Some(2_000),
-            Some(3_000),
-            &common,
-        );
+        let options = receive_options(&args);
 
         assert_eq!(options.output_dir, output);
         assert_eq!(options.retry_policy.download_retry_limit, 5);
@@ -394,15 +403,17 @@ mod tests {
         assert_eq!(options.retry_policy.connect_timeout_ms, Some(1_000));
         assert_eq!(options.retry_policy.metadata_timeout_ms, Some(2_000));
         assert_eq!(options.retry_policy.download_idle_timeout_ms, Some(3_000));
+        let cache = options.receive_cache.expect("persistent receive cache");
+        assert_eq!(cache.root_dir, PathBuf::from("receive-cache"));
+        assert_eq!(cache.ttl, std::time::Duration::from_secs(86_400));
     }
 
     #[test]
     fn receive_options_preserves_missing_output_dir() {
-        let common = sample_common_args();
-
-        let options = receive_options(None, 3, 250, None, None, None, &common);
+        let options = receive_options(&sample_receive_args());
 
         assert!(options.output_dir.is_none());
+        assert!(options.receive_cache.is_none());
     }
 
     #[test]

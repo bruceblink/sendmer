@@ -9,6 +9,7 @@ use crate::core::events::{
 };
 use crate::core::options::{ReceiveOptions, ReceiveRetryPolicy};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
+use crate::core::receive_cache::ReceiveCacheLease;
 use crate::core::results::ReceiveResult;
 use crate::core::storage::{load_fs_store, unique_temp_dir};
 use anyhow::Context;
@@ -99,7 +100,7 @@ pub async fn receive_with_cancellation(
             return Err(error);
         }
     };
-    let context = match ReceiveContext::prepare(ticket, &options).await {
+    let mut context = match ReceiveContext::prepare(ticket, &options).await {
         Ok(context) => context,
         Err(error) => {
             emit_receive_failed(&event_emitter, &error);
@@ -123,7 +124,7 @@ pub async fn receive_with_cancellation(
         Err(error) => {
             tracing::error!(error = %receive_failed_message(&error), "download operation failed");
             let cancelled = is_transfer_cancelled(&error);
-            let error = finalize_failed_receive(error, cleanup_failed_receive(&context).await);
+            let error = finalize_failed_receive(error, cleanup_failed_receive(&mut context).await);
             if cancelled {
                 event_emitter.emit_cancelled();
                 return Err(error);
@@ -135,7 +136,7 @@ pub async fn receive_with_cancellation(
         }
     };
 
-    let result = match finish_receive(&context, artifacts).await {
+    let result = match finish_receive(&mut context, artifacts).await {
         Ok(result) => result,
         Err(error) => {
             let error = receive_failure(
@@ -470,6 +471,7 @@ struct ReceiveContext {
     iroh_data_dir: PathBuf,
     db: Store,
     retry_policy: ReceiveRetryPolicy,
+    cache_lease: Option<ReceiveCacheLease>,
 }
 
 struct ReceiveArtifacts {
@@ -500,8 +502,19 @@ impl ReceiveContext {
                 "invalid receive retry policy",
             )
         })?;
+        if let Some(cache) = &options.receive_cache {
+            cache.validate().map_err(|error| {
+                receive_failure(
+                    error,
+                    TransferErrorCode::InvalidInput,
+                    TransferPhase::Preparing,
+                    false,
+                    "invalid receive cache options",
+                )
+            })?;
+        }
         let addr = ticket.addr().clone();
-        let (endpoint, iroh_data_dir, db) = prepare_env(&ticket, options).await?;
+        let (endpoint, iroh_data_dir, db, cache_lease) = prepare_env(&ticket, options).await?;
         Ok(Self {
             ticket,
             addr,
@@ -509,6 +522,7 @@ impl ReceiveContext {
             iroh_data_dir,
             db,
             retry_policy: options.retry_policy,
+            cache_lease,
         })
     }
 
@@ -665,20 +679,20 @@ fn finalize_failed_receive(
     primary_error
 }
 
-async fn cleanup_failed_receive(context: &ReceiveContext) -> anyhow::Result<()> {
+async fn cleanup_failed_receive(context: &mut ReceiveContext) -> anyhow::Result<()> {
     close_receive_endpoint(&context.endpoint).await;
     let shutdown_result = context.db.shutdown().await.map_err(anyhow::Error::from);
-    let cleanup_result = remove_temp_receive_dir(&context.iroh_data_dir).await;
+    let cleanup_result = finalize_receive_storage(context, false).await;
     finalize_cleanup(shutdown_result, cleanup_result)
 }
 
 async fn finish_receive(
-    context: &ReceiveContext,
+    context: &mut ReceiveContext,
     artifacts: ReceiveArtifacts,
 ) -> anyhow::Result<ReceiveResult> {
     close_receive_endpoint(&context.endpoint).await;
     let shutdown_result = context.db.shutdown().await.map_err(anyhow::Error::from);
-    let cleanup_result = remove_temp_receive_dir(&context.iroh_data_dir).await;
+    let cleanup_result = finalize_receive_storage(context, shutdown_result.is_ok()).await;
     finalize_cleanup(shutdown_result, cleanup_result)?;
 
     Ok(ReceiveResult {
@@ -688,6 +702,18 @@ async fn finish_receive(
         ),
         file_path: artifacts.root_item_path,
     })
+}
+
+/// Preserve persistent data after failure, but remove it after a clean export.
+async fn finalize_receive_storage(
+    context: &mut ReceiveContext,
+    receive_succeeded: bool,
+) -> anyhow::Result<()> {
+    match context.cache_lease.take() {
+        Some(lease) if receive_succeeded => lease.remove().await,
+        Some(lease) => lease.preserve(),
+        None => remove_temp_receive_dir(&context.iroh_data_dir).await,
+    }
 }
 
 /// Close the receive endpoint before its temporary store is finalized.
@@ -1086,7 +1112,7 @@ fn canonicalize_existing_parent(path: &Path) -> anyhow::Result<PathBuf> {
 async fn prepare_env(
     ticket: &BlobTicket,
     options: &ReceiveOptions,
-) -> anyhow::Result<(Endpoint, PathBuf, Store)> {
+) -> anyhow::Result<(Endpoint, PathBuf, Store, Option<ReceiveCacheLease>)> {
     let mut builder = base_endpoint_builder(options, vec![]).map_err(|error| {
         receive_failure(
             error,
@@ -1110,29 +1136,58 @@ async fn prepare_env(
         )
     })?;
 
-    let iroh_data_dir = unique_temp_dir(&format!(
-        "{RECEIVE_TEMP_DIR_PREFIX}{}-",
-        ticket.hash().to_hex()
-    ))
-    .map_err(|error| {
-        receive_failure(
-            error,
-            TransferErrorCode::Filesystem,
-            TransferPhase::Preparing,
-            false,
-            "unable to create receiver storage",
-        )
-    })?;
-    let db = load_fs_store(&iroh_data_dir).await.map_err(|error| {
-        receive_failure(
-            error,
-            TransferErrorCode::Filesystem,
-            TransferPhase::Preparing,
-            false,
-            "unable to open receiver storage",
-        )
-    })?;
-    Ok((endpoint, iroh_data_dir, db.into()))
+    let storage_result = options.receive_cache.as_ref().map_or_else(
+        || {
+            unique_temp_dir(&format!(
+                "{RECEIVE_TEMP_DIR_PREFIX}{}-",
+                ticket.hash().to_hex()
+            ))
+            .map(|path| (path, None))
+        },
+        |cache| {
+            ReceiveCacheLease::open(cache, ticket.hash_and_format()).map(|lease| {
+                let path = lease.entry_dir().to_path_buf();
+                (path, Some(lease))
+            })
+        },
+    );
+    let (iroh_data_dir, cache_lease) = match storage_result {
+        Ok(storage) => storage,
+        Err(error) => {
+            close_receive_endpoint(&endpoint).await;
+            return Err(receive_failure(
+                error,
+                TransferErrorCode::Filesystem,
+                TransferPhase::Preparing,
+                false,
+                "unable to create receiver storage",
+            ));
+        }
+    };
+    let db = match load_fs_store(&iroh_data_dir).await {
+        Ok(db) => db,
+        Err(error) => {
+            close_receive_endpoint(&endpoint).await;
+            let cleanup_result = match cache_lease {
+                Some(lease) => lease.preserve(),
+                None => remove_temp_receive_dir(&iroh_data_dir).await,
+            };
+            if let Err(cleanup_error) = cleanup_result {
+                tracing::warn!(
+                    error = %cleanup_error,
+                    "failed to finalize receiver storage after open error"
+                );
+            }
+            return Err(receive_failure(
+                error,
+                TransferErrorCode::Filesystem,
+                TransferPhase::Preparing,
+                false,
+                "unable to open receiver storage",
+            ));
+        }
+    };
+    Ok((endpoint, iroh_data_dir, db.into(), cache_lease))
 }
 
 /// Fetch remote collection sizes with a fresh connection for each retry.

@@ -220,6 +220,7 @@ fn send_recv_file() {
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
         retry_policy: Default::default(),
+        receive_cache: None,
     };
     let res = rt
         .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
@@ -252,6 +253,7 @@ fn send_upload_rate_caps_local_payload_transfer() {
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
         retry_policy: Default::default(),
+        receive_cache: None,
     };
 
     let started = Instant::now();
@@ -305,6 +307,7 @@ fn send_recv_dir() {
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
         retry_policy: Default::default(),
+        receive_cache: None,
     };
     let res = rt
         .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
@@ -349,6 +352,7 @@ fn receive_fails_on_existing_target_and_cleans_temp_dir() {
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
         retry_policy: Default::default(),
+        receive_cache: None,
     };
     let err = rt
         .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
@@ -369,6 +373,68 @@ fn receive_fails_on_existing_target_and_cleans_temp_dir() {
     assert!(
         leaked.is_empty(),
         "temporary receive dirs should be cleaned: {leaked:?}"
+    );
+}
+
+#[test]
+fn persistent_receive_cache_survives_failure_then_reopens_and_cleans_on_success() {
+    let name = "persistent-cache.bin";
+    let data = vec![7u8; 128 * 1024];
+    let src_dir = tempfile::tempdir().unwrap();
+    let first_output = tempfile::tempdir().unwrap();
+    let second_output = tempfile::tempdir().unwrap();
+    let cache_root = tempfile::tempdir().unwrap();
+    let src_file = src_dir.path().join(name);
+    std::fs::write(&src_file, &data).unwrap();
+    std::fs::write(first_output.path().join(name), b"existing").unwrap();
+
+    let mut send = RunningSend::spawn(&src_file, src_dir.path()).unwrap();
+    let ticket = send.read_ticket();
+    let cache_entry = cache_root
+        .path()
+        .join("v1")
+        .join(format!("1-{}", ticket.hash().to_hex()));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let failed_options = sendmer::ReceiveOptions {
+        output_dir: Some(first_output.path().to_path_buf()),
+        relay_mode: Default::default(),
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+        retry_policy: Default::default(),
+        receive_cache: Some(sendmer::ReceiveCacheOptions::new(cache_root.path())),
+    };
+    runtime
+        .block_on(sendmer::receive(ticket.to_string(), failed_options, None))
+        .expect_err("target collision should preserve the receive cache");
+
+    assert!(cache_entry.join("manifest.json").is_file());
+    assert!(cache_entry.join("blobs.db").is_file());
+    assert_eq!(
+        std::fs::read(first_output.path().join(name)).unwrap(),
+        b"existing"
+    );
+
+    let resumed_options = sendmer::ReceiveOptions {
+        output_dir: Some(second_output.path().to_path_buf()),
+        relay_mode: Default::default(),
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+        retry_policy: Default::default(),
+        receive_cache: Some(sendmer::ReceiveCacheOptions::new(cache_root.path())),
+    };
+    runtime
+        .block_on(sendmer::receive(ticket.to_string(), resumed_options, None))
+        .expect("a later receive should reopen the persisted iroh store");
+    send.cleanup();
+
+    assert_eq!(
+        std::fs::read(second_output.path().join(name)).unwrap(),
+        data
+    );
+    assert!(
+        !cache_entry.exists(),
+        "successful receive must delete its completed cache entry"
     );
 }
 
@@ -396,6 +462,7 @@ fn receive_fails_on_existing_directory_and_preserves_contents() {
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
         retry_policy: Default::default(),
+        receive_cache: None,
     };
     let error = rt
         .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
@@ -450,6 +517,7 @@ fn receive_defaults_to_current_directory_when_output_dir_is_missing() {
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
         retry_policy: Default::default(),
+        receive_cache: None,
     };
     let result = rt.block_on(async { sendmer::receive(ticket.to_string(), opts, None).await });
 
@@ -488,6 +556,7 @@ fn receive_connection_failure_cleans_temp_dir_after_retries() {
                 size_fetch_backoff_ms: 0,
                 ..Default::default()
             },
+            receive_cache: None,
         };
         sendmer::receive(ticket.to_string(), opts, None).await
     });
@@ -506,6 +575,40 @@ fn receive_connection_failure_cleans_temp_dir_after_retries() {
     assert!(
         leaked.is_empty(),
         "temporary receive dirs should be cleaned after retry failure: {leaked:?}"
+    );
+}
+
+#[test]
+fn invalid_receive_cache_ttl_fails_before_creating_cache_root() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_root = temp.path().join("must-not-be-created");
+    let output = tempfile::tempdir().unwrap();
+    let secret = sendmer::core::args::get_or_create_secret().unwrap();
+    let ticket = BlobTicket::new(
+        EndpointAddr::new(secret.public()),
+        Hash::new(b"invalid receive cache options"),
+        BlobFormat::HashSeq,
+    );
+    let options = sendmer::ReceiveOptions {
+        output_dir: Some(output.path().to_path_buf()),
+        relay_mode: sendmer::RelayModeOption::Disabled,
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+        retry_policy: Default::default(),
+        receive_cache: Some(
+            sendmer::ReceiveCacheOptions::new(&cache_root).with_ttl(Duration::ZERO),
+        ),
+    };
+
+    let error = runtime
+        .block_on(sendmer::receive(ticket.to_string(), options, None))
+        .expect_err("zero cache TTL must fail");
+
+    assert!(error.to_string().contains("TTL"));
+    assert!(
+        !cache_root.exists(),
+        "invalid cache settings must fail before creating storage"
     );
 }
 

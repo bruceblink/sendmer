@@ -124,7 +124,7 @@ Example:
 sendmer receive <ticket>
 ```
 
-Receive-side data is first staged in a temporary directory under the system temp directory. Final files or directories are published only after every export reports completion; a failed receive cleans its temporary data without replacing an existing target.
+Receive-side data uses a temporary iroh store by default. Final files or directories are published only after every export reports completion; a failed receive cleans its temporary data without replacing an existing target. To keep verified ranges after a failure or cancellation, opt in with `--cache-dir <path>`; a later receive for the same content can reopen that store, while a successful export removes the completed cache entry.
 
 Directories must contain regular files. sendmer rejects empty directories, directories with empty subdirectories, and symbolic links because the current collection format cannot preserve them safely.
 
@@ -149,12 +149,14 @@ Receive-specific options:
 - `--connect-timeout-ms <milliseconds>`: optional timeout for each sender connection attempt
 - `--metadata-timeout-ms <milliseconds>`: optional timeout for a collection metadata request
 - `--download-idle-timeout-ms <milliseconds>`: optional timeout while the download stream produces no updates
+- `--cache-dir <path>`: opt into a persistent, content-addressed receive cache for cross-process resume
+- `--cache-ttl-seconds <seconds>`: record the cache entry lifetime for pruning (default: `604800`; requires `--cache-dir` to take effect)
 
 ### Receive Safety
 
 The only conflict policy in this release is **fail**. If the destination root already exists as a file, directory, or symbolic link, receive fails and leaves it unchanged; sendmer never merges into, renames, skips, or overwrites an existing target. Collections with multiple top-level roots are also rejected because they cannot be committed as one atomic destination.
 
-Retry reuses data already obtained by the current receive process, but it is not cross-process resumable transfer. Persistent cache and resume support are planned separately.
+Retry reuses data already obtained by the current receive process. Cross-process resume is opt-in: configure the same private `--cache-dir` for a later receive of the same content. Failed or cancelled receives preserve verified ranges, successful receives remove their completed cache entry, and the sender still needs to be reachable. The first cache slice records TTL metadata but does not yet expose the explicit prune command; cache management and interruption E2E are tracked in [the persistent receive-cache design](docs/PERSISTENT_RECEIVE_CACHE_DESIGN.md).
 
 Send-specific options:
 
