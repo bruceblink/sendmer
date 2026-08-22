@@ -201,7 +201,8 @@ relay token 或底层连接标识。
 
 ### M10.3 供应链与平台覆盖
 
-- 为 Release 资产增加签名、SBOM 和构建 provenance，并在安装器中验证可用的信任材料。
+- Release 资产的签名、SBOM 和构建 provenance 契约已冻结，详见
+  [`V0_10_RELEASE_PROVENANCE.md`](V0_10_RELEASE_PROVENANCE.md)；workflow 接入仍待完成。
 - 扩展 ARM runner 或真实设备 smoke tests，持续验证 Windows GNU/MSVC 与 macOS/Linux ARM。
 - 保持 release workflow 可重入：同一 tag 重跑时更新 Release 正文，不制造重复资产或版本。
 
