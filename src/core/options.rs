@@ -46,6 +46,23 @@ pub struct SendOptions {
     /// sender schedules concurrent imports so their source-file bytes in flight do
     /// not exceed this budget; it is not a process RSS or operating-system limit.
     pub max_import_memory_bytes: Option<NonZeroU64>,
+    /// Optional fixed lifetime for the sender session after it becomes ready.
+    ///
+    /// `None` keeps the share alive until the owner explicitly closes it. A configured
+    /// lifetime is not an idle timeout: receiver activity never extends the deadline.
+    pub session_lifetime: Option<Duration>,
+}
+
+impl SendOptions {
+    /// Reject invalid sender settings before endpoint and temporary-store setup begins.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.session_lifetime
+                .is_none_or(|lifetime| !lifetime.is_zero()),
+            "sender session lifetime must be greater than zero"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -349,6 +366,21 @@ mod tests {
         assert!(options.max_files.is_none());
         assert!(options.max_total_size_bytes.is_none());
         assert!(options.max_import_memory_bytes.is_none());
+        assert!(options.session_lifetime.is_none());
+        options.validate().expect("default sender options");
+    }
+
+    #[test]
+    fn send_options_reject_zero_session_lifetime() {
+        let options = SendOptions {
+            session_lifetime: Some(Duration::ZERO),
+            ..SendOptions::default()
+        };
+
+        let error = options
+            .validate()
+            .expect_err("zero sender lifetime should be rejected");
+        assert!(error.to_string().contains("session lifetime"));
     }
 
     #[test]

@@ -143,6 +143,10 @@ pub struct SendArgs {
     #[clap(long)]
     pub max_import_memory: Option<NonZeroU64>,
 
+    /// Fixed sender session lifetime in seconds after the share becomes ready.
+    #[clap(long)]
+    pub session_lifetime_seconds: Option<NonZeroU64>,
+
     /// Use the v0.10 transfer manifest for empty directories and portable metadata.
     #[clap(long, default_value_t = false)]
     pub manifest: bool,

@@ -169,6 +169,9 @@ fn send_options(args: &SendArgs) -> SendOptions {
         max_files: args.max_files,
         max_total_size_bytes: args.max_total_size,
         max_import_memory_bytes: args.max_import_memory,
+        session_lifetime: args
+            .session_lifetime_seconds
+            .map(|seconds| std::time::Duration::from_secs(seconds.get())),
     }
 }
 
@@ -231,6 +234,10 @@ where
             }
             changed = status_rx.changed() => {
                 if changed.is_err() {
+                    return Ok(());
+                }
+
+                if *status_rx.borrow() == SenderTransferStatus::Expired {
                     return Ok(());
                 }
 
@@ -460,6 +467,8 @@ mod tests {
             "4096",
             "--max-import-memory",
             "65536",
+            "--session-lifetime-seconds",
+            "30",
             "example.bin",
         ])
         .expect("valid send arguments");
@@ -489,6 +498,10 @@ mod tests {
                 .map(std::num::NonZeroU64::get),
             Some(65_536)
         );
+        assert_eq!(
+            options.session_lifetime,
+            Some(std::time::Duration::from_secs(30))
+        );
     }
 
     #[tokio::test]
@@ -508,5 +521,24 @@ mod tests {
             result = &mut wait => panic!("an aborted receiver must not stop the sender: {result:?}"),
             _ = tokio::task::yield_now() => {}
         }
+    }
+
+    #[tokio::test]
+    async fn sender_wait_stops_when_session_expires() {
+        let (status_tx, mut status_rx) = tokio::sync::watch::channel(SenderTransferStatus::Idle);
+        status_tx
+            .send(SenderTransferStatus::Expired)
+            .expect("status receiver should be present");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            wait_for_send_shutdown_with_signal(
+                std::future::pending::<std::io::Result<()>>(),
+                &mut status_rx,
+            ),
+        )
+        .await
+        .expect("expired sessions should stop the CLI wait")
+        .expect("expired session wait should be clean");
     }
 }

@@ -180,6 +180,7 @@ Send-specific options:
 - `--max-files <count>`: optionally reject a share before startup when it contains more regular files than the configured limit
 - `--max-total-size <bytes>`: optionally reject a share before startup when regular files exceed the configured total payload size
 - `--max-import-memory <bytes>`: optionally bound estimated regular-file bytes held by concurrent sender imports; this is an import working-set budget, not a process RSS limit
+- `--session-lifetime-seconds <seconds>`: optionally close the sender after a fixed lifetime once the share is ready; zero is rejected and receiver activity does not extend it
 - `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard (available in the default `clipboard` feature build)
 
 ## Library Usage
@@ -202,6 +203,10 @@ async fn main() -> anyhow::Result<()> {
 
 The legacy `send` function and `SendResult::shutdown` remain available for compatibility. A receiver
 can use `receive` or `receive_with_cancellation` with `ReceiveOptions`.
+
+Set `SendOptions::session_lifetime` when an embedding needs a bounded sender lifetime. On expiry,
+the router closes, the sender emits one non-retryable timeout event, and
+`SenderTransferStatus::Expired` lets the owner enter its normal cleanup path.
 
 Call `SendHandle::cancel` to actively revoke a share. It stops the provider before closing the router,
 so the existing ticket cannot establish new receives after cancellation. A ticket is only a bearer

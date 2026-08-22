@@ -179,6 +179,7 @@ sendmer cache prune --cache-dir <path>
 - `--max-files <count>`：可选地限制共享路径中的普通文件数量；超过上限会在网络和临时存储初始化前拒绝
 - `--max-total-size <bytes>`：可选地限制共享路径中普通文件的总 payload 大小；超过上限会在网络和临时存储初始化前拒绝
 - `--max-import-memory <bytes>`：可选地限制并行 sender 导入任务估算的普通文件字节预算；这是导入工作集上限，不是进程 RSS 上限
+- `--session-lifetime-seconds <seconds>`：可选地在共享就绪后按固定生命周期关闭 sender；零值会被拒绝，接收方活动不会延长生命周期
 - `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板（默认启用 `clipboard` feature 时可用）
 
 ## 作为库使用
@@ -201,6 +202,9 @@ async fn main() -> anyhow::Result<()> {
 
 旧的 `send` 函数和 `SendResult::shutdown` 仍保留用于兼容。接收端可以使用 `receive`，
 或使用带取消能力的 `receive_with_cancellation` 与 `ReceiveOptions`。
+
+嵌入式调用方可设置 `SendOptions::session_lifetime`。生命周期到期后 router 会关闭，sender
+发出一次不可重试的超时事件，并发布 `SenderTransferStatus::Expired`，调用方随后复用正常清理路径。
 
 调用 `SendHandle::cancel` 可主动撤销共享。它会先停止 provider，再关闭 router，因此撤销后旧
 ticket 不能再建立新的接收连接。ticket 只在发送方 router 存活期间作为 bearer capability 有效，

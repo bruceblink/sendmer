@@ -383,6 +383,8 @@ pub enum SenderTransferStatus {
     Started,
     Completed,
     Aborted,
+    /// The sender's configured fixed lifetime elapsed and the share was closed.
+    Expired,
 }
 
 #[derive(Clone)]
@@ -411,13 +413,26 @@ impl SenderProgressReporter {
         }
     }
 
+    /// Publish telemetry without allowing a late provider callback to overwrite
+    /// the sender's terminal `Expired` lifecycle state.
+    fn publish_status(&self, status: SenderTransferStatus) {
+        let _ = self.status_tx.send_if_modified(|current| {
+            if *current == SenderTransferStatus::Expired || *current == status {
+                false
+            } else {
+                *current = status;
+                true
+            }
+        });
+    }
+
     pub async fn on_request_received(&self, transfer_id: TransferId, total_file_size: u64) {
         let mut state = self.state.lock().await;
         state
             .tracker
             .on_request_started(transfer_id, total_file_size);
         drop(state);
-        let _ = self.status_tx.send(SenderTransferStatus::Started);
+        self.publish_status(SenderTransferStatus::Started);
     }
 
     pub async fn on_request_update(
@@ -440,7 +455,7 @@ impl SenderProgressReporter {
                     let mut state = self.state.lock().await;
                     match state.tracker.on_request_completed(transfer_id) {
                         CompletionStatus::Completed => {
-                            let _ = self.status_tx.send(SenderTransferStatus::Completed);
+                            self.publish_status(SenderTransferStatus::Completed);
                             None
                         }
                         CompletionStatus::InProgress => None,
@@ -458,7 +473,7 @@ impl SenderProgressReporter {
                         state.tracker.evaluate_completion(),
                         CompletionStatus::Completed
                     ) {
-                        let _ = self.status_tx.send(SenderTransferStatus::Completed);
+                        self.publish_status(SenderTransferStatus::Completed);
                     }
                 }
             }
@@ -711,6 +726,23 @@ mod tests {
 
         let events = sink.events();
         assert!(!events.iter().any(|event| event.event.is_terminal()));
+    }
+
+    #[tokio::test]
+    async fn sender_progress_does_not_overwrite_expired_status() {
+        let sink = Arc::new(RecordingEmitter::default());
+        let (status_tx, status_rx) = tokio::sync::watch::channel(SenderTransferStatus::Idle);
+        let session = started_emitter(sink, Role::Sender);
+        let reporter = SenderProgressReporter::new(session, EntryType::File, status_tx.clone());
+        status_tx
+            .send(SenderTransferStatus::Expired)
+            .expect("status receiver");
+
+        reporter
+            .on_request_received(TransferId::new(12, 1), 128)
+            .await;
+
+        assert_eq!(*status_rx.borrow(), SenderTransferStatus::Expired);
     }
 
     #[tokio::test]

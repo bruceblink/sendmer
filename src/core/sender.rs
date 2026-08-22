@@ -258,7 +258,7 @@ async fn setup_data_sharing(
             event_emitter,
             size,
             entry_type,
-            transfer_status_tx,
+            transfer_status_tx.clone(),
             ProviderProgressControl {
                 max_upload_rate_bytes_per_sec,
                 max_receivers,
@@ -276,6 +276,7 @@ async fn setup_data_sharing(
             blobs_data_dir,
             store,
             progress_handle,
+            transfer_status_tx,
             transfer_status_rx,
             shutdown_signal_tx,
         })
@@ -445,6 +446,7 @@ struct SharingSetup {
     blobs_data_dir: PathBuf,
     store: FsStore,
     progress_handle: AbortOnDropHandle<anyhow::Result<()>>,
+    transfer_status_tx: watch::Sender<SenderTransferStatus>,
     transfer_status_rx: watch::Receiver<SenderTransferStatus>,
     shutdown_signal_tx: watch::Sender<bool>,
 }
@@ -502,6 +504,7 @@ impl SharingSetup {
             blobs_data_dir,
             store,
             progress_handle,
+            transfer_status_tx,
             transfer_status_rx,
             shutdown_signal_tx,
         } = self;
@@ -523,9 +526,11 @@ impl SharingSetup {
             blobs_data_dir,
             _progress_handle: progress_handle,
             _store: store,
+            transfer_status_tx,
             transfer_status_rx,
             event_emitter,
             shutdown_signal_tx,
+            session_expiry_task: None,
         }
     }
 }
@@ -591,8 +596,18 @@ async fn send_started(
         max_files = ?options.max_files,
         max_total_size_bytes = ?options.max_total_size_bytes,
         max_import_memory_bytes = ?options.max_import_memory_bytes,
+        session_lifetime = ?options.session_lifetime,
         "starting send"
     );
+    options.validate().map_err(|error| {
+        sender_failure(
+            error,
+            TransferErrorCode::InvalidInput,
+            TransferPhase::Preparing,
+            false,
+            "invalid sender session settings",
+        )
+    })?;
     validate_share_path(&path, options.manifest_mode).map_err(|error| {
         sender_failure(
             error,
@@ -697,7 +712,8 @@ async fn send_started(
         }
     }
 
-    let result = setup.into_send_result(plan.entry_type, plan.ticket_type, event_emitter);
+    let mut result = setup.into_send_result(plan.entry_type, plan.ticket_type, event_emitter);
+    result.arm_session_lifetime(options.session_lifetime);
 
     info!(
         hash = %result.hash,

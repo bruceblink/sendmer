@@ -172,8 +172,10 @@ relay token 或底层连接标识。
 - `SendOptions::max_receivers` 与 CLI `--max-receivers` 已实现同时活动 provider 连接数上限；默认不限制，断开连接会释放名额，超限连接由 provider 层拒绝。
 - `SendOptions::max_files` 与 CLI `--max-files` 已实现普通文件数量上限；默认不限制，目录超限会在网络和临时存储初始化前以 `InvalidInput` 拒绝。
 - `SendOptions::max_total_size_bytes` 与 CLI `--max-total-size` 已实现普通文件总 payload 大小上限；默认不限制，文件长度总量超限会在网络和临时存储初始化前以 `InvalidInput` 拒绝。
-- `SendHandle::cancel` 的主动撤销和旧 Ticket 失效已有本地回归；sender 会话自动过期仍待设计，
-  不改变现有 Ticket 的 bearer capability 兼容性。
+- `SendHandle::cancel` 的主动撤销和旧 Ticket 失效已有本地回归；`SendOptions::session_lifetime` 与
+  CLI `--session-lifetime-seconds` 已实现 ready 后固定生命周期、`Expired` 状态和不可重试超时事件，
+  不改变现有 Ticket 的 bearer capability 兼容性；设计与边界见
+  [`V0_10_SESSION_LIFETIME_DESIGN.md`](V0_10_SESSION_LIFETIME_DESIGN.md)。
 - `SendOptions::max_import_memory_bytes` 与 CLI `--max-import-memory` 已实现导入工作集预算；它限制并行
   导入任务估算的普通文件字节，不伪称为进程 RSS 或操作系统硬内存上限。大文件和大目录基准已记录在
   [`V0_10_SCALE_BENCHMARK.md`](V0_10_SCALE_BENCHMARK.md)。
@@ -196,8 +198,9 @@ relay token 或底层连接标识。
 - 保持旧 file-only collection 可读取，并提供明确的 schema 迁移和不支持错误。
 
 验收：Windows UTF-8 round-trip 和空目录 fixture 已通过；manifest JSON、恶意路径、未来 schema、
-文件/目录冲突和 Unix 非 UTF-8 编解码已有测试。Linux、macOS、Windows 的真实权限/时间戳与
-原始名称 native acceptance 仍是发布前门禁；失败或冲突时仍无半导出和越界写入。
+文件/目录冲突和 Unix 非 UTF-8 编解码已有测试。CI 的原生矩阵覆盖 Linux、macOS、Windows
+（MSVC/GNU），并将真实权限/时间戳与原始名称检查作为发布前门禁；当前开发机已完成 Windows
+与 WSL Linux 全量测试，macOS 结果仍以对应 runner 的 CI 记录为准。失败或冲突时仍无半导出和越界写入。
 
 ### M10.3 供应链与平台覆盖
 

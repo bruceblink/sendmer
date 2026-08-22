@@ -7,6 +7,7 @@ use crate::core::progress::TransferEventEmitter;
 use crate::core::types::EntryType;
 use iroh_blobs::{Hash, ticket::BlobTicket};
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::sync::watch;
 
 pub use crate::core::progress::SenderTransferStatus;
@@ -34,8 +35,10 @@ pub struct SendResult {
     pub _progress_handle: n0_future::task::AbortOnDropHandle<anyhow::Result<()>>, // Keeps event channel open
     pub _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
     pub(crate) transfer_status_rx: watch::Receiver<SenderTransferStatus>,
+    pub(crate) transfer_status_tx: watch::Sender<SenderTransferStatus>,
     pub(crate) event_emitter: TransferEventEmitter,
     pub(crate) shutdown_signal_tx: watch::Sender<bool>,
+    pub(crate) session_expiry_task: Option<n0_future::task::AbortOnDropHandle<()>>,
 }
 
 fn normalize_sender_cleanup_result(cleanup_result: std::io::Result<()>) -> anyhow::Result<()> {
@@ -68,6 +71,51 @@ impl SendResult {
 
     pub fn subscribe_transfer_status(&self) -> watch::Receiver<SenderTransferStatus> {
         self.transfer_status_rx.clone()
+    }
+
+    /// Arm a fixed sender lifetime only after endpoint readiness has completed.
+    pub(crate) fn arm_session_lifetime(&mut self, lifetime: Option<Duration>) {
+        let Some(lifetime) = lifetime else {
+            return;
+        };
+
+        let router = self.router.clone();
+        let shutdown_signal_tx = self.shutdown_signal_tx.clone();
+        let transfer_status_tx = self.transfer_status_tx.clone();
+        let event_emitter = self.event_emitter.clone();
+        self.session_expiry_task = Some(n0_future::task::AbortOnDropHandle::new(tokio::spawn(
+            async move {
+                let mut shutdown_signal_rx = shutdown_signal_tx.subscribe();
+                tokio::select! {
+                    _ = tokio::time::sleep(lifetime) => {}
+                    changed = shutdown_signal_rx.changed() => {
+                        if changed.is_err() || *shutdown_signal_rx.borrow() {
+                            return;
+                        }
+                    }
+                }
+
+                if *shutdown_signal_rx.borrow() {
+                    return;
+                }
+
+                let _ = shutdown_signal_tx.send(true);
+                match router.shutdown().await {
+                    Ok(()) => event_emitter.emit_failed(TransferError::new(
+                        TransferErrorCode::Timeout,
+                        TransferPhase::Finalizing,
+                        false,
+                        "sender session lifetime expired",
+                    )),
+                    Err(error) => {
+                        tracing::warn!(error = %error, "failed to shut down expired sender session");
+                        event_emitter
+                            .emit_internal_failure("unable to shut down expired sender session");
+                    }
+                }
+                let _ = transfer_status_tx.send(SenderTransferStatus::Expired);
+            },
+        )));
     }
 
     /// Shut down the active share, release store handles, and remove its temporary blob data.
@@ -104,9 +152,14 @@ impl SendResult {
             blobs_data_dir,
             _progress_handle,
             _store,
+            session_expiry_task,
             shutdown_signal_tx,
             ..
         } = self;
+
+        // Explicit close wins over a pending expiry and prevents the task from
+        // acting after the owner has started ordered resource cleanup.
+        drop(session_expiry_task);
 
         // Wake pending provider throttle waits before asking the router to close so
         // cancellation does not inherit the configured upload delay.
@@ -187,8 +240,9 @@ pub struct ReceiveResult {
 mod tests {
     use super::{finalize_sender_shutdown, normalize_sender_cleanup_result};
     use crate::core::{
-        events::{EventEmitter, TransferEvent, TransferEventData},
+        events::{EventEmitter, TransferErrorCode, TransferEvent, TransferEventData},
         options::{ReceiveOptions, ReceiveRetryPolicy, RelayModeOption, SendOptions},
+        progress::SenderTransferStatus,
         receiver, sender,
     };
     use std::sync::{Arc, Mutex};
@@ -261,6 +315,53 @@ mod tests {
         assert!(matches!(events[1].event, TransferEventData::Completed));
         assert_eq!(events[0].session_id, events[1].session_id);
         assert_eq!([events[0].sequence, events[1].sequence], [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn sender_session_expires_after_ready_and_emits_timeout() {
+        let source_dir = tempfile::tempdir().expect("source directory");
+        let source_file = source_dir.path().join("expiry.bin");
+        tokio::fs::write(&source_file, b"session expiry")
+            .await
+            .expect("write source file");
+        let options = SendOptions {
+            relay_mode: RelayModeOption::Disabled,
+            session_lifetime: Some(Duration::from_millis(50)),
+            ..SendOptions::default()
+        };
+        let emitter = Arc::new(RecordingEmitter::default());
+        let result = sender::send(source_file, options, Some(emitter.clone()))
+            .await
+            .expect("start sender");
+        let endpoint = result.router.endpoint().clone();
+        let blobs_data_dir = result.blobs_data_dir.clone();
+        let mut status_rx = result.subscribe_transfer_status();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while status_rx.changed().await.is_ok() {
+                if *status_rx.borrow() == SenderTransferStatus::Expired {
+                    return;
+                }
+            }
+            panic!("sender status channel closed before expiry");
+        })
+        .await
+        .expect("sender should expire after its fixed lifetime");
+
+        assert!(endpoint.is_closed(), "expiry should close the endpoint");
+        let events = emitter.events();
+        assert!(matches!(
+            events.last().map(|event| &event.event),
+            Some(TransferEventData::Failed { error })
+                if error.code == TransferErrorCode::Timeout
+        ));
+
+        result
+            .shutdown()
+            .await
+            .expect("expired sender should still clean up");
+        assert!(!blobs_data_dir.exists());
+        assert_eq!(events[0].session_id, events[1].session_id);
     }
 
     #[tokio::test]
