@@ -12,6 +12,11 @@ use std::time::Duration;
 pub struct SendOptions {
     pub relay_mode: RelayModeOption,
     pub ticket_type: AddrInfoOptions,
+    /// Opt into the TM1 transfer manifest for empty directories and portable metadata.
+    ///
+    /// Legacy Collection V0 remains the default so existing receivers and tickets stay
+    /// compatible. Manifest-mode receivers detect TM1 from the reserved collection entry.
+    pub manifest_mode: bool,
     pub magic_ipv4_addr: Option<SocketAddrV4>,
     pub magic_ipv6_addr: Option<SocketAddrV6>,
     /// Optional shared payload upload ceiling for every receiver of this share.

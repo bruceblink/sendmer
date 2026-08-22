@@ -7,6 +7,7 @@ use crate::core::events::{
     AppHandle, Role, TransferError, TransferErrorCode, TransferPhase, classified_transfer_error,
     classify_transfer_error, is_transfer_cancelled, transfer_cancelled_error,
 };
+use crate::core::manifest::{MANIFEST_COLLECTION_NAME, ManifestEntryKind, TransferManifest};
 use crate::core::options::{ReceiveOptions, ReceiveRetryPolicy};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::receive_cache::ReceiveCacheLease;
@@ -202,6 +203,154 @@ async fn export_atomically(
         return Err(error);
     }
 
+    Ok(())
+}
+
+/// Export a TM1 directory tree after validating all logical paths and payload mappings.
+async fn export_manifest_atomically(
+    db: &Store,
+    collection: &Collection,
+    manifest: &TransferManifest,
+    output_dir: &Path,
+) -> anyhow::Result<PathBuf> {
+    let root_path = manifest.root.path.to_path_buf()?;
+    anyhow::ensure!(
+        root_path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "manifest root must be relative"
+    );
+    ensure_export_root_available_path(output_dir, &root_path)?;
+    let staging_dir = create_staging_dir(output_dir)?;
+    let result = async {
+        let staged_root = staging_dir.join(&root_path);
+        if manifest.root.kind == ManifestEntryKind::Directory {
+            std::fs::create_dir_all(&staged_root)?;
+        }
+        let mut payloads = std::collections::BTreeMap::new();
+        for (name, hash) in collection.iter() {
+            if name.starts_with(crate::core::manifest::MANIFEST_ENTRY_PREFIX) {
+                payloads.insert(name, *hash);
+            }
+        }
+        let mut targets = Vec::new();
+        for entry in &manifest.entries {
+            let full_path = entry.path.to_path_buf()?;
+            let target = staging_dir.join(&full_path);
+            anyhow::ensure!(
+                target.strip_prefix(&staging_dir).is_ok(),
+                "manifest entry escaped staging directory"
+            );
+            match entry.kind {
+                ManifestEntryKind::Directory => {
+                    std::fs::create_dir_all(&target)?;
+                }
+                ManifestEntryKind::File => {
+                    let payload = entry
+                        .payload
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("manifest file payload is missing"))?;
+                    let hash = payloads.get(&payload.collection_name).ok_or_else(|| {
+                        anyhow::anyhow!("manifest payload {} is missing", payload.collection_name)
+                    })?;
+                    let parent = target
+                        .parent()
+                        .ok_or_else(|| anyhow::anyhow!("manifest file has no parent"))?;
+                    std::fs::create_dir_all(parent)?;
+                    let mut stream = db
+                        .export_with_opts(ExportOptions {
+                            hash: *hash,
+                            target: target.clone(),
+                            mode: ExportMode::Copy,
+                        })
+                        .stream()
+                        .await;
+                    process_export_stream(&mut stream, &payload.collection_name).await?;
+                    let actual_size = std::fs::metadata(&target)?.len();
+                    anyhow::ensure!(
+                        actual_size == payload.size,
+                        "manifest payload {} size does not match",
+                        payload.collection_name
+                    );
+                }
+            }
+            targets.push((target, entry));
+        }
+        for (target, entry) in targets.iter().rev() {
+            apply_manifest_metadata(target, &entry.metadata)?;
+        }
+        commit_staged_export_path(&staging_dir, output_dir, &root_path)?;
+        Ok::<PathBuf, anyhow::Error>(output_dir.join(root_path))
+    }
+    .await;
+    if result.is_err() {
+        cleanup_staging_dir(&staging_dir);
+    }
+    result
+}
+
+fn ensure_export_root_available_path(output_dir: &Path, root: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(output_dir)?;
+    anyhow::ensure!(output_dir.is_dir(), "output root is not a directory");
+    anyhow::ensure!(
+        root.components()
+            .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "manifest root must be relative"
+    );
+    let target = output_dir.join(root);
+    match std::fs::symlink_metadata(&target) {
+        Ok(_) => Err(target_conflict_error(&target)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn commit_staged_export_path(
+    staging_dir: &Path,
+    output_dir: &Path,
+    root: &Path,
+) -> anyhow::Result<()> {
+    let staged = staging_dir.join(root);
+    anyhow::ensure!(staged.exists(), "staged export root is missing");
+    let target = output_dir.join(root);
+    match std::fs::symlink_metadata(&target) {
+        Ok(_) => return Err(target_conflict_error(&target)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    if let Err(error) = move_staged_root_without_replacing(&staged, &target) {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            return Err(target_conflict_error(&target));
+        }
+        return Err(error.into());
+    }
+    cleanup_staging_dir(staging_dir);
+    Ok(())
+}
+
+fn apply_manifest_metadata(
+    target: &Path,
+    metadata: &crate::core::manifest::ManifestMetadata,
+) -> anyhow::Result<()> {
+    if let Some(permissions) = &metadata.permissions {
+        #[cfg(unix)]
+        if let Some(mode) = permissions.posix_mode {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(target, std::fs::Permissions::from_mode(mode))?;
+        }
+        #[cfg(windows)]
+        if let Some(read_only) = permissions.windows_read_only {
+            let mut current = std::fs::metadata(target)?.permissions();
+            current.set_readonly(read_only);
+            std::fs::set_permissions(target, current)?;
+        }
+    }
+    if let Some(modified) = metadata.modified {
+        filetime::set_file_mtime(
+            target,
+            filetime::FileTime::from_unix_time(modified.seconds, modified.nanos),
+        )?;
+    }
     Ok(())
 }
 
@@ -575,6 +724,66 @@ async fn receive_once(
         .load_collection()
         .await
         .context("load received collection")?;
+    if let Some(manifest_hash) = collection
+        .iter()
+        .find_map(|(name, hash)| (name == MANIFEST_COLLECTION_NAME).then_some(*hash))
+    {
+        let manifest_bytes = context.db.get_bytes(manifest_hash).await.map_err(|error| {
+            receive_failure(
+                error.into(),
+                TransferErrorCode::TransferInterrupted,
+                TransferPhase::Metadata,
+                false,
+                "received transfer manifest is unavailable",
+            )
+        })?;
+        let manifest = TransferManifest::from_json_bytes(&manifest_bytes).map_err(|error| {
+            receive_failure(
+                error,
+                TransferErrorCode::RemoteRejected,
+                TransferPhase::Metadata,
+                false,
+                "received transfer manifest is invalid",
+            )
+        })?;
+        let file_names = manifest
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == ManifestEntryKind::File)
+            .map(|entry| entry.path.components.join("/"))
+            .collect::<Vec<_>>();
+        if !file_names.is_empty() {
+            event_emitter.emit_file_names(file_names);
+        }
+        let root_item_path = output_dir.join(manifest.root.path.to_path_buf()?);
+        let file_count = manifest
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == ManifestEntryKind::File)
+            .count() as u64;
+        let payload_size = manifest
+            .entries
+            .iter()
+            .filter_map(|entry| entry.payload.as_ref().map(|payload| payload.size))
+            .sum();
+        export_manifest_atomically(&context.db, &collection, &manifest, output_dir)
+            .await
+            .context("export transfer manifest")
+            .map_err(|error| {
+                receive_failure(
+                    error,
+                    TransferErrorCode::Filesystem,
+                    TransferPhase::Exporting,
+                    false,
+                    "unable to export transfer manifest",
+                )
+            })?;
+        return Ok(ReceiveArtifacts {
+            total_files: file_count,
+            payload_size,
+            root_item_path,
+        });
+    }
     emit_collection_file_names(&event_emitter, &collection);
     let root_item_path = resolve_root_item_path(output_dir, &collection)
         .context("resolve received output path")

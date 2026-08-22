@@ -161,6 +161,7 @@ fn send_options(args: &SendArgs) -> SendOptions {
     SendOptions {
         relay_mode: args.common.relay.clone(),
         ticket_type: args.ticket_type,
+        manifest_mode: args.manifest,
         magic_ipv4_addr: args.common.magic_ipv4_addr,
         magic_ipv6_addr: args.common.magic_ipv6_addr,
         max_upload_rate_bytes_per_sec: args.max_upload_rate,

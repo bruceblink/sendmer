@@ -143,6 +143,10 @@ pub struct SendArgs {
     #[clap(long)]
     pub max_import_memory: Option<NonZeroU64>,
 
+    /// Use the v0.10 transfer manifest for empty directories and portable metadata.
+    #[clap(long, default_value_t = false)]
+    pub manifest: bool,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 
@@ -310,6 +314,17 @@ mod tests {
             panic!("expected send command")
         };
         assert_eq!(send.max_upload_rate.map(NonZeroU64::get), Some(1_048_576));
+    }
+
+    #[test]
+    fn send_args_accept_manifest_mode() {
+        let args = Args::try_parse_from(["sendmer", "send", "--manifest", "share"])
+            .expect("valid manifest send arguments");
+
+        let Commands::Send(send) = args.command else {
+            panic!("expected send command")
+        };
+        assert!(send.manifest);
     }
 
     #[test]

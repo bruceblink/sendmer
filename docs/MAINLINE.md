@@ -185,12 +185,19 @@ relay token 或底层连接标识。
 
 ### M10.2 文件系统语义与 manifest 演进
 
-- 在版本化 manifest 中设计空目录、非 UTF-8 文件名、权限和时间戳的跨平台表达。
+- TM1 版本化传输清单已冻结术语、wire schema、路径编码、元数据边界和旧 Collection V0
+  兼容规则，详见 [`V0_10_MANIFEST_DESIGN.md`](V0_10_MANIFEST_DESIGN.md)。
+- `--manifest` 与 `SendOptions::manifest_mode` 已提供显式 opt-in：使用保留 Collection 条目
+  携带 TM1 JSON，接收端自动识别并在 staging 中还原空目录、普通文件、POSIX mode/Windows
+  read-only 属性和修改时间；旧 file-only collection 仍保持默认。
+- TM1 对路径、payload 映射、重复项、未来 schema 和目录/文件冲突执行 fail-closed 校验；Unix
+  非 UTF-8 组件使用 `unix_bytes_hex`，无法安全 materialize 的目标平台拒绝而不替换名称。
 - 符号链接默认继续拒绝；只有威胁模型、目标平台语义和安全导出策略明确后才考虑 opt-in。
 - 保持旧 file-only collection 可读取，并提供明确的 schema 迁移和不支持错误。
 
-验收：Linux、macOS、Windows 的 round-trip fixture；恶意路径和权限矩阵；旧版本兼容测试；
-失败或冲突时仍无半导出和越界写入。
+验收：Windows UTF-8 round-trip 和空目录 fixture 已通过；manifest JSON、恶意路径、未来 schema、
+文件/目录冲突和 Unix 非 UTF-8 编解码已有测试。Linux、macOS、Windows 的真实权限/时间戳与
+原始名称 native acceptance 仍是发布前门禁；失败或冲突时仍无半导出和越界写入。
 
 ### M10.3 供应链与平台覆盖
 

@@ -7,6 +7,11 @@ use crate::core::events::{
     AppHandle, Role, TransferError, TransferErrorCode, TransferPhase, classified_transfer_error,
     classify_transfer_error, is_transfer_cancelled, transfer_cancelled_error,
 };
+use crate::core::manifest::{
+    MANIFEST_COLLECTION_NAME, MANIFEST_ENTRY_PREFIX, ManifestEntry, ManifestEntryKind,
+    ManifestMetadata, ManifestPath, ManifestPayload, ManifestPermissions, ManifestRoot,
+    TransferManifest, UnixTimestamp,
+};
 use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
 use crate::core::progress::{
     SenderProgressReporter, SenderTransferStatus, TransferEventEmitter, TransferId,
@@ -63,7 +68,7 @@ fn prepare_temp_directory() -> anyhow::Result<PathBuf> {
 }
 
 /// Validate the path to be shared
-fn validate_share_path(path: &Path) -> anyhow::Result<()> {
+fn validate_share_path(path: &Path, allow_empty_directories: bool) -> anyhow::Result<()> {
     let canonical_cwd = std::env::current_dir()?.canonicalize()?;
     let source_metadata = std::fs::symlink_metadata(path).with_context(|| {
         format!(
@@ -93,7 +98,7 @@ fn validate_share_path(path: &Path) -> anyhow::Result<()> {
         path.display()
     );
 
-    if canonical_path.is_dir() {
+    if canonical_path.is_dir() && !allow_empty_directories {
         validate_share_directory_contents(&canonical_path)?;
     }
 
@@ -215,6 +220,7 @@ async fn setup_data_sharing(
             max_upload_rate_bytes_per_sec,
             max_receivers,
             max_import_memory_bytes,
+            manifest_mode,
         } = share_request;
         let store = load_fs_store(&blobs_data_dir).await.map_err(|error| {
             sender_failure(
@@ -235,7 +241,7 @@ async fn setup_data_sharing(
             )),
         );
 
-        let imported = import(path, blobs.store(), max_import_memory_bytes)
+        let imported = import(path, blobs.store(), max_import_memory_bytes, manifest_mode)
             .await
             .map_err(|error| {
                 sender_failure(
@@ -323,6 +329,7 @@ struct ShareRequest {
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
     max_receivers: Option<NonZeroU64>,
     max_import_memory_bytes: Option<NonZeroU64>,
+    manifest_mode: bool,
 }
 
 struct SharePlan {
@@ -333,6 +340,7 @@ struct SharePlan {
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
     max_receivers: Option<NonZeroU64>,
     max_import_memory_bytes: Option<NonZeroU64>,
+    manifest_mode: bool,
 }
 
 struct ImportedSource {
@@ -345,6 +353,14 @@ struct ImportedBlob {
     name: String,
     temp_tag: TempTag,
     size: u64,
+}
+
+struct ManifestSource {
+    path: PathBuf,
+    relative: ManifestPath,
+    kind: ManifestEntryKind,
+    size: u64,
+    metadata: ManifestMetadata,
 }
 
 fn create_event_sender(
@@ -452,6 +468,7 @@ impl SharePlan {
             max_upload_rate_bytes_per_sec: options.max_upload_rate_bytes_per_sec,
             max_receivers: options.max_receivers,
             max_import_memory_bytes: options.max_import_memory_bytes,
+            manifest_mode: options.manifest_mode,
         })
     }
 
@@ -467,6 +484,7 @@ impl SharePlan {
             max_upload_rate_bytes_per_sec: self.max_upload_rate_bytes_per_sec,
             max_receivers: self.max_receivers,
             max_import_memory_bytes: self.max_import_memory_bytes,
+            manifest_mode: self.manifest_mode,
         }
     }
 }
@@ -567,6 +585,7 @@ async fn send_started(
         path = %path.display(),
         relay_mode = ?options.relay_mode,
         ticket_type = ?options.ticket_type,
+        manifest_mode = options.manifest_mode,
         max_upload_rate_bytes_per_sec = ?options.max_upload_rate_bytes_per_sec,
         max_receivers = ?options.max_receivers,
         max_files = ?options.max_files,
@@ -574,7 +593,7 @@ async fn send_started(
         max_import_memory_bytes = ?options.max_import_memory_bytes,
         "starting send"
     );
-    validate_share_path(&path).map_err(|error| {
+    validate_share_path(&path, options.manifest_mode).map_err(|error| {
         sender_failure(
             error,
             TransferErrorCode::InvalidInput,
@@ -716,11 +735,227 @@ async fn import(
     path: PathBuf,
     db: &Store,
     max_import_memory_bytes: Option<NonZeroU64>,
+    manifest_mode: bool,
 ) -> anyhow::Result<ImportedCollection> {
+    if manifest_mode {
+        return import_manifest(path, db, max_import_memory_bytes).await;
+    }
     let sources = collect_import_sources(path)?;
     let parallelism = import_parallelism(sources.len());
     let imported = import_sources(db, sources, parallelism, max_import_memory_bytes).await?;
     build_collection_from_imports(db, imported).await
+}
+
+/// Collect every logical directory and file for TM1 while preserving the source platform name.
+fn collect_manifest_sources(path: PathBuf) -> anyhow::Result<(ManifestRoot, Vec<ManifestSource>)> {
+    let path = path.canonicalize()?;
+    anyhow::ensure!(path.exists(), "path {} does not exist", path.display());
+    let root_parent = path.parent().context("manifest source has no parent")?;
+    let mut raw_entries = Vec::new();
+    for entry in WalkDir::new(&path) {
+        let entry = entry?;
+        let source_path = entry.path().to_path_buf();
+        let metadata = std::fs::symlink_metadata(&source_path)?;
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!(
+                "cannot share symbolic link {}; symbolic links are not supported",
+                source_path.display()
+            );
+        }
+        let kind = if metadata.is_dir() {
+            ManifestEntryKind::Directory
+        } else if metadata.is_file() {
+            ManifestEntryKind::File
+        } else {
+            anyhow::bail!(
+                "cannot share unsupported source entry {}",
+                source_path.display()
+            );
+        };
+        let relative = source_path.strip_prefix(root_parent)?.to_path_buf();
+        raw_entries.push((source_path, relative, kind, metadata));
+    }
+
+    let encoding =
+        ManifestPath::encoding_for_paths(raw_entries.iter().map(|(_, relative, _, _)| relative));
+    let mut sources = raw_entries
+        .into_iter()
+        .map(|(source_path, relative, kind, metadata)| {
+            let relative = ManifestPath::from_path_with_encoding(&relative, true, encoding)?;
+            let size = if kind == ManifestEntryKind::File {
+                metadata.len()
+            } else {
+                0
+            };
+            Ok(ManifestSource {
+                path: source_path,
+                relative,
+                kind,
+                size,
+                metadata: manifest_metadata(&metadata),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    sources.sort_by(|left, right| left.relative.cmp(&right.relative));
+
+    let root_source = sources
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("manifest source is empty"))?;
+    let root = ManifestRoot {
+        kind: root_source.kind,
+        path: root_source.relative.clone(),
+    };
+    if root.kind == ManifestEntryKind::File {
+        anyhow::ensure!(
+            sources.len() == 1,
+            "file manifest contains unexpected entries"
+        );
+    }
+    Ok((root, sources))
+}
+
+/// Convert filesystem metadata into the platform-safe subset carried by TM1.
+fn manifest_metadata(metadata: &std::fs::Metadata) -> ManifestMetadata {
+    #[cfg(unix)]
+    let permissions = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(ManifestPermissions {
+            posix_mode: Some(metadata.permissions().mode() & 0o7777),
+            windows_read_only: None,
+        })
+    };
+    #[cfg(windows)]
+    let permissions = Some(ManifestPermissions {
+        posix_mode: None,
+        windows_read_only: Some(metadata.permissions().readonly()),
+    });
+    #[cfg(not(any(unix, windows)))]
+    let permissions = None;
+
+    ManifestMetadata {
+        permissions,
+        modified: metadata.modified().ok().and_then(unix_timestamp),
+    }
+}
+
+fn unix_timestamp(time: std::time::SystemTime) -> Option<UnixTimestamp> {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => Some(UnixTimestamp {
+            seconds: i64::try_from(duration.as_secs()).ok()?,
+            nanos: duration.subsec_nanos(),
+        }),
+        Err(error) => {
+            let duration = error.duration();
+            let seconds = i64::try_from(duration.as_secs()).ok()?;
+            if duration.subsec_nanos() == 0 {
+                Some(UnixTimestamp {
+                    seconds: -seconds,
+                    nanos: 0,
+                })
+            } else {
+                Some(UnixTimestamp {
+                    seconds: -seconds - 1,
+                    nanos: 1_000_000_000 - duration.subsec_nanos(),
+                })
+            }
+        }
+    }
+}
+
+/// Import payloads and build a reserved-entry Collection containing the TM1 JSON blob.
+async fn import_manifest(
+    path: PathBuf,
+    db: &Store,
+    max_import_memory_bytes: Option<NonZeroU64>,
+) -> anyhow::Result<ImportedCollection> {
+    let (root, sources) = collect_manifest_sources(path)?;
+    let file_sources = sources
+        .iter()
+        .filter(|source| source.kind == ManifestEntryKind::File)
+        .map(|source| ImportedSource {
+            name: source.relative.components.join("/"),
+            path: source.path.clone(),
+            size: source.size,
+        })
+        .collect::<Vec<_>>();
+    let imported = import_sources(
+        db,
+        file_sources,
+        import_parallelism(sources.len()),
+        max_import_memory_bytes,
+    )
+    .await?;
+    let mut imported_by_name = imported
+        .into_iter()
+        .map(|item| (item.name.clone(), item))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let entries = sources
+        .iter()
+        .filter(|source| {
+            !(source.kind == ManifestEntryKind::Directory && source.relative == root.path)
+        })
+        .enumerate()
+        .map(|(index, source)| {
+            let id = format!("{index:08x}");
+            let payload = if source.kind == ManifestEntryKind::File {
+                let key = source.relative.components.join("/");
+                let imported = imported_by_name
+                    .get(&key)
+                    .ok_or_else(|| anyhow::anyhow!("missing imported manifest payload {key}"))?;
+                Some(ManifestPayload {
+                    collection_name: format!("{MANIFEST_ENTRY_PREFIX}{id}"),
+                    size: imported.size,
+                })
+            } else {
+                None
+            };
+            Ok(ManifestEntry {
+                id,
+                kind: source.kind,
+                path: source.relative.clone(),
+                payload,
+                metadata: source.metadata.clone(),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let manifest = TransferManifest {
+        schema_version: crate::core::manifest::MANIFEST_SCHEMA_VERSION,
+        root,
+        entries,
+    };
+    let manifest_bytes = manifest.to_json_bytes()?;
+    let manifest_tag = db.add_bytes(manifest_bytes).temp_tag().await?;
+
+    let mut collection = Collection::default();
+    collection.push(MANIFEST_COLLECTION_NAME.to_owned(), manifest_tag.hash());
+    let mut tags = vec![manifest_tag];
+    for (index, entry) in manifest.entries.iter().enumerate() {
+        if entry.kind != ManifestEntryKind::File {
+            continue;
+        }
+        let key = entry.path.components.join("/");
+        let imported = imported_by_name
+            .remove(&key)
+            .ok_or_else(|| anyhow::anyhow!("missing imported manifest payload {key}"))?;
+        collection.push(
+            format!("{MANIFEST_ENTRY_PREFIX}{index:08x}"),
+            imported.temp_tag.hash(),
+        );
+        tags.push(imported.temp_tag);
+    }
+    let size = sources
+        .iter()
+        .filter(|source| source.kind == ManifestEntryKind::File)
+        .map(|source| source.size)
+        .sum();
+    let temp_tag = collection.clone().store(db).await?;
+    drop(tags);
+    Ok(ImportedCollection {
+        temp_tag,
+        size,
+        _collection: collection,
+    })
 }
 
 fn import_parallelism(source_count: usize) -> usize {
@@ -1522,11 +1757,11 @@ mod tests {
 
     #[test]
     fn validate_share_path_rejects_current_directory_aliases() {
-        let dot_err = validate_share_path(Path::new("."))
+        let dot_err = validate_share_path(Path::new("."), false)
             .expect_err("`.` should be treated as current directory");
         assert!(dot_err.to_string().contains("current directory"));
 
-        let dot_slash_err = validate_share_path(Path::new("./"))
+        let dot_slash_err = validate_share_path(Path::new("./"), false)
             .expect_err("`./` should be treated as current directory");
         assert!(dot_slash_err.to_string().contains("current directory"));
     }
@@ -1534,8 +1769,8 @@ mod tests {
     #[test]
     fn validate_share_path_rejects_current_directory_absolute_path() {
         let cwd = std::env::current_dir().expect("current dir");
-        let err =
-            validate_share_path(&cwd).expect_err("absolute current directory should be rejected");
+        let err = validate_share_path(&cwd, false)
+            .expect_err("absolute current directory should be rejected");
         assert!(err.to_string().contains("current directory"));
     }
 
@@ -1544,7 +1779,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let missing = temp_dir.path().join("missing-share");
 
-        let err = validate_share_path(&missing).expect_err("missing path should be rejected");
+        let err =
+            validate_share_path(&missing, false).expect_err("missing path should be rejected");
 
         assert!(
             err.to_string()
@@ -1558,7 +1794,7 @@ mod tests {
         let nested = temp_dir.path().join("nested").join("share");
         std::fs::create_dir_all(&nested).expect("create nested dir");
         std::fs::write(nested.join("file.txt"), b"content").expect("write source file");
-        validate_share_path(&nested).expect("nested path should be accepted");
+        validate_share_path(&nested, false).expect("nested path should be accepted");
     }
 
     #[test]
@@ -1607,7 +1843,8 @@ mod tests {
         let empty = temp_dir.path().join("empty-share");
         std::fs::create_dir_all(&empty).expect("create empty directory");
 
-        let error = validate_share_path(&empty).expect_err("empty directory should be rejected");
+        let error =
+            validate_share_path(&empty, false).expect_err("empty directory should be rejected");
 
         assert!(error.to_string().contains("empty directory"));
         assert!(error.to_string().contains("empty-share"));
@@ -1621,8 +1858,8 @@ mod tests {
         std::fs::create_dir_all(&empty_nested).expect("create empty nested directory");
         std::fs::write(root.join("file.txt"), b"content").expect("write source file");
 
-        let error =
-            validate_share_path(&root).expect_err("empty nested directory should be rejected");
+        let error = validate_share_path(&root, false)
+            .expect_err("empty nested directory should be rejected");
 
         assert!(error.to_string().contains("empty directory"));
         assert!(error.to_string().contains("empty"));
@@ -1746,7 +1983,8 @@ mod tests {
         std::fs::write(&source, b"content").expect("write source file");
         symlink(&source, &link).expect("create source link");
 
-        let error = validate_share_path(&link).expect_err("symbolic link should be rejected");
+        let error =
+            validate_share_path(&link, false).expect_err("symbolic link should be rejected");
 
         assert!(error.to_string().contains("symbolic link"));
     }
@@ -1772,6 +2010,7 @@ mod tests {
             max_upload_rate_bytes_per_sec: None,
             max_receivers: None,
             max_import_memory_bytes: None,
+            manifest_mode: false,
         };
 
         let error = match setup_data_sharing(endpoint, blobs_data_dir.clone(), share_request).await
@@ -1814,6 +2053,7 @@ mod tests {
                 max_upload_rate_bytes_per_sec: None,
                 max_receivers: None,
                 max_import_memory_bytes: None,
+                manifest_mode: false,
             },
         )
         .await
