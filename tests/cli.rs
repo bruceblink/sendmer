@@ -1071,6 +1071,45 @@ fn json_events_report_file_limit_before_sender_startup() {
 }
 
 #[test]
+fn json_events_report_total_size_limit_before_sender_startup() {
+    let source_root = tempfile::tempdir().unwrap();
+    let share = source_root.path().join("share");
+    std::fs::create_dir(&share).unwrap();
+    std::fs::write(share.join("payload.bin"), b"payload").unwrap();
+    let output = Command::new(sendmer_bin())
+        .args([
+            "send",
+            "--json-events",
+            "--relay",
+            "disabled",
+            "--max-total-size",
+            "6",
+        ])
+        .arg(&share)
+        .current_dir(source_root.path())
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run total size limit command");
+
+    assert!(!output.status.success());
+    let events = parse_json_events(&output.stdout);
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        &events.last().expect("failed event").event,
+        TransferEventData::Failed { error }
+            if error.code == TransferErrorCode::InvalidInput
+                && error.phase == sendmer::core::events::TransferPhase::Preparing
+                && !error.retryable
+    ));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("more than 6 bytes"),
+        "diagnostics should explain the total size limit"
+    );
+}
+
+#[test]
 fn json_events_report_success_without_human_text_on_stdout() {
     let name = "json-success.bin";
     let data = vec![5u8; 32 * 1024];

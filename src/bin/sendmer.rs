@@ -166,6 +166,7 @@ fn send_options(args: &SendArgs) -> SendOptions {
         max_upload_rate_bytes_per_sec: args.max_upload_rate,
         max_receivers: args.max_receivers,
         max_files: args.max_files,
+        max_total_size_bytes: args.max_total_size,
     }
 }
 
@@ -453,6 +454,8 @@ mod tests {
             "3",
             "--max-files",
             "10",
+            "--max-total-size",
+            "4096",
             "example.bin",
         ])
         .expect("valid send arguments");
@@ -472,6 +475,10 @@ mod tests {
             Some(3)
         );
         assert_eq!(options.max_files.map(std::num::NonZeroU64::get), Some(10));
+        assert_eq!(
+            options.max_total_size_bytes.map(std::num::NonZeroU64::get),
+            Some(4_096)
+        );
     }
 
     #[tokio::test]

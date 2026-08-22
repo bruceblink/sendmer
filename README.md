@@ -172,6 +172,7 @@ Send-specific options:
 - `--max-upload-rate <bytes-per-second>`: optionally cap the sender's total payload upload rate shared by all receivers; protocol overhead is not included
 - `--max-receivers <count>`: optionally cap the number of receiver connections active at the same time; a disconnected receiver releases its slot
 - `--max-files <count>`: optionally reject a share before startup when it contains more regular files than the configured limit
+- `--max-total-size <bytes>`: optionally reject a share before startup when regular files exceed the configured total payload size
 - `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard (available in the default `clipboard` feature build)
 
 ## Library Usage

@@ -146,22 +146,47 @@ fn validate_share_directory_contents(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Count regular files and reject a share before endpoint or temp-store setup.
-fn validate_share_file_count(path: &Path, max_files: NonZeroU64) -> anyhow::Result<()> {
+/// Enforce optional share-size limits before endpoint or temp-store setup.
+fn validate_share_limits(
+    path: &Path,
+    max_files: Option<NonZeroU64>,
+    max_total_size_bytes: Option<NonZeroU64>,
+) -> anyhow::Result<()> {
+    if max_files.is_none() && max_total_size_bytes.is_none() {
+        return Ok(());
+    }
+
     let mut file_count = 0_u64;
+    let mut total_size_bytes = 0_u64;
     for entry in WalkDir::new(path) {
         let entry = entry?;
         if !entry.file_type().is_file() {
             continue;
         }
 
-        file_count = file_count.saturating_add(1);
-        if file_count > max_files.get() {
-            anyhow::bail!(
-                "share contains more than {} files; --max-files is {}",
-                max_files,
-                max_files
-            );
+        if let Some(max_files) = max_files {
+            file_count = file_count.saturating_add(1);
+            if file_count > max_files.get() {
+                anyhow::bail!(
+                    "share contains more than {} files; --max-files is {}",
+                    max_files,
+                    max_files
+                );
+            }
+        }
+
+        if let Some(max_total_size_bytes) = max_total_size_bytes {
+            let file_size = entry.metadata()?.len();
+            total_size_bytes = total_size_bytes
+                .checked_add(file_size)
+                .ok_or_else(|| anyhow::anyhow!("share total size exceeds u64 range"))?;
+            if total_size_bytes > max_total_size_bytes.get() {
+                anyhow::bail!(
+                    "share contains more than {} bytes; --max-total-size is {}",
+                    max_total_size_bytes,
+                    max_total_size_bytes
+                );
+            }
         }
     }
 
@@ -524,6 +549,7 @@ async fn send_started(
         max_upload_rate_bytes_per_sec = ?options.max_upload_rate_bytes_per_sec,
         max_receivers = ?options.max_receivers,
         max_files = ?options.max_files,
+        max_total_size_bytes = ?options.max_total_size_bytes,
         "starting send"
     );
     validate_share_path(&path).map_err(|error| {
@@ -535,16 +561,18 @@ async fn send_started(
             "invalid share path",
         )
     })?;
-    if let Some(max_files) = options.max_files {
-        validate_share_file_count(&path, max_files).map_err(|error| {
-            sender_failure(
-                error,
-                TransferErrorCode::InvalidInput,
-                TransferPhase::Preparing,
-                false,
-                "share exceeds the configured file limit",
-            )
-        })?;
+    if options.max_files.is_some() || options.max_total_size_bytes.is_some() {
+        validate_share_limits(&path, options.max_files, options.max_total_size_bytes).map_err(
+            |error| {
+                sender_failure(
+                    error,
+                    TransferErrorCode::InvalidInput,
+                    TransferPhase::Preparing,
+                    false,
+                    "share exceeds the configured resource limit",
+                )
+            },
+        )?;
     }
 
     let plan = SharePlan::new(&path, &options).map_err(|error| {
@@ -980,7 +1008,7 @@ mod tests {
         ReceiverAdmission, ShareRequest, UploadRateLimiter, canonicalized_path_to_string,
         collect_import_sources, detect_entry_type, import_parallelism, prepare_endpoint,
         provider_event_mask, send, setup_data_sharing, show_provide_progress_with_provider_tracker,
-        shutdown_started_sender_setup, validate_share_file_count, validate_share_path,
+        shutdown_started_sender_setup, validate_share_limits, validate_share_path,
     };
     use crate::core::events::{
         EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
@@ -1278,14 +1306,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_share_file_count_rejects_directory_over_limit() {
+    fn validate_share_limits_rejects_directory_over_file_limit() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let root = temp_dir.path().join("share");
         std::fs::create_dir_all(&root).expect("create share directory");
         std::fs::write(root.join("one.txt"), b"one").expect("write first file");
         std::fs::write(root.join("two.txt"), b"two").expect("write second file");
 
-        let error = validate_share_file_count(&root, NonZeroU64::new(1).expect("non-zero"))
+        let error = validate_share_limits(&root, NonZeroU64::new(1), None)
             .expect_err("file limit should reject the second file");
 
         assert!(error.to_string().contains("more than 1 files"));
@@ -1293,13 +1321,28 @@ mod tests {
     }
 
     #[test]
-    fn validate_share_file_count_accepts_file_at_limit() {
+    fn validate_share_limits_accepts_file_at_limits() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let file = temp_dir.path().join("share.txt");
         std::fs::write(&file, b"content").expect("write share file");
 
-        validate_share_file_count(&file, NonZeroU64::new(1).expect("non-zero"))
-            .expect("file at limit should be accepted");
+        validate_share_limits(&file, NonZeroU64::new(1), NonZeroU64::new(7))
+            .expect("file at both limits should be accepted");
+    }
+
+    #[test]
+    fn validate_share_limits_rejects_directory_over_total_size_limit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("share");
+        std::fs::create_dir_all(&root).expect("create share directory");
+        std::fs::write(root.join("one.txt"), b"one").expect("write first file");
+        std::fs::write(root.join("two.txt"), b"two").expect("write second file");
+
+        let error = validate_share_limits(&root, None, NonZeroU64::new(5))
+            .expect_err("total size limit should reject the share");
+
+        assert!(error.to_string().contains("more than 5 bytes"));
+        assert!(error.to_string().contains("max-total-size"));
     }
 
     #[test]
@@ -1388,6 +1431,42 @@ mod tests {
         };
 
         assert!(error.to_string().contains("more than 1 files"));
+        let events = emitter.events();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].event, TransferEventData::Started));
+        assert!(matches!(
+            &events[1].event,
+            TransferEventData::Failed { error }
+                if error.code == TransferErrorCode::InvalidInput
+                    && error.phase == TransferPhase::Preparing
+                    && !error.retryable
+        ));
+    }
+
+    #[tokio::test]
+    async fn send_rejects_total_size_limit_before_network_setup() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let share = temp_dir.path().join("share");
+        std::fs::create_dir_all(&share).expect("create share directory");
+        std::fs::write(share.join("payload.bin"), b"payload").expect("write payload");
+        let emitter = Arc::new(RecordingEmitter::default());
+
+        let result = send(
+            share,
+            SendOptions {
+                relay_mode: RelayModeOption::Disabled,
+                max_total_size_bytes: NonZeroU64::new(6),
+                ..SendOptions::default()
+            },
+            Some(emitter.clone()),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("total size limit should fail before sender setup"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("more than 6 bytes"));
         let events = emitter.events();
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0].event, TransferEventData::Started));

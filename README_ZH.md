@@ -172,6 +172,7 @@ sendmer cache prune --cache-dir <path>
 - `--max-upload-rate <bytes-per-second>`：可选地限制发送端所有接收方共享的 payload 总上传速率；不包含协议开销
 - `--max-receivers <count>`：可选地限制同时活动的接收方连接数；接收方断开后会释放名额
 - `--max-files <count>`：可选地限制共享路径中的普通文件数量；超过上限会在网络和临时存储初始化前拒绝
+- `--max-total-size <bytes>`：可选地限制共享路径中普通文件的总 payload 大小；超过上限会在网络和临时存储初始化前拒绝
 - `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板（默认启用 `clipboard` feature 时可用）
 
 ## 作为库使用

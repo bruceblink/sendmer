@@ -30,6 +30,11 @@ pub struct SendOptions {
     /// `None` preserves the unlimited sender behavior. The limit is checked
     /// before networking or temporary sender storage is initialized.
     pub max_files: Option<NonZeroU64>,
+    /// Optional ceiling for the total bytes in regular files included in a share.
+    ///
+    /// `None` preserves the unlimited sender behavior. The limit is checked
+    /// from file metadata before networking or temporary sender storage is initialized.
+    pub max_total_size_bytes: Option<NonZeroU64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -327,10 +332,11 @@ mod tests {
     }
 
     #[test]
-    fn send_options_default_to_unlimited_resource_counts() {
+    fn send_options_default_to_unlimited_resource_limits() {
         let options = SendOptions::default();
         assert!(options.max_receivers.is_none());
         assert!(options.max_files.is_none());
+        assert!(options.max_total_size_bytes.is_none());
     }
 
     #[test]

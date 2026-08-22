@@ -133,6 +133,10 @@ pub struct SendArgs {
     #[clap(long)]
     pub max_files: Option<NonZeroU64>,
 
+    /// Maximum total size in bytes of regular files included in the shared path.
+    #[clap(long)]
+    pub max_total_size: Option<NonZeroU64>,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 
@@ -346,6 +350,27 @@ mod tests {
     fn send_args_reject_zero_file_limit() {
         let error = Args::try_parse_from(["sendmer", "send", "--max-files", "0", "example.bin"])
             .expect_err("zero file limit must be rejected");
+
+        assert!(error.to_string().contains("invalid value"));
+    }
+
+    #[test]
+    fn send_args_accept_non_zero_total_size_limit() {
+        let args =
+            Args::try_parse_from(["sendmer", "send", "--max-total-size", "4096", "example.bin"])
+                .expect("valid total size limit");
+
+        let Commands::Send(send) = args.command else {
+            panic!("expected send command")
+        };
+        assert_eq!(send.max_total_size.map(NonZeroU64::get), Some(4_096));
+    }
+
+    #[test]
+    fn send_args_reject_zero_total_size_limit() {
+        let error =
+            Args::try_parse_from(["sendmer", "send", "--max-total-size", "0", "example.bin"])
+                .expect_err("zero total size limit must be rejected");
 
         assert!(error.to_string().contains("invalid value"));
     }

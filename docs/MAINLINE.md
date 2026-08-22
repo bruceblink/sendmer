@@ -169,8 +169,9 @@ relay token 或底层连接标识。
 
 - `SendOptions::max_receivers` 与 CLI `--max-receivers` 已实现同时活动 provider 连接数上限；默认不限制，断开连接会释放名额，超限连接由 provider 层拒绝。
 - `SendOptions::max_files` 与 CLI `--max-files` 已实现普通文件数量上限；默认不限制，目录超限会在网络和临时存储初始化前以 `InvalidInput` 拒绝。
+- `SendOptions::max_total_size_bytes` 与 CLI `--max-total-size` 已实现普通文件总 payload 大小上限；默认不限制，文件长度总量超限会在网络和临时存储初始化前以 `InvalidInput` 拒绝。
 - 继续设计 sender 会话过期、主动撤销，明确 ticket bearer capability 的兼容性。
-- 增加内存与文件数量上限，建立大文件和大目录基准。
+- 增加内存上限，建立大文件和大目录基准。
 - 补两个真实并行接收方共享总上传上限、限速等待期间取消、真实 relay 和弱网 smoke tests。
 
 验收：控制操作有稳定 API/错误码；现有 ticket 默认行为兼容；资源上限不会破坏取消、清理或
