@@ -36,6 +36,7 @@ grep -Fq '.attestation.json' install.ps1
 grep -Fq 'RELEASE_ASSET_SIGNATURE' .github/workflows/release.yml
 grep -Fq 'RELEASE_SBOM_SIGNATURE' .github/workflows/release.yml
 grep -Fq 'RELEASE_PROVENANCE' .github/workflows/release.yml
+grep -Fq 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' .github/workflows/release.yml
 grep -Fq 'echo "sbom=${ASSET}.spdx.json"' .github/workflows/release.yml
 grep -Fq 'SBOM="${ASSET}.spdx.json"' .github/workflows/release.yml
 grep -Fq 'Manual releases must be dispatched from the matching release tag' .github/workflows/release.yml

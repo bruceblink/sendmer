@@ -362,6 +362,7 @@ jobs:
       - name: Validate provenance bundle
         id: provenance-file
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.create-release.outputs.release_version }}
           RELEASE_ASSET: ${{ steps.archive.outputs.asset }}
           PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
