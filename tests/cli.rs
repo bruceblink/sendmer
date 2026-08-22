@@ -573,7 +573,8 @@ fn send_recv_manifest_preserves_windows_read_only_attribute() {
     );
 }
 
-#[cfg(unix)]
+// Linux preserves arbitrary Unix filename bytes; macOS filesystems reject this fixture with EILSEQ.
+#[cfg(target_os = "linux")]
 #[test]
 fn send_recv_manifest_round_trips_non_utf8_filename() {
     use std::os::unix::ffi::OsStringExt;

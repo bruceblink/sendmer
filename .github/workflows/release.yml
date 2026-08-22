@@ -265,9 +265,11 @@ jobs:
             ASSET="$NAME.tar.gz"
           fi
 
-          echo "directory=$NAME" >> "$GITHUB_OUTPUT"
-          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
-          echo "sbom=${ASSET}.spdx.json" >> "$GITHUB_OUTPUT"
+          {
+            echo "directory=$NAME"
+            echo "asset=$ASSET"
+            echo "sbom=${ASSET}.spdx.json"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate target SBOM
         uses: anchore/sbom-action@v0
@@ -314,8 +316,10 @@ jobs:
           CHECKSUM_ASSET="$(awk '{ print $2 }' "$CHECKSUM")"
           [[ "$CHECKSUM_HASH" =~ ^[0-9a-fA-F]{64}$ ]]
           test "$CHECKSUM_ASSET" = "$(basename "$ASSET")"
-          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
-          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          {
+            echo "asset=$ASSET"
+            echo "checksum=$CHECKSUM"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v4
@@ -344,8 +348,10 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           test -s "$ASSET_SIGNATURE"
           test -s "$SBOM_SIGNATURE"
-          echo "asset-signature=$ASSET_SIGNATURE" >> "$GITHUB_OUTPUT"
-          echo "sbom-signature=$SBOM_SIGNATURE" >> "$GITHUB_OUTPUT"
+          {
+            echo "asset-signature=$ASSET_SIGNATURE"
+            echo "sbom-signature=$SBOM_SIGNATURE"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate build provenance
         id: provenance
