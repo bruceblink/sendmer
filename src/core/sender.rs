@@ -1105,6 +1105,37 @@ mod tests {
         assert_eq!(second.duration_since(first), Duration::from_secs(1));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn upload_rate_limiter_serializes_parallel_receiver_reservations() {
+        let limiter = std::sync::Arc::new(UploadRateLimiter::new(
+            NonZeroU64::new(100).expect("non-zero rate"),
+        ));
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+        let first_limiter = limiter.clone();
+        let first_barrier = barrier.clone();
+        let first = tokio::spawn(async move {
+            first_barrier.wait().await;
+            first_limiter.reserve(100).await
+        });
+        let second_limiter = limiter;
+        let second_barrier = barrier.clone();
+        let second = tokio::spawn(async move {
+            second_barrier.wait().await;
+            second_limiter.reserve(100).await
+        });
+
+        barrier.wait().await;
+        let first = first.await.expect("first reservation task");
+        let second = second.await.expect("second reservation task");
+        let (earlier, later) = if first <= second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+
+        assert_eq!(later.duration_since(earlier), Duration::from_secs(1));
+    }
+
     #[tokio::test]
     async fn provider_rejects_connections_after_receiver_limit_and_reopens_slots() {
         let max_receivers = NonZeroU64::new(1);

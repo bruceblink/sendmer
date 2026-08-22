@@ -291,6 +291,60 @@ fn send_upload_rate_caps_local_payload_transfer() {
 }
 
 #[test]
+fn send_upload_rate_is_shared_by_parallel_receivers() {
+    let name = "parallel-rate-limited.bin";
+    let data = vec![7u8; 128 * 1024];
+    let src_dir = tempfile::tempdir().unwrap();
+    let first_target = tempfile::tempdir().unwrap();
+    let second_target = tempfile::tempdir().unwrap();
+    let src_file = src_dir.path().join(name);
+    std::fs::write(&src_file, &data).unwrap();
+
+    let mut send =
+        RunningSend::spawn_with_upload_rate(&src_file, src_dir.path(), Some(32 * 1024)).unwrap();
+    let ticket = send.read_ticket();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let receive_options = |output_dir: &Path| sendmer::ReceiveOptions {
+        output_dir: Some(output_dir.to_path_buf()),
+        relay_mode: sendmer::RelayModeOption::Disabled,
+        magic_ipv4_addr: None,
+        magic_ipv6_addr: None,
+        retry_policy: Default::default(),
+        receive_cache: None,
+    };
+
+    let started = Instant::now();
+    let (first, second) = runtime.block_on(async {
+        tokio::join!(
+            sendmer::receive(
+                ticket.to_string(),
+                receive_options(first_target.path()),
+                None,
+            ),
+            sendmer::receive(
+                ticket.to_string(),
+                receive_options(second_target.path()),
+                None,
+            ),
+        )
+    });
+    let elapsed = started.elapsed();
+    send.cleanup();
+
+    first.expect("first parallel receive should succeed");
+    second.expect("second parallel receive should succeed");
+    assert_eq!(std::fs::read(first_target.path().join(name)).unwrap(), data);
+    assert_eq!(
+        std::fs::read(second_target.path().join(name)).unwrap(),
+        data
+    );
+    assert!(
+        elapsed >= Duration::from_secs(4),
+        "parallel receivers completed too quickly for a shared 32 KiB/s cap: {elapsed:?}"
+    );
+}
+
+#[test]
 fn send_recv_dir() {
     fn create_file(base: &Path, i: usize, j: usize, k: usize) -> (PathBuf, Vec<u8>) {
         let name = base
