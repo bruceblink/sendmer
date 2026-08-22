@@ -55,3 +55,15 @@ cargo test --locked --test relay_smoke -- --ignored --nocapture
 ```
 
 测试强制 Ticket 只包含 relay 地址，验证 sender online、receiver round-trip 和 payload 完整性。
+
+## Weak-Network Smoke
+
+弱网验收同样不进入默认离线门禁。设置 `SENDMER_WEAK_NETWORK_SMOKE=1` 后运行：
+
+```powershell
+$env:SENDMER_WEAK_NETWORK_SMOKE = "1"
+cargo test --locked --test weak_network_smoke -- --ignored --nocapture
+```
+
+测试以 64 KiB/s 的共享上传上限制造可控传输窗口，在部分进度后停止 sender，
+再用相同身份重启 sender；receiver 必须依靠重试完成剩余数据并校验最终 payload。

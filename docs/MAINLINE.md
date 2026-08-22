@@ -178,7 +178,7 @@ relay token 或底层连接标识。
   导入任务估算的普通文件字节，不伪称为进程 RSS 或操作系统硬内存上限。大文件和大目录基准已记录在
   [`V0_10_SCALE_BENCHMARK.md`](V0_10_SCALE_BENCHMARK.md)。
 - 已补两个真实并行接收方共享总上传上限的本地 E2E；sender 关闭会立即唤醒并终止尚未放行
-  的限速等待；relay-only smoke 已提供显式 opt-in 测试，弱网 smoke tests 仍待补。
+  的限速等待；relay-only 与弱网重启 smoke 均已提供显式 opt-in 测试。
 
 验收：控制操作有稳定 API/错误码；现有 ticket 默认行为兼容；资源上限不会破坏取消、清理或
 多接收方状态；基准结果记录环境并避免把网络抖动写成严格单点时序断言。
