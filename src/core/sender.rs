@@ -36,7 +36,7 @@ use std::{
 };
 use tokio::{
     select,
-    sync::{Semaphore, mpsc, watch},
+    sync::{Notify, Semaphore, mpsc, watch},
     task::JoinSet,
     time::Instant,
 };
@@ -214,6 +214,7 @@ async fn setup_data_sharing(
             event_emitter,
             max_upload_rate_bytes_per_sec,
             max_receivers,
+            max_import_memory_bytes,
         } = share_request;
         let store = load_fs_store(&blobs_data_dir).await.map_err(|error| {
             sender_failure(
@@ -234,15 +235,17 @@ async fn setup_data_sharing(
             )),
         );
 
-        let imported = import(path, blobs.store()).await.map_err(|error| {
-            sender_failure(
-                error,
-                TransferErrorCode::Filesystem,
-                TransferPhase::Preparing,
-                false,
-                "unable to import shared data",
-            )
-        })?;
+        let imported = import(path, blobs.store(), max_import_memory_bytes)
+            .await
+            .map_err(|error| {
+                sender_failure(
+                    error,
+                    TransferErrorCode::Filesystem,
+                    TransferPhase::Preparing,
+                    false,
+                    "unable to import shared data",
+                )
+            })?;
         let size = imported.size;
         let progress_handle = spawn_provider_progress_task(
             progress_rx,
@@ -319,6 +322,7 @@ struct ShareRequest {
     event_emitter: TransferEventEmitter,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
     max_receivers: Option<NonZeroU64>,
+    max_import_memory_bytes: Option<NonZeroU64>,
 }
 
 struct SharePlan {
@@ -328,11 +332,13 @@ struct SharePlan {
     ticket_type: AddrInfoOptions,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
     max_receivers: Option<NonZeroU64>,
+    max_import_memory_bytes: Option<NonZeroU64>,
 }
 
 struct ImportedSource {
     name: String,
     path: PathBuf,
+    size: u64,
 }
 
 struct ImportedBlob {
@@ -445,6 +451,7 @@ impl SharePlan {
             ticket_type: options.ticket_type,
             max_upload_rate_bytes_per_sec: options.max_upload_rate_bytes_per_sec,
             max_receivers: options.max_receivers,
+            max_import_memory_bytes: options.max_import_memory_bytes,
         })
     }
 
@@ -459,6 +466,7 @@ impl SharePlan {
             event_emitter,
             max_upload_rate_bytes_per_sec: self.max_upload_rate_bytes_per_sec,
             max_receivers: self.max_receivers,
+            max_import_memory_bytes: self.max_import_memory_bytes,
         }
     }
 }
@@ -563,6 +571,7 @@ async fn send_started(
         max_receivers = ?options.max_receivers,
         max_files = ?options.max_files,
         max_total_size_bytes = ?options.max_total_size_bytes,
+        max_import_memory_bytes = ?options.max_import_memory_bytes,
         "starting send"
     );
     validate_share_path(&path).map_err(|error| {
@@ -703,10 +712,14 @@ fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {
 }
 
 /// 将 `path`（文件或目录）导入到给定的 `Store`，并返回导入后的集合信息。
-async fn import(path: PathBuf, db: &Store) -> anyhow::Result<ImportedCollection> {
+async fn import(
+    path: PathBuf,
+    db: &Store,
+    max_import_memory_bytes: Option<NonZeroU64>,
+) -> anyhow::Result<ImportedCollection> {
     let sources = collect_import_sources(path)?;
     let parallelism = import_parallelism(sources.len());
-    let imported = import_sources(db, sources, parallelism).await?;
+    let imported = import_sources(db, sources, parallelism, max_import_memory_bytes).await?;
     build_collection_from_imports(db, imported).await
 }
 
@@ -715,6 +728,70 @@ fn import_parallelism(source_count: usize) -> usize {
         .map(usize::from)
         .unwrap_or(1);
     available.min(source_count.max(1))
+}
+
+/// Bound estimated source-file bytes held by concurrent imports without claiming an RSS limit.
+struct ImportMemoryBudget {
+    limit_bytes: u64,
+    available_bytes: std::sync::Mutex<u64>,
+    notify: Notify,
+}
+
+struct ImportMemoryPermit {
+    budget: std::sync::Arc<ImportMemoryBudget>,
+    bytes: u64,
+}
+
+impl ImportMemoryBudget {
+    fn new(limit: NonZeroU64) -> Self {
+        Self {
+            limit_bytes: limit.get(),
+            available_bytes: std::sync::Mutex::new(limit.get()),
+            notify: Notify::new(),
+        }
+    }
+
+    /// Reserve a source's estimated bytes, allowing one source larger than the budget to run.
+    async fn acquire(self: &std::sync::Arc<Self>, requested_bytes: u64) -> ImportMemoryPermit {
+        let bytes = requested_bytes.min(self.limit_bytes);
+        loop {
+            let notified = self.notify.notified();
+            let acquired = {
+                let mut available = self
+                    .available_bytes
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if *available >= bytes {
+                    *available -= bytes;
+                    true
+                } else {
+                    false
+                }
+            };
+            if acquired {
+                return ImportMemoryPermit {
+                    budget: self.clone(),
+                    bytes,
+                };
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Drop for ImportMemoryPermit {
+    fn drop(&mut self) {
+        let mut available = self
+            .budget
+            .available_bytes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *available = available
+            .saturating_add(self.bytes)
+            .min(self.budget.limit_bytes);
+        drop(available);
+        self.budget.notify.notify_waiters();
+    }
 }
 
 fn collect_import_sources(path: PathBuf) -> anyhow::Result<Vec<ImportedSource>> {
@@ -730,10 +807,11 @@ fn collect_import_sources(path: PathBuf) -> anyhow::Result<Vec<ImportedSource>> 
                 return Ok(None);
             }
 
+            let size = entry.metadata()?.len();
             let path = entry.into_path();
             let relative = path.strip_prefix(root)?;
             let name = canonicalized_path_to_string(relative, true)?;
-            anyhow::Ok(Some(ImportedSource { name, path }))
+            anyhow::Ok(Some(ImportedSource { name, path, size }))
         })
         .filter_map(Result::transpose)
         .collect::<anyhow::Result<Vec<_>>>()
@@ -743,11 +821,24 @@ async fn import_sources(
     db: &Store,
     sources: Vec<ImportedSource>,
     parallelism: usize,
+    max_import_memory_bytes: Option<NonZeroU64>,
 ) -> anyhow::Result<Vec<ImportedBlob>> {
+    let budget = max_import_memory_bytes
+        .map(ImportMemoryBudget::new)
+        .map(std::sync::Arc::new);
     n0_future::stream::iter(sources)
         .map(|source| {
             let db = db.clone();
-            async move { import_source(&db, source).await }
+            let budget = budget.clone();
+            async move {
+                let permit = match budget {
+                    Some(budget) => Some(budget.acquire(source.size).await),
+                    None => None,
+                };
+                let result = import_source(&db, source).await;
+                drop(permit);
+                result
+            }
         })
         .buffered_unordered(parallelism)
         .collect::<Vec<_>>()
@@ -1045,8 +1136,8 @@ fn upload_delay(bytes: u64, bytes_per_second: NonZeroU64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{
-        ProviderProgressControl, ReceiverAdmission, ShareRequest, UploadRateLimiter,
-        canonicalized_path_to_string, collect_import_sources, detect_entry_type,
+        ImportMemoryBudget, ProviderProgressControl, ReceiverAdmission, ShareRequest,
+        UploadRateLimiter, canonicalized_path_to_string, collect_import_sources, detect_entry_type,
         import_parallelism, prepare_endpoint, provider_event_mask, send, setup_data_sharing,
         show_provide_progress_with_provider_tracker, shutdown_started_sender_setup,
         validate_share_limits, validate_share_path,
@@ -1201,6 +1292,41 @@ mod tests {
 
         shutdown_tx.send(true).expect("shutdown signal receiver");
         assert!(!pending.await.expect("pending wait task"));
+    }
+
+    #[tokio::test]
+    async fn import_memory_budget_serializes_estimated_source_bytes() {
+        let budget = std::sync::Arc::new(ImportMemoryBudget::new(
+            NonZeroU64::new(100).expect("non-zero budget"),
+        ));
+        let first = budget.acquire(80).await;
+        let (started_tx, mut started_rx) = tokio::sync::watch::channel(false);
+        let second_budget = budget.clone();
+        let second = tokio::spawn(async move {
+            let _permit = second_budget.acquire(40).await;
+            started_tx.send(true).expect("started receiver");
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), started_rx.changed())
+                .await
+                .is_err(),
+            "the second import should wait for available budget"
+        );
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("second import should resume after release")
+            .expect("second import task should join");
+        assert!(*started_rx.borrow());
+    }
+
+    #[tokio::test]
+    async fn import_memory_budget_allows_one_source_larger_than_limit() {
+        let budget = std::sync::Arc::new(ImportMemoryBudget::new(
+            NonZeroU64::new(100).expect("non-zero budget"),
+        ));
+        let _permit = budget.acquire(1_000).await;
     }
 
     #[tokio::test]
@@ -1645,6 +1771,7 @@ mod tests {
             event_emitter: started_sender_emitter(),
             max_upload_rate_bytes_per_sec: None,
             max_receivers: None,
+            max_import_memory_bytes: None,
         };
 
         let error = match setup_data_sharing(endpoint, blobs_data_dir.clone(), share_request).await
@@ -1686,6 +1813,7 @@ mod tests {
                 event_emitter: started_sender_emitter(),
                 max_upload_rate_bytes_per_sec: None,
                 max_receivers: None,
+                max_import_memory_bytes: None,
             },
         )
         .await

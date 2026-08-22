@@ -174,7 +174,8 @@ relay token 或底层连接标识。
 - `SendOptions::max_total_size_bytes` 与 CLI `--max-total-size` 已实现普通文件总 payload 大小上限；默认不限制，文件长度总量超限会在网络和临时存储初始化前以 `InvalidInput` 拒绝。
 - `SendHandle::cancel` 的主动撤销和旧 Ticket 失效已有本地回归；sender 会话自动过期仍待设计，
   不改变现有 Ticket 的 bearer capability 兼容性。
-- 增加内存上限，建立大文件和大目录基准。
+- `SendOptions::max_import_memory_bytes` 与 CLI `--max-import-memory` 已实现导入工作集预算；它限制并行
+  导入任务估算的普通文件字节，不伪称为进程 RSS 或操作系统硬内存上限。大文件和大目录基准仍待补。
 - 已补两个真实并行接收方共享总上传上限的本地 E2E；sender 关闭会立即唤醒并终止尚未放行
   的限速等待；真实 relay 和弱网 smoke tests 仍待补。
 

@@ -137,6 +137,12 @@ pub struct SendArgs {
     #[clap(long)]
     pub max_total_size: Option<NonZeroU64>,
 
+    /// Estimated regular-file bytes allowed in concurrent sender imports.
+    ///
+    /// This bounds the import working set, not the process RSS or operating-system memory.
+    #[clap(long)]
+    pub max_import_memory: Option<NonZeroU64>,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 
@@ -371,6 +377,32 @@ mod tests {
         let error =
             Args::try_parse_from(["sendmer", "send", "--max-total-size", "0", "example.bin"])
                 .expect_err("zero total size limit must be rejected");
+
+        assert!(error.to_string().contains("invalid value"));
+    }
+
+    #[test]
+    fn send_args_accept_non_zero_import_memory_limit() {
+        let args = Args::try_parse_from([
+            "sendmer",
+            "send",
+            "--max-import-memory",
+            "65536",
+            "example.bin",
+        ])
+        .expect("valid import memory limit");
+
+        let Commands::Send(send) = args.command else {
+            panic!("expected send command")
+        };
+        assert_eq!(send.max_import_memory.map(NonZeroU64::get), Some(65_536));
+    }
+
+    #[test]
+    fn send_args_reject_zero_import_memory_limit() {
+        let error =
+            Args::try_parse_from(["sendmer", "send", "--max-import-memory", "0", "example.bin"])
+                .expect_err("zero import memory limit must be rejected");
 
         assert!(error.to_string().contains("invalid value"));
     }

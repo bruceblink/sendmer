@@ -173,6 +173,7 @@ sendmer cache prune --cache-dir <path>
 - `--max-receivers <count>`：可选地限制同时活动的接收方连接数；接收方断开后会释放名额
 - `--max-files <count>`：可选地限制共享路径中的普通文件数量；超过上限会在网络和临时存储初始化前拒绝
 - `--max-total-size <bytes>`：可选地限制共享路径中普通文件的总 payload 大小；超过上限会在网络和临时存储初始化前拒绝
+- `--max-import-memory <bytes>`：可选地限制并行 sender 导入任务估算的普通文件字节预算；这是导入工作集上限，不是进程 RSS 上限
 - `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板（默认启用 `clipboard` feature 时可用）
 
 ## 作为库使用

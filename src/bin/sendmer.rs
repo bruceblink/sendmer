@@ -167,6 +167,7 @@ fn send_options(args: &SendArgs) -> SendOptions {
         max_receivers: args.max_receivers,
         max_files: args.max_files,
         max_total_size_bytes: args.max_total_size,
+        max_import_memory_bytes: args.max_import_memory,
     }
 }
 
@@ -456,6 +457,8 @@ mod tests {
             "10",
             "--max-total-size",
             "4096",
+            "--max-import-memory",
+            "65536",
             "example.bin",
         ])
         .expect("valid send arguments");
@@ -478,6 +481,12 @@ mod tests {
         assert_eq!(
             options.max_total_size_bytes.map(std::num::NonZeroU64::get),
             Some(4_096)
+        );
+        assert_eq!(
+            options
+                .max_import_memory_bytes
+                .map(std::num::NonZeroU64::get),
+            Some(65_536)
         );
     }
 

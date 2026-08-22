@@ -35,6 +35,12 @@ pub struct SendOptions {
     /// `None` preserves the unlimited sender behavior. The limit is checked
     /// from file metadata before networking or temporary sender storage is initialized.
     pub max_total_size_bytes: Option<NonZeroU64>,
+    /// Optional estimated file-payload budget for concurrent sender imports.
+    ///
+    /// `None` preserves the existing CPU-based import concurrency. When set, the
+    /// sender schedules concurrent imports so their source-file bytes in flight do
+    /// not exceed this budget; it is not a process RSS or operating-system limit.
+    pub max_import_memory_bytes: Option<NonZeroU64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -337,6 +343,7 @@ mod tests {
         assert!(options.max_receivers.is_none());
         assert!(options.max_files.is_none());
         assert!(options.max_total_size_bytes.is_none());
+        assert!(options.max_import_memory_bytes.is_none());
     }
 
     #[test]
