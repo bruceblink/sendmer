@@ -19,6 +19,10 @@ path = "src/lib.rs"
 name = "sendmer"
 path = "src/bin/sendmer.rs"
 
+[[bench]]
+name = "share_scale"
+harness = false
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

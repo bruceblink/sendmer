@@ -175,7 +175,8 @@ relay token 或底层连接标识。
 - `SendHandle::cancel` 的主动撤销和旧 Ticket 失效已有本地回归；sender 会话自动过期仍待设计，
   不改变现有 Ticket 的 bearer capability 兼容性。
 - `SendOptions::max_import_memory_bytes` 与 CLI `--max-import-memory` 已实现导入工作集预算；它限制并行
-  导入任务估算的普通文件字节，不伪称为进程 RSS 或操作系统硬内存上限。大文件和大目录基准仍待补。
+  导入任务估算的普通文件字节，不伪称为进程 RSS 或操作系统硬内存上限。大文件和大目录基准已记录在
+  [`V0_10_SCALE_BENCHMARK.md`](V0_10_SCALE_BENCHMARK.md)。
 - 已补两个真实并行接收方共享总上传上限的本地 E2E；sender 关闭会立即唤醒并终止尚未放行
   的限速等待；真实 relay 和弱网 smoke tests 仍待补。
 
