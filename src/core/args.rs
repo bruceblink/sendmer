@@ -125,6 +125,10 @@ pub struct SendArgs {
     #[clap(long)]
     pub max_upload_rate: Option<NonZeroU64>,
 
+    /// Maximum number of receiver connections that may be active at once.
+    #[clap(long)]
+    pub max_receivers: Option<NonZeroU64>,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 
@@ -299,6 +303,26 @@ mod tests {
         let error =
             Args::try_parse_from(["sendmer", "send", "--max-upload-rate", "0", "example.bin"])
                 .expect_err("zero upload rate must be rejected");
+
+        assert!(error.to_string().contains("invalid value"));
+    }
+
+    #[test]
+    fn send_args_accept_non_zero_receiver_limit() {
+        let args = Args::try_parse_from(["sendmer", "send", "--max-receivers", "2", "example.bin"])
+            .expect("valid receiver limit");
+
+        let Commands::Send(send) = args.command else {
+            panic!("expected send command")
+        };
+        assert_eq!(send.max_receivers.map(NonZeroU64::get), Some(2));
+    }
+
+    #[test]
+    fn send_args_reject_zero_receiver_limit() {
+        let error =
+            Args::try_parse_from(["sendmer", "send", "--max-receivers", "0", "example.bin"])
+                .expect_err("zero receiver limit must be rejected");
 
         assert!(error.to_string().contains("invalid value"));
     }

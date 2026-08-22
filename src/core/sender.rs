@@ -165,6 +165,7 @@ async fn setup_data_sharing(
             entry_type,
             event_emitter,
             max_upload_rate_bytes_per_sec,
+            max_receivers,
         } = share_request;
         let store = load_fs_store(&blobs_data_dir).await.map_err(|error| {
             sender_failure(
@@ -181,6 +182,7 @@ async fn setup_data_sharing(
             Some(create_event_sender(
                 progress_tx,
                 max_upload_rate_bytes_per_sec,
+                max_receivers,
             )),
         );
 
@@ -201,6 +203,7 @@ async fn setup_data_sharing(
             entry_type,
             transfer_status_tx,
             max_upload_rate_bytes_per_sec,
+            max_receivers,
         );
 
         let router = iroh::protocol::Router::builder(endpoint)
@@ -263,6 +266,7 @@ struct ShareRequest {
     entry_type: crate::core::types::EntryType,
     event_emitter: TransferEventEmitter,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    max_receivers: Option<NonZeroU64>,
 }
 
 struct SharePlan {
@@ -271,6 +275,7 @@ struct SharePlan {
     blobs_data_dir: PathBuf,
     ticket_type: AddrInfoOptions,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    max_receivers: Option<NonZeroU64>,
 }
 
 struct ImportedSource {
@@ -287,17 +292,25 @@ struct ImportedBlob {
 fn create_event_sender(
     progress_tx: mpsc::Sender<iroh_blobs::provider::events::ProviderMessage>,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    max_receivers: Option<NonZeroU64>,
 ) -> EventSender {
     EventSender::new(
         progress_tx,
-        provider_event_mask(max_upload_rate_bytes_per_sec),
+        provider_event_mask(max_upload_rate_bytes_per_sec, max_receivers),
     )
 }
 
-/// Build the provider subscription mask, avoiding throttle RPCs unless a caller configured a limit.
-const fn provider_event_mask(max_upload_rate_bytes_per_sec: Option<NonZeroU64>) -> EventMask {
+/// Build the provider subscription mask for optional throttling and admission control.
+const fn provider_event_mask(
+    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    max_receivers: Option<NonZeroU64>,
+) -> EventMask {
     EventMask {
-        connected: ConnectMode::Notify,
+        connected: if max_receivers.is_some() {
+            ConnectMode::Intercept
+        } else {
+            ConnectMode::Notify
+        },
         get: RequestMode::NotifyLog,
         throttle: if max_upload_rate_bytes_per_sec.is_some() {
             ThrottleMode::Intercept
@@ -315,6 +328,7 @@ fn spawn_provider_progress_task(
     entry_type: crate::core::types::EntryType,
     transfer_status_tx: watch::Sender<SenderTransferStatus>,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    max_receivers: Option<NonZeroU64>,
 ) -> AbortOnDropHandle<anyhow::Result<()>> {
     AbortOnDropHandle::new(tokio::spawn(show_provide_progress_with_provider_tracker(
         progress_rx,
@@ -323,6 +337,7 @@ fn spawn_provider_progress_task(
         entry_type,
         transfer_status_tx,
         max_upload_rate_bytes_per_sec,
+        max_receivers,
     )))
 }
 
@@ -371,6 +386,7 @@ impl SharePlan {
             blobs_data_dir: prepare_temp_directory()?,
             ticket_type: options.ticket_type,
             max_upload_rate_bytes_per_sec: options.max_upload_rate_bytes_per_sec,
+            max_receivers: options.max_receivers,
         })
     }
 
@@ -384,6 +400,7 @@ impl SharePlan {
             entry_type: self.entry_type,
             event_emitter,
             max_upload_rate_bytes_per_sec: self.max_upload_rate_bytes_per_sec,
+            max_receivers: self.max_receivers,
         }
     }
 }
@@ -483,6 +500,7 @@ async fn send_started(
         relay_mode = ?options.relay_mode,
         ticket_type = ?options.ticket_type,
         max_upload_rate_bytes_per_sec = ?options.max_upload_rate_bytes_per_sec,
+        max_receivers = ?options.max_receivers,
         "starting send"
     );
     validate_share_path(&path).map_err(|error| {
@@ -769,20 +787,32 @@ async fn show_provide_progress_with_provider_tracker(
     entry_type: crate::core::types::EntryType,
     transfer_status_tx: watch::Sender<SenderTransferStatus>,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    max_receivers: Option<NonZeroU64>,
 ) -> anyhow::Result<()> {
     let reporter = SenderProgressReporter::new(event_emitter, entry_type, transfer_status_tx);
     let request_task_limit = std::sync::Arc::new(Semaphore::new(PROVIDER_PROGRESS_TASK_LIMIT));
     let upload_rate_limiter = max_upload_rate_bytes_per_sec
         .map(UploadRateLimiter::new)
         .map(std::sync::Arc::new);
+    let mut receiver_admission = ReceiverAdmission::new(max_receivers);
     let mut throttle_tasks = JoinSet::new();
 
     while let Some(item) = recv.recv().await {
         while throttle_tasks.try_join_next().is_some() {}
 
         match item {
+            iroh_blobs::provider::events::ProviderMessage::ClientConnected(msg) => {
+                let result = if receiver_admission.admit(msg.connection_id) {
+                    Ok(())
+                } else {
+                    Err(iroh_blobs::provider::events::AbortReason::RateLimited)
+                };
+                let _ = msg.tx.send(result).await;
+            }
             iroh_blobs::provider::events::ProviderMessage::ClientConnectedNotify(_msg) => {}
-            iroh_blobs::provider::events::ProviderMessage::ConnectionClosed(_msg) => {}
+            iroh_blobs::provider::events::ProviderMessage::ConnectionClosed(msg) => {
+                receiver_admission.release(msg.connection_id);
+            }
             iroh_blobs::provider::events::ProviderMessage::GetRequestReceivedNotify(msg) => {
                 let transfer_id = TransferId::new(msg.connection_id, msg.request_id);
                 reporter
@@ -823,6 +853,45 @@ async fn show_provide_progress_with_provider_tracker(
     while throttle_tasks.join_next().await.is_some() {}
 
     Ok(())
+}
+
+/// Track active provider connections and reject new ones after the configured ceiling.
+///
+/// The provider event stream is processed serially, so this state machine makes admission
+/// decisions without holding a lock across asynchronous response sends.
+struct ReceiverAdmission {
+    max_receivers: Option<NonZeroU64>,
+    active_connections: HashSet<u64>,
+}
+
+impl ReceiverAdmission {
+    fn new(max_receivers: Option<NonZeroU64>) -> Self {
+        Self {
+            max_receivers,
+            active_connections: HashSet::new(),
+        }
+    }
+
+    /// Admit a connection unless it would exceed the configured active-peer limit.
+    fn admit(&mut self, connection_id: u64) -> bool {
+        if self.active_connections.contains(&connection_id) {
+            return true;
+        }
+        if let Some(max_receivers) = self.max_receivers {
+            let active_connections =
+                u64::try_from(self.active_connections.len()).expect("usize fits into u64");
+            if active_connections >= max_receivers.get() {
+                return false;
+            }
+        }
+        self.active_connections.insert(connection_id);
+        true
+    }
+
+    /// Release a connection slot after the provider reports that it closed.
+    fn release(&mut self, connection_id: u64) {
+        self.active_connections.remove(&connection_id);
+    }
 }
 
 /// Serialize payload chunk reservations so every receiver shares one upload budget.
@@ -874,23 +943,27 @@ fn upload_delay(bytes: u64, bytes_per_second: NonZeroU64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{
-        ShareRequest, UploadRateLimiter, canonicalized_path_to_string, collect_import_sources,
-        detect_entry_type, import_parallelism, prepare_endpoint, provider_event_mask, send,
-        setup_data_sharing, shutdown_started_sender_setup, validate_share_path,
+        ReceiverAdmission, ShareRequest, UploadRateLimiter, canonicalized_path_to_string,
+        collect_import_sources, detect_entry_type, import_parallelism, prepare_endpoint,
+        provider_event_mask, send, setup_data_sharing, show_provide_progress_with_provider_tracker,
+        shutdown_started_sender_setup, validate_share_path,
     };
     use crate::core::events::{
         EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
     };
     use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions, apply_options};
-    use crate::core::progress::TransferEventEmitter;
+    use crate::core::progress::{SenderTransferStatus, TransferEventEmitter};
     use crate::core::types::EntryType;
     use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
-    use iroh_blobs::provider::events::ThrottleMode;
+    use iroh_blobs::provider::events::{
+        ClientConnected, ConnectMode, ConnectionClosed, EventSender, ProgressError, ThrottleMode,
+    };
     use std::num::NonZeroU64;
     use std::path::Path;
     use std::str::FromStr;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use tokio::sync::watch;
 
     #[derive(Default)]
     struct RecordingEmitter {
@@ -911,11 +984,39 @@ mod tests {
 
     #[test]
     fn provider_event_mask_only_enables_throttle_for_configured_limits() {
-        assert_eq!(provider_event_mask(None).throttle, ThrottleMode::None);
+        assert_eq!(provider_event_mask(None, None).throttle, ThrottleMode::None);
         assert_eq!(
-            provider_event_mask(NonZeroU64::new(1_024)).throttle,
+            provider_event_mask(NonZeroU64::new(1_024), None).throttle,
             ThrottleMode::Intercept
         );
+    }
+
+    #[test]
+    fn provider_event_mask_intercepts_connections_for_receiver_limits() {
+        assert_eq!(
+            provider_event_mask(None, NonZeroU64::new(1)).connected,
+            ConnectMode::Intercept
+        );
+        assert_eq!(
+            provider_event_mask(None, None).connected,
+            ConnectMode::Notify
+        );
+    }
+
+    #[test]
+    fn receiver_admission_releases_slots_after_disconnect() {
+        let mut admission = ReceiverAdmission::new(NonZeroU64::new(1));
+        assert!(admission.admit(10));
+        assert!(!admission.admit(20));
+        admission.release(10);
+        assert!(admission.admit(20));
+    }
+
+    #[test]
+    fn receiver_admission_allows_repeated_events_for_same_connection() {
+        let mut admission = ReceiverAdmission::new(NonZeroU64::new(1));
+        assert!(admission.admit(10));
+        assert!(admission.admit(10));
     }
 
     #[test]
@@ -940,6 +1041,57 @@ mod tests {
         let second = limiter.reserve(100).await;
 
         assert_eq!(second.duration_since(first), Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn provider_rejects_connections_after_receiver_limit_and_reopens_slots() {
+        let max_receivers = NonZeroU64::new(1);
+        let (event_sender, progress_rx) =
+            EventSender::channel(8, provider_event_mask(None, max_receivers));
+        let (transfer_status_tx, _transfer_status_rx) = watch::channel(SenderTransferStatus::Idle);
+        let progress_task = tokio::spawn(show_provide_progress_with_provider_tracker(
+            progress_rx,
+            TransferEventEmitter::new(None, Role::Sender),
+            0,
+            EntryType::File,
+            transfer_status_tx,
+            None,
+            max_receivers,
+        ));
+
+        event_sender
+            .client_connected(|| ClientConnected {
+                connection_id: 1,
+                endpoint_id: None,
+            })
+            .await
+            .expect("first connection should be admitted");
+        let error = event_sender
+            .client_connected(|| ClientConnected {
+                connection_id: 2,
+                endpoint_id: None,
+            })
+            .await
+            .expect_err("second connection should be rejected");
+        assert!(matches!(error, ProgressError::Limit { .. }));
+
+        event_sender
+            .connection_closed(|| ConnectionClosed { connection_id: 1 })
+            .await
+            .expect("closing a connection should release its slot");
+        event_sender
+            .client_connected(|| ClientConnected {
+                connection_id: 2,
+                endpoint_id: None,
+            })
+            .await
+            .expect("a later connection should reuse the released slot");
+
+        drop(event_sender);
+        progress_task
+            .await
+            .expect("progress task should join")
+            .expect("progress task should shut down cleanly");
     }
 
     fn sample_addr() -> iroh::EndpointAddr {
@@ -1187,6 +1339,7 @@ mod tests {
             entry_type: EntryType::File,
             event_emitter: started_sender_emitter(),
             max_upload_rate_bytes_per_sec: None,
+            max_receivers: None,
         };
 
         let error = match setup_data_sharing(endpoint, blobs_data_dir.clone(), share_request).await
@@ -1227,6 +1380,7 @@ mod tests {
                 entry_type: EntryType::File,
                 event_emitter: started_sender_emitter(),
                 max_upload_rate_bytes_per_sec: None,
+                max_receivers: None,
             },
         )
         .await

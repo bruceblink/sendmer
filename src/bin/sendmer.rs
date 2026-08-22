@@ -164,6 +164,7 @@ fn send_options(args: &SendArgs) -> SendOptions {
         magic_ipv4_addr: args.common.magic_ipv4_addr,
         magic_ipv6_addr: args.common.magic_ipv6_addr,
         max_upload_rate_bytes_per_sec: args.max_upload_rate,
+        max_receivers: args.max_receivers,
     }
 }
 
@@ -447,6 +448,8 @@ mod tests {
             "send",
             "--max-upload-rate",
             "2048",
+            "--max-receivers",
+            "3",
             "example.bin",
         ])
         .expect("valid send arguments");
@@ -460,6 +463,10 @@ mod tests {
                 .max_upload_rate_bytes_per_sec
                 .map(std::num::NonZeroU64::get),
             Some(2_048)
+        );
+        assert_eq!(
+            options.max_receivers.map(std::num::NonZeroU64::get),
+            Some(3)
         );
     }
 

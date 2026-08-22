@@ -167,7 +167,8 @@ relay token 或底层连接标识。
 
 ### M10.1 会话控制与规模边界
 
-- 设计 sender 会话过期、最大接收方数量和主动撤销，明确 ticket bearer capability 的兼容性。
+- `SendOptions::max_receivers` 与 CLI `--max-receivers` 已实现同时活动 provider 连接数上限；默认不限制，断开连接会释放名额，超限连接由 provider 层拒绝。
+- 继续设计 sender 会话过期、主动撤销，明确 ticket bearer capability 的兼容性。
 - 增加带宽、并发、内存与文件数量上限，建立大文件和大目录基准。
 - 补两个真实并行接收方共享总上传上限、限速等待期间取消、真实 relay 和弱网 smoke tests。
 

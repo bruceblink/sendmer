@@ -20,6 +20,11 @@ pub struct SendOptions {
     /// enforced by the sender after each payload chunk, rather than by changing
     /// QUIC transport windows or local file-import behavior.
     pub max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    /// Optional ceiling for simultaneously connected receiver peers.
+    ///
+    /// `None` preserves the unlimited sender behavior. A disconnected receiver
+    /// releases its slot for a later connection.
+    pub max_receivers: Option<NonZeroU64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -300,7 +305,7 @@ pub fn apply_options(addr: &mut iroh::EndpointAddr, opts: AddrInfoOptions) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReceiveCacheOptions, ReceiveRetryPolicy};
+    use super::{ReceiveCacheOptions, ReceiveRetryPolicy, SendOptions};
     use std::time::Duration;
 
     #[test]
@@ -314,6 +319,11 @@ mod tests {
         assert_eq!(policy.connect_timeout_ms, None);
         assert_eq!(policy.metadata_timeout_ms, None);
         assert_eq!(policy.download_idle_timeout_ms, None);
+    }
+
+    #[test]
+    fn send_options_default_to_unlimited_receivers() {
+        assert!(SendOptions::default().max_receivers.is_none());
     }
 
     #[test]
