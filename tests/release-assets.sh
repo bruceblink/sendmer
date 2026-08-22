@@ -84,6 +84,23 @@ validate_workflow_matrix() {
   done
 }
 
+# Keep CI's native acceptance matrix aligned with the platform contract. Release
+# cross-builds alone cannot prove native filesystem semantics on ARM runners.
+validate_ci_native_matrix() {
+  local target
+  for target in \
+    'os: "ubuntu-latest"' \
+    'os: "ubuntu-24.04-arm"' \
+    'os: "macos-15-intel"' \
+    'os: "macos-14"' \
+    'toolchain: "x86_64-apple-darwin"' \
+    'toolchain: "aarch64-apple-darwin"' \
+    'toolchain: "x86_64-pc-windows-msvc"' \
+    'toolchain: "x86_64-pc-windows-gnu"'; do
+    grep -Fq "$target" .github/workflows/ci.yml
+  done
+}
+
 expect_rejection() {
   local description="$1"
   shift
@@ -110,6 +127,7 @@ run_negative_cases() {
 }
 
 validate_workflow_matrix
+validate_ci_native_matrix
 run_expected_matrix
 run_negative_cases
 echo "release asset contract rehearsal passed"

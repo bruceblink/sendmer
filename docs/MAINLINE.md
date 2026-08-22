@@ -210,11 +210,12 @@ Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名
   target 在上传前生成 SPDX SBOM、archive/SBOM Sigstore bundle 和 GitHub provenance bundle。
 - Unix 与 PowerShell 安装器在解压前下载并校验 checksum、签名 bundle 和 provenance 文件；缺失
   `cosign` 或任一信任材料为空时 fail closed。
-- 扩展 ARM runner 或真实设备 smoke tests，持续验证 Windows GNU/MSVC 与 macOS/Linux ARM。
+- CI native acceptance 已覆盖 Linux x86_64/ARM64、macOS Intel/ARM64 和 Windows MSVC/GNU；
+  release workflow 仍保留 Linux/macOS ARM64 的交叉构建与资产发布矩阵。
 - 保持 release workflow 可重入：同一 tag 重跑时更新 Release 正文，不制造重复资产或版本。
 
-验收：签名与校验失败均 fail closed；SBOM/provenance 可由发布 tag 追溯；所有资产名、checksum
-和安装器选择规则有自动化测试。
+验收：签名与校验失败均 fail closed；SBOM/provenance 可由发布 tag 追溯；所有资产名、checksum、
+安装器选择规则和 CI native platform matrix 均有自动化测试。
 
 ## 7. 探索方向与明确非目标
 
