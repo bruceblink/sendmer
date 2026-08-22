@@ -24,7 +24,7 @@ grep -Fq "$VERSION_PATTERN" install.sh
 
 # Keep the release trust-material contract fail-closed and reviewable.
 grep -Fq 'anchore/sbom-action@v0' .github/workflows/release.yml
-grep -Fq 'sigstore/cosign-installer@v4' .github/workflows/release.yml
+grep -Fq 'sigstore/cosign-installer@v4.1.2' .github/workflows/release.yml
 grep -Fq 'actions/attest@v4' .github/workflows/release.yml
 grep -Fq 'artifact-metadata: write' .github/workflows/release.yml
 grep -Fq 'cosign sign-blob' .github/workflows/release.yml
