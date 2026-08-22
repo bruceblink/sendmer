@@ -46,6 +46,8 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: release version validation
         run: bash ./tests/release-version.sh
+      - name: release asset contract rehearsal
+        run: bash ./tests/release-assets.sh
       - name: shell installer target validation
         run: bash ./tests/install-target.sh
 

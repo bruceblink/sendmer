@@ -203,6 +203,10 @@ jobs:
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+          # Keep the GNU Windows binary available for environments that do not
+          # ship the MSVC runtime; the installer continues to select MSVC.
+          - os: windows-latest
+            target: x86_64-pc-windows-gnu
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
