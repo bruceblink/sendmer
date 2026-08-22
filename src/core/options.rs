@@ -25,6 +25,11 @@ pub struct SendOptions {
     /// `None` preserves the unlimited sender behavior. A disconnected receiver
     /// releases its slot for a later connection.
     pub max_receivers: Option<NonZeroU64>,
+    /// Optional ceiling for regular files included in a shared directory.
+    ///
+    /// `None` preserves the unlimited sender behavior. The limit is checked
+    /// before networking or temporary sender storage is initialized.
+    pub max_files: Option<NonZeroU64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -322,8 +327,10 @@ mod tests {
     }
 
     #[test]
-    fn send_options_default_to_unlimited_receivers() {
-        assert!(SendOptions::default().max_receivers.is_none());
+    fn send_options_default_to_unlimited_resource_counts() {
+        let options = SendOptions::default();
+        assert!(options.max_receivers.is_none());
+        assert!(options.max_files.is_none());
     }
 
     #[test]

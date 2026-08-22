@@ -129,6 +129,10 @@ pub struct SendArgs {
     #[clap(long)]
     pub max_receivers: Option<NonZeroU64>,
 
+    /// Maximum number of regular files included in the shared path.
+    #[clap(long)]
+    pub max_files: Option<NonZeroU64>,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 
@@ -323,6 +327,25 @@ mod tests {
         let error =
             Args::try_parse_from(["sendmer", "send", "--max-receivers", "0", "example.bin"])
                 .expect_err("zero receiver limit must be rejected");
+
+        assert!(error.to_string().contains("invalid value"));
+    }
+
+    #[test]
+    fn send_args_accept_non_zero_file_limit() {
+        let args = Args::try_parse_from(["sendmer", "send", "--max-files", "10", "example.bin"])
+            .expect("valid file limit");
+
+        let Commands::Send(send) = args.command else {
+            panic!("expected send command")
+        };
+        assert_eq!(send.max_files.map(NonZeroU64::get), Some(10));
+    }
+
+    #[test]
+    fn send_args_reject_zero_file_limit() {
+        let error = Args::try_parse_from(["sendmer", "send", "--max-files", "0", "example.bin"])
+            .expect_err("zero file limit must be rejected");
 
         assert!(error.to_string().contains("invalid value"));
     }

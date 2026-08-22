@@ -171,6 +171,7 @@ Send-specific options:
 - `--ticket-type <id|RelayAndAddresses|relay|addresses>`: control how much addressing information is embedded in the ticket; the combined mode currently uses the exact `RelayAndAddresses` spelling
 - `--max-upload-rate <bytes-per-second>`: optionally cap the sender's total payload upload rate shared by all receivers; protocol overhead is not included
 - `--max-receivers <count>`: optionally cap the number of receiver connections active at the same time; a disconnected receiver releases its slot
+- `--max-files <count>`: optionally reject a share before startup when it contains more regular files than the configured limit
 - `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard (available in the default `clipboard` feature build)
 
 ## Library Usage

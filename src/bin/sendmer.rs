@@ -165,6 +165,7 @@ fn send_options(args: &SendArgs) -> SendOptions {
         magic_ipv6_addr: args.common.magic_ipv6_addr,
         max_upload_rate_bytes_per_sec: args.max_upload_rate,
         max_receivers: args.max_receivers,
+        max_files: args.max_files,
     }
 }
 
@@ -450,6 +451,8 @@ mod tests {
             "2048",
             "--max-receivers",
             "3",
+            "--max-files",
+            "10",
             "example.bin",
         ])
         .expect("valid send arguments");
@@ -468,6 +471,7 @@ mod tests {
             options.max_receivers.map(std::num::NonZeroU64::get),
             Some(3)
         );
+        assert_eq!(options.max_files.map(std::num::NonZeroU64::get), Some(10));
     }
 
     #[tokio::test]

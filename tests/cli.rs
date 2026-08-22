@@ -1031,6 +1031,46 @@ fn json_events_keep_piped_stdout_machine_readable_on_send_failure() {
 }
 
 #[test]
+fn json_events_report_file_limit_before_sender_startup() {
+    let source_root = tempfile::tempdir().unwrap();
+    let share = source_root.path().join("share");
+    std::fs::create_dir(&share).unwrap();
+    std::fs::write(share.join("one.txt"), b"one").unwrap();
+    std::fs::write(share.join("two.txt"), b"two").unwrap();
+    let output = Command::new(sendmer_bin())
+        .args([
+            "send",
+            "--json-events",
+            "--relay",
+            "disabled",
+            "--max-files",
+            "1",
+        ])
+        .arg(&share)
+        .current_dir(source_root.path())
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run file limit command");
+
+    assert!(!output.status.success());
+    let events = parse_json_events(&output.stdout);
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        &events.last().expect("failed event").event,
+        TransferEventData::Failed { error }
+            if error.code == TransferErrorCode::InvalidInput
+                && error.phase == sendmer::core::events::TransferPhase::Preparing
+                && !error.retryable
+    ));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("more than 1 files"),
+        "diagnostics should explain the file limit"
+    );
+}
+
+#[test]
 fn json_events_report_success_without_human_text_on_stdout() {
     let name = "json-success.bin";
     let data = vec![5u8; 32 * 1024];
