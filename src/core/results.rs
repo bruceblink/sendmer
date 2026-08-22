@@ -35,6 +35,7 @@ pub struct SendResult {
     pub _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
     pub(crate) transfer_status_rx: watch::Receiver<SenderTransferStatus>,
     pub(crate) event_emitter: TransferEventEmitter,
+    pub(crate) shutdown_signal_tx: watch::Sender<bool>,
 }
 
 fn normalize_sender_cleanup_result(cleanup_result: std::io::Result<()>) -> anyhow::Result<()> {
@@ -103,9 +104,13 @@ impl SendResult {
             blobs_data_dir,
             _progress_handle,
             _store,
+            shutdown_signal_tx,
             ..
         } = self;
 
+        // Wake pending provider throttle waits before asking the router to close so
+        // cancellation does not inherit the configured upload delay.
+        let _ = shutdown_signal_tx.send(true);
         drop(temp_tag);
         let shutdown_result = router.shutdown().await.map_err(anyhow::Error::from);
 

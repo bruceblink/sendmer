@@ -205,6 +205,7 @@ async fn setup_data_sharing(
     let cleanup_dir = blobs_data_dir.clone();
     let (progress_tx, progress_rx) = mpsc::channel(32);
     let (transfer_status_tx, transfer_status_rx) = watch::channel(SenderTransferStatus::Idle);
+    let (shutdown_signal_tx, shutdown_signal_rx) = watch::channel(false);
 
     let setup_future = async move {
         let ShareRequest {
@@ -249,8 +250,11 @@ async fn setup_data_sharing(
             size,
             entry_type,
             transfer_status_tx,
-            max_upload_rate_bytes_per_sec,
-            max_receivers,
+            ProviderProgressControl {
+                max_upload_rate_bytes_per_sec,
+                max_receivers,
+                shutdown_signal_rx,
+            },
         );
 
         let router = iroh::protocol::Router::builder(endpoint)
@@ -264,6 +268,7 @@ async fn setup_data_sharing(
             store,
             progress_handle,
             transfer_status_rx,
+            shutdown_signal_tx,
         })
     };
 
@@ -374,8 +379,7 @@ fn spawn_provider_progress_task(
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
     transfer_status_tx: watch::Sender<SenderTransferStatus>,
-    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
-    max_receivers: Option<NonZeroU64>,
+    control: ProviderProgressControl,
 ) -> AbortOnDropHandle<anyhow::Result<()>> {
     AbortOnDropHandle::new(tokio::spawn(show_provide_progress_with_provider_tracker(
         progress_rx,
@@ -383,9 +387,15 @@ fn spawn_provider_progress_task(
         total_file_size,
         entry_type,
         transfer_status_tx,
-        max_upload_rate_bytes_per_sec,
-        max_receivers,
+        control,
     )))
+}
+
+/// Bundle provider limits and the sender shutdown signal passed to the progress task.
+struct ProviderProgressControl {
+    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    max_receivers: Option<NonZeroU64>,
+    shutdown_signal_rx: watch::Receiver<bool>,
 }
 
 async fn wait_until_endpoint_is_online(
@@ -414,6 +424,7 @@ struct SharingSetup {
     store: FsStore,
     progress_handle: AbortOnDropHandle<anyhow::Result<()>>,
     transfer_status_rx: watch::Receiver<SenderTransferStatus>,
+    shutdown_signal_tx: watch::Sender<bool>,
 }
 
 struct ImportedCollection {
@@ -466,6 +477,7 @@ impl SharingSetup {
             store,
             progress_handle,
             transfer_status_rx,
+            shutdown_signal_tx,
         } = self;
         let ImportedCollection { temp_tag, size, .. } = imported;
         let hash = temp_tag.hash();
@@ -487,6 +499,7 @@ impl SharingSetup {
             _store: store,
             transfer_status_rx,
             event_emitter,
+            shutdown_signal_tx,
         }
     }
 }
@@ -848,9 +861,13 @@ async fn show_provide_progress_with_provider_tracker(
     total_file_size: u64,
     entry_type: crate::core::types::EntryType,
     transfer_status_tx: watch::Sender<SenderTransferStatus>,
-    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
-    max_receivers: Option<NonZeroU64>,
+    control: ProviderProgressControl,
 ) -> anyhow::Result<()> {
+    let ProviderProgressControl {
+        max_upload_rate_bytes_per_sec,
+        max_receivers,
+        mut shutdown_signal_rx,
+    } = control;
     let reporter = SenderProgressReporter::new(event_emitter, entry_type, transfer_status_tx);
     let request_task_limit = std::sync::Arc::new(Semaphore::new(PROVIDER_PROGRESS_TASK_LIMIT));
     let upload_rate_limiter = max_upload_rate_bytes_per_sec
@@ -859,7 +876,11 @@ async fn show_provide_progress_with_provider_tracker(
     let mut receiver_admission = ReceiverAdmission::new(max_receivers);
     let mut throttle_tasks = JoinSet::new();
 
-    while let Some(item) = recv.recv().await {
+    while let Some(item) = select! {
+        biased;
+        _ = shutdown_signal_rx.changed() => None,
+        item = recv.recv() => item,
+    } {
         while throttle_tasks.try_join_next().is_some() {}
 
         match item {
@@ -895,9 +916,14 @@ async fn show_provide_progress_with_provider_tracker(
             }
             iroh_blobs::provider::events::ProviderMessage::Throttle(msg) => {
                 if let Some(limiter) = upload_rate_limiter.clone() {
+                    let mut shutdown_signal_rx = shutdown_signal_rx.clone();
                     throttle_tasks.spawn(async move {
-                        limiter.wait_for_chunk(msg.size).await;
-                        let _ = msg.tx.send(Ok(())).await;
+                        if limiter
+                            .wait_for_chunk_or_shutdown(msg.size, &mut shutdown_signal_rx)
+                            .await
+                        {
+                            let _ = msg.tx.send(Ok(())).await;
+                        }
                     });
                 } else {
                     let _ = msg.tx.send(Ok(())).await;
@@ -981,8 +1007,22 @@ impl UploadRateLimiter {
         allowed_at
     }
 
-    async fn wait_for_chunk(&self, bytes: u64) {
-        tokio::time::sleep_until(self.reserve(bytes).await).await;
+    /// Wait for a pacing slot, returning false when sender shutdown cancels the pending wait.
+    async fn wait_for_chunk_or_shutdown(
+        &self,
+        bytes: u64,
+        shutdown_signal_rx: &mut watch::Receiver<bool>,
+    ) -> bool {
+        if *shutdown_signal_rx.borrow() {
+            return false;
+        }
+
+        let deadline = self.reserve(bytes).await;
+        tokio::select! {
+            biased;
+            _ = shutdown_signal_rx.changed() => false,
+            _ = tokio::time::sleep_until(deadline) => true,
+        }
     }
 }
 
@@ -1005,10 +1045,11 @@ fn upload_delay(bytes: u64, bytes_per_second: NonZeroU64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{
-        ReceiverAdmission, ShareRequest, UploadRateLimiter, canonicalized_path_to_string,
-        collect_import_sources, detect_entry_type, import_parallelism, prepare_endpoint,
-        provider_event_mask, send, setup_data_sharing, show_provide_progress_with_provider_tracker,
-        shutdown_started_sender_setup, validate_share_limits, validate_share_path,
+        ProviderProgressControl, ReceiverAdmission, ShareRequest, UploadRateLimiter,
+        canonicalized_path_to_string, collect_import_sources, detect_entry_type,
+        import_parallelism, prepare_endpoint, provider_event_mask, send, setup_data_sharing,
+        show_provide_progress_with_provider_tracker, shutdown_started_sender_setup,
+        validate_share_limits, validate_share_path,
     };
     use crate::core::events::{
         EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
@@ -1136,20 +1177,78 @@ mod tests {
         assert_eq!(later.duration_since(earlier), Duration::from_secs(1));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn upload_rate_limiter_cancels_pending_wait() {
+        let limiter = std::sync::Arc::new(UploadRateLimiter::new(
+            NonZeroU64::new(100).expect("non-zero rate"),
+        ));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_initial_shutdown_tx, mut initial_shutdown_rx) = watch::channel(false);
+        assert!(
+            limiter
+                .wait_for_chunk_or_shutdown(100, &mut initial_shutdown_rx)
+                .await
+        );
+
+        let wait_limiter = limiter.clone();
+        let mut wait_shutdown = shutdown_rx;
+        let pending = tokio::spawn(async move {
+            wait_limiter
+                .wait_for_chunk_or_shutdown(100, &mut wait_shutdown)
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        shutdown_tx.send(true).expect("shutdown signal receiver");
+        assert!(!pending.await.expect("pending wait task"));
+    }
+
     #[tokio::test]
-    async fn provider_rejects_connections_after_receiver_limit_and_reopens_slots() {
-        let max_receivers = NonZeroU64::new(1);
-        let (event_sender, progress_rx) =
-            EventSender::channel(8, provider_event_mask(None, max_receivers));
+    async fn provider_progress_task_stops_when_sender_shutdown_is_signaled() {
+        let (_event_sender, progress_rx) = EventSender::channel(8, provider_event_mask(None, None));
         let (transfer_status_tx, _transfer_status_rx) = watch::channel(SenderTransferStatus::Idle);
+        let (shutdown_signal_tx, shutdown_signal_rx) = watch::channel(false);
         let progress_task = tokio::spawn(show_provide_progress_with_provider_tracker(
             progress_rx,
             TransferEventEmitter::new(None, Role::Sender),
             0,
             EntryType::File,
             transfer_status_tx,
-            None,
-            max_receivers,
+            ProviderProgressControl {
+                max_upload_rate_bytes_per_sec: None,
+                max_receivers: None,
+                shutdown_signal_rx,
+            },
+        ));
+
+        shutdown_signal_tx
+            .send(true)
+            .expect("shutdown signal receiver");
+        tokio::time::timeout(Duration::from_secs(1), progress_task)
+            .await
+            .expect("progress task should stop promptly")
+            .expect("progress task should join")
+            .expect("progress task should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn provider_rejects_connections_after_receiver_limit_and_reopens_slots() {
+        let max_receivers = NonZeroU64::new(1);
+        let (event_sender, progress_rx) =
+            EventSender::channel(8, provider_event_mask(None, max_receivers));
+        let (transfer_status_tx, _transfer_status_rx) = watch::channel(SenderTransferStatus::Idle);
+        let (_shutdown_signal_tx, shutdown_signal_rx) = watch::channel(false);
+        let progress_task = tokio::spawn(show_provide_progress_with_provider_tracker(
+            progress_rx,
+            TransferEventEmitter::new(None, Role::Sender),
+            0,
+            EntryType::File,
+            transfer_status_tx,
+            ProviderProgressControl {
+                max_upload_rate_bytes_per_sec: None,
+                max_receivers,
+                shutdown_signal_rx,
+            },
         ));
 
         event_sender
