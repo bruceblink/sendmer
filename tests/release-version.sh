@@ -13,3 +13,21 @@ done
 # Keep the release workflow and Unix installer on the same validation contract.
 grep -Fq "$VERSION_PATTERN" .github/workflows/release.yml
 grep -Fq "$VERSION_PATTERN" install.sh
+
+# Keep the release trust-material contract fail-closed and reviewable.
+grep -Fq 'anchore/sbom-action@v0' .github/workflows/release.yml
+grep -Fq 'sigstore/cosign-installer@v4' .github/workflows/release.yml
+grep -Fq 'actions/attest@v4' .github/workflows/release.yml
+grep -Fq 'artifact-metadata: write' .github/workflows/release.yml
+grep -Fq 'cosign sign-blob' .github/workflows/release.yml
+grep -Fq 'cosign verify-blob' .github/workflows/release.yml
+grep -Fq 'gh attestation verify' .github/workflows/release.yml
+grep -Fq '.attestation.json' .github/workflows/release.yml
+grep -Fq '.attestation.json' install.sh
+grep -Fq '.attestation.json' install.ps1
+grep -Fq 'RELEASE_ASSET_SIGNATURE' .github/workflows/release.yml
+grep -Fq 'RELEASE_SBOM_SIGNATURE' .github/workflows/release.yml
+grep -Fq 'RELEASE_PROVENANCE' .github/workflows/release.yml
+grep -Fq 'echo "sbom=${ASSET}.spdx.json"' .github/workflows/release.yml
+grep -Fq 'SBOM="${ASSET}.spdx.json"' .github/workflows/release.yml
+grep -Fq 'Manual releases must be dispatched from the matching release tag' .github/workflows/release.yml

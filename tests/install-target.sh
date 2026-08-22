@@ -34,6 +34,8 @@ curl() {
   [[ -n "$output" ]]
   if [[ "$output" == *.sha256 ]]; then
     printf '%s  %s\n' "$UPPERCASE_HASH" "$(basename "${output%.sha256}")" > "$output"
+  elif [[ "$output" == *.spdx.json || "$output" == *.sigstore.json || "$output" == *.attestation.json ]]; then
+    printf '{}\n' > "$output"
   else
     printf 'fixture archive' > "$output"
   fi
@@ -41,6 +43,13 @@ curl() {
 
 sha256sum() {
   printf '%s  %s\n' "$LOWERCASE_HASH" "$1"
+}
+
+cosign() {
+  [[ "$1" == "verify-blob" ]]
+  [[ -s "$2" ]]
+  [[ "$3" == "--bundle" ]]
+  [[ -s "$4" ]]
 }
 
 # Record the selected archive and create the executable expected after extraction.
@@ -61,6 +70,21 @@ source ./install.sh
 expected_archive='sendmer-v0.5.0-x86_64-pc-windows-msvc.zip'
 [[ "$(<"$ARCHIVE_RECORD")" == "$expected_archive" ]]
 [[ -f "$HOME/.sendmer/bin/sendmer.exe" ]]
+
+FAIL_HOME="$TEST_ROOT/failing-home"
+if failure_output=$( (
+  export HOME="$FAIL_HOME"
+  cosign() {
+    echo 'simulated signature verification failure' >&2
+    return 1
+  }
+  source ./install.sh
+) 2>&1); then
+  echo "installer should fail when signature verification fails" >&2
+  exit 1
+fi
+[[ "$failure_output" == *"simulated signature verification failure"* ]]
+[[ ! -f "$FAIL_HOME/.sendmer/bin/sendmer.exe" ]]
 
 if unsupported_output=$( (
   uname() {

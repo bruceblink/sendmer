@@ -21,6 +21,8 @@ on:
         required: true
         default: "true"
 
+permissions: {}
+
 env:
   BIN_NAME: sendmer
   IROH_FORCE_STAGING_RELAYS: "1"
@@ -54,6 +56,11 @@ jobs:
             exit 1
           fi
 
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${GITHUB_REF}" != "refs/tags/${VERSION}" ]; then
+            echo "Manual releases must be dispatched from the matching release tag: ${VERSION}"
+            exit 1
+          fi
+
           printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           echo "Release version: $VERSION"
 
@@ -61,6 +68,8 @@ jobs:
     name: Release Quality Gate
     needs: release-context
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -105,6 +114,8 @@ jobs:
     name: Create GitHub Release
     needs: [release-context, quality-gate]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       release_version: ${{ needs.release-context.outputs.release_version }}
     steps:
@@ -172,6 +183,11 @@ jobs:
     name: Build Release Binaries
     needs: create-release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -216,7 +232,7 @@ jobs:
             cargo build --locked --release --target ${{ matrix.target }}
           fi
 
-      - name: Package artifact
+      - name: Prepare artifact directory
         id: package
         env:
           BIN_NAME: ${{ env.BIN_NAME }}
@@ -238,13 +254,44 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${RUST_TARGET}/release/${BIN_NAME}.exe" "$NAME/"
             test -s "$NAME/${BIN_NAME}.exe"
-            powershell Compress-Archive "$NAME/*" "$NAME.zip"
             ASSET="$NAME.zip"
           else
             cp "target/${RUST_TARGET}/release/${BIN_NAME}" "$NAME/"
             test -x "$NAME/${BIN_NAME}"
-            tar czf "$NAME.tar.gz" -C "$NAME" .
             ASSET="$NAME.tar.gz"
+          fi
+
+          echo "directory=$NAME" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          echo "sbom=${ASSET}.spdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Generate target SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ${{ steps.package.outputs.directory }}
+          format: spdx-json
+          output-file: ${{ steps.package.outputs.sbom }}
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Package release archive
+        id: archive
+        env:
+          ARTIFACT_DIRECTORY: ${{ steps.package.outputs.directory }}
+          EXPECTED_ASSET: ${{ steps.package.outputs.asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="$ARTIFACT_DIRECTORY"
+          ASSET="$EXPECTED_ASSET"
+          SBOM="${ASSET}.spdx.json"
+          test -s "$SBOM"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            powershell Compress-Archive "$NAME/*" "$NAME.zip"
+            test "$ASSET" = "$NAME.zip"
+          else
+            tar czf "$NAME.tar.gz" -C "$NAME" .
+            test "$ASSET" = "$NAME.tar.gz"
           fi
 
           test -s "$ASSET"
@@ -266,21 +313,92 @@ jobs:
           echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
           echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign and verify target assets
+        id: signatures
+        env:
+          RELEASE_VERSION: ${{ needs.create-release.outputs.release_version }}
+          RELEASE_ASSET: ${{ steps.archive.outputs.asset }}
+          RELEASE_SBOM: ${{ steps.package.outputs.sbom }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSET_SIGNATURE="${RELEASE_ASSET}.sigstore.json"
+          SBOM_SIGNATURE="${RELEASE_SBOM}.sigstore.json"
+          cosign sign-blob "$RELEASE_ASSET" --bundle "$ASSET_SIGNATURE" --yes
+          cosign sign-blob "$RELEASE_SBOM" --bundle "$SBOM_SIGNATURE" --yes
+          IDENTITY_REGEX="^https://github\\.com/${GITHUB_REPOSITORY}/\\.github/workflows/release\\.yml@refs/tags/${RELEASE_VERSION}$"
+          cosign verify-blob "$RELEASE_ASSET" \
+            --bundle "$ASSET_SIGNATURE" \
+            --certificate-identity-regexp "$IDENTITY_REGEX" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          cosign verify-blob "$RELEASE_SBOM" \
+            --bundle "$SBOM_SIGNATURE" \
+            --certificate-identity-regexp "$IDENTITY_REGEX" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          test -s "$ASSET_SIGNATURE"
+          test -s "$SBOM_SIGNATURE"
+          echo "asset-signature=$ASSET_SIGNATURE" >> "$GITHUB_OUTPUT"
+          echo "sbom-signature=$SBOM_SIGNATURE" >> "$GITHUB_OUTPUT"
+
+      - name: Generate build provenance
+        id: provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ github.workspace }}/${{ steps.archive.outputs.asset }}
+
+      - name: Validate provenance bundle
+        id: provenance-file
+        env:
+          RELEASE_ASSET: ${{ steps.archive.outputs.asset }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ] && command -v cygpath >/dev/null 2>&1; then
+            PROVENANCE_BUNDLE="$(cygpath --unix "$PROVENANCE_BUNDLE")"
+          fi
+          test -s "$PROVENANCE_BUNDLE"
+          PROVENANCE_ASSET="${RELEASE_ASSET}.attestation.json"
+          cp "$PROVENANCE_BUNDLE" "$PROVENANCE_ASSET"
+          test -s "$PROVENANCE_ASSET"
+          gh attestation verify "$RELEASE_ASSET" \
+            --repo "$GITHUB_REPOSITORY" \
+            --bundle "$PROVENANCE_ASSET" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "refs/tags/${RELEASE_VERSION}"
+          echo "provenance=$PROVENANCE_ASSET" >> "$GITHUB_OUTPUT"
+
       - name: Upload release asset
         if: github.event_name == 'push' || github.event.inputs.upload_artifacts == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.create-release.outputs.release_version }}
-          RELEASE_ASSET: ${{ steps.package.outputs.asset }}
-          RELEASE_CHECKSUM: ${{ steps.package.outputs.checksum }}
+          RELEASE_ASSET: ${{ steps.archive.outputs.asset }}
+          RELEASE_CHECKSUM: ${{ steps.archive.outputs.checksum }}
+          RELEASE_SBOM: ${{ steps.package.outputs.sbom }}
+          RELEASE_ASSET_SIGNATURE: ${{ steps.signatures.outputs.asset-signature }}
+          RELEASE_SBOM_SIGNATURE: ${{ steps.signatures.outputs.sbom-signature }}
+          RELEASE_PROVENANCE: ${{ steps.provenance-file.outputs.provenance }}
         shell: bash
         run: |
-          gh release upload "$RELEASE_VERSION" "$RELEASE_ASSET" "$RELEASE_CHECKSUM" --clobber
+          gh release upload "$RELEASE_VERSION" \
+            "$RELEASE_ASSET" \
+            "$RELEASE_CHECKSUM" \
+            "$RELEASE_SBOM" \
+            "$RELEASE_ASSET_SIGNATURE" \
+            "$RELEASE_SBOM_SIGNATURE" \
+            "$RELEASE_PROVENANCE" \
+            --clobber
 
   publish-crate:
     name: Publish crate to crates.io
     needs: [quality-gate, create-release, build-release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: github.event_name == 'push' || github.event.inputs.publish_crate == 'true'
     steps:
       - name: Checkout repository

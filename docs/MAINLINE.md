@@ -202,7 +202,10 @@ relay token 或底层连接标识。
 ### M10.3 供应链与平台覆盖
 
 - Release 资产的签名、SBOM 和构建 provenance 契约已冻结，详见
-  [`V0_10_RELEASE_PROVENANCE.md`](V0_10_RELEASE_PROVENANCE.md)；workflow 接入仍待完成。
+  [`V0_10_RELEASE_PROVENANCE.md`](V0_10_RELEASE_PROVENANCE.md)，并已接入 release workflow：每个
+  target 在上传前生成 SPDX SBOM、archive/SBOM Sigstore bundle 和 GitHub provenance bundle。
+- Unix 与 PowerShell 安装器在解压前下载并校验 checksum、签名 bundle 和 provenance 文件；缺失
+  `cosign` 或任一信任材料为空时 fail closed。
 - 扩展 ARM runner 或真实设备 smoke tests，持续验证 Windows GNU/MSVC 与 macOS/Linux ARM。
 - 保持 release workflow 可重入：同一 tag 重跑时更新 Release 正文，不制造重复资产或版本。
 

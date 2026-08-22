@@ -22,13 +22,13 @@ sendmer-vX.Y.Z-TARGET.zip         # Windows
 <archive>.spdx.json
 <archive>.sigstore.json
 <archive>.spdx.json.sigstore.json
-<archive>.intoto.jsonl
+<archive>.attestation.json
 ```
 
 `BUILD-METADATA.txt` remains inside the archive and records the tag and source
 commit. The `.sha256` file names the archive exactly. The archive's Sigstore
 bundle signs the bytes that the checksum names; the SBOM bundle signs the
-corresponding SPDX JSON. The `.intoto.jsonl` file is the serialized GitHub
+corresponding SPDX JSON. The `.attestation.json` file is the serialized GitHub
 provenance bundle emitted for the archive subject.
 
 No upload step may publish only part of a target group. The package step must
@@ -54,7 +54,8 @@ The workflow must fail closed when any of these conditions is false:
 
 Consumers can verify the checksum first, then verify the Sigstore bundle against
 the expected GitHub workflow identity and OIDC issuer. GitHub's attestation
-record provides an independent provenance lookup for the archive subject.
+record provides an independent provenance lookup for the archive subject, and the
+workflow runs `gh attestation verify` against the copied bundle before upload.
 
 ## SBOM Scope and Reproducibility
 
@@ -67,3 +68,6 @@ signed as a release asset.
 The release tag remains the source of truth for version, and `source_commit` in
 the archive must equal the commit resolved from that tag. A rerun may refresh
 assets for the same tag but must not silently attest a different commit.
+Manual dispatch is accepted only when the selected ref is the same release tag
+provided as `release_version`, so the signing identity and provenance source ref
+remain tag-scoped.

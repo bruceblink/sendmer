@@ -36,6 +36,9 @@ For Git Bash, MSYS2, or Cygwin, use the shell installer instead. It requires `un
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
+Release installers verify the archive and SBOM with Sigstore before extraction;
+install `cosign` first and keep it on `PATH`.
+
 Default install path:
 
 ```powershell
@@ -58,6 +61,9 @@ curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh 
 SENDMER_VERSION=v0.9.0 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
+
+The installer requires `cosign` on `PATH` so signed release assets are verified
+before installation.
 
 Default install path:
 

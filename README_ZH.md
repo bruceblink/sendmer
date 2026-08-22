@@ -36,6 +36,9 @@ Git Bash、MSYS2 或 Cygwin 请改用 shell 安装器，并确保已安装 `unzi
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
 
+发布安装器会在解压前使用 Sigstore 校验归档和 SBOM；请先安装
+`cosign` 并确保它位于 `PATH` 中。
+
 默认安装路径：
 
 ```powershell
@@ -58,6 +61,8 @@ curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh 
 SENDMER_VERSION=v0.9.0 \
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
 ```
+
+安装器要求 `PATH` 中存在 `cosign`，以便在安装前验证已签名的发布资产。
 
 默认安装路径：
 

@@ -87,11 +87,19 @@ URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARCHIVE_NAME}"
 TMP_DIR="$(mktemp -d)"
 ARCHIVE="${TMP_DIR}/${ARCHIVE_NAME}"
 CHECKSUM="${TMP_DIR}/${ARCHIVE_NAME}.sha256"
+SBOM="${TMP_DIR}/${ARCHIVE_NAME}.spdx.json"
+ARCHIVE_SIGNATURE="${TMP_DIR}/${ARCHIVE_NAME}.sigstore.json"
+SBOM_SIGNATURE="${TMP_DIR}/${ARCHIVE_NAME}.spdx.json.sigstore.json"
+PROVENANCE="${TMP_DIR}/${ARCHIVE_NAME}.attestation.json"
 trap 'rm -rf -- "$TMP_DIR"' EXIT
 
 echo "⬇️  Downloading $URL"
 curl -fL "$URL" -o "$ARCHIVE"
 curl -fL "${URL}.sha256" -o "$CHECKSUM"
+curl -fL "${URL}.spdx.json" -o "$SBOM"
+curl -fL "${URL}.sigstore.json" -o "$ARCHIVE_SIGNATURE"
+curl -fL "${URL}.spdx.json.sigstore.json" -o "$SBOM_SIGNATURE"
+curl -fL "${URL}.attestation.json" -o "$PROVENANCE"
 
 EXPECTED_SHA256="$(awk 'NF { print $1; exit }' "$CHECKSUM")"
 EXPECTED_FILE="$(awk 'NF { print $2; exit }' "$CHECKSUM")"
@@ -113,6 +121,39 @@ ACTUAL_SHA256="${ACTUAL_SHA256,,}"
 
 if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
   echo "❌ Checksum verification failed for $ARCHIVE_NAME"
+  exit 1
+fi
+
+# Verify both signed blobs before extraction so an untrusted release cannot reach the install directory.
+if ! command -v cosign >/dev/null 2>&1; then
+  echo "❌ cosign is required to verify the signed release assets"
+  exit 1
+fi
+
+verify_sigstore_blob() {
+  local blob="$1"
+  local bundle="$2"
+  local identity_regex="^https://github.com/${REPO}/\.github/workflows/release\.yml@refs/tags/${VERSION}$"
+
+  cosign verify-blob "$blob" \
+    --bundle "$bundle" \
+    --certificate-identity-regexp "$identity_regex" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+}
+
+for trust_file in "$SBOM" "$ARCHIVE_SIGNATURE" "$SBOM_SIGNATURE" "$PROVENANCE"; do
+  if [ ! -s "$trust_file" ]; then
+    echo "❌ Release trust material is empty: $(basename "$trust_file")"
+    exit 1
+  fi
+done
+
+if ! verify_sigstore_blob "$ARCHIVE" "$ARCHIVE_SIGNATURE"; then
+  echo "❌ Sigstore verification failed for $ARCHIVE_NAME"
+  exit 1
+fi
+if ! verify_sigstore_blob "$SBOM" "$SBOM_SIGNATURE"; then
+  echo "❌ Sigstore verification failed for $(basename "$SBOM")"
   exit 1
 fi
 

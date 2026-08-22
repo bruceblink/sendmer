@@ -40,6 +40,27 @@ $ZipPath = Join-Path $TempDir $ZipName
 $Url = "https://github.com/$Repo/releases/download/$Version/$ZipName"
 $ChecksumPath = "$ZipPath.sha256"
 $ChecksumUrl = "$Url.sha256"
+$SbomPath = "${ZipPath}.spdx.json"
+$ArchiveSignaturePath = "${ZipPath}.sigstore.json"
+$SbomSignaturePath = "${ZipPath}.spdx.json.sigstore.json"
+$ProvenancePath = "${ZipPath}.attestation.json"
+
+# Verify each signed blob with the release workflow identity before extraction.
+function Invoke-SigstoreVerification {
+    param(
+        [Parameter(Mandatory = $true)][string]$BlobPath,
+        [Parameter(Mandatory = $true)][string]$BundlePath,
+        [Parameter(Mandatory = $true)][string]$IdentityRegex
+    )
+
+    & cosign verify-blob $BlobPath `
+        --bundle $BundlePath `
+        --certificate-identity-regexp $IdentityRegex `
+        --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Sigstore verification failed for $(Split-Path -Leaf $BlobPath)"
+    }
+}
 
 Write-Host "Installing sendmer $Version"
 Write-Host "Downloading $Url"
@@ -48,6 +69,10 @@ try {
     New-Item -ItemType Directory -Path $TempDir | Out-Null
     Invoke-WebRequest $Url -OutFile $ZipPath
     Invoke-WebRequest $ChecksumUrl -OutFile $ChecksumPath
+    Invoke-WebRequest "${Url}.spdx.json" -OutFile $SbomPath
+    Invoke-WebRequest "${Url}.sigstore.json" -OutFile $ArchiveSignaturePath
+    Invoke-WebRequest "${Url}.spdx.json.sigstore.json" -OutFile $SbomSignaturePath
+    Invoke-WebRequest "${Url}.attestation.json" -OutFile $ProvenancePath
 
     $ChecksumFields = @((Get-Content -Raw -LiteralPath $ChecksumPath).Trim() -split '\s+')
     $ExpectedHash = $ChecksumFields[0].ToLowerInvariant()
@@ -60,6 +85,21 @@ try {
     if ($ActualHash -ne $ExpectedHash) {
         throw "Checksum verification failed for $ZipName"
     }
+
+    if (-not (Get-Command cosign -ErrorAction SilentlyContinue)) {
+        throw "cosign is required to verify the signed release assets"
+    }
+    foreach ($TrustPath in @($SbomPath, $ArchiveSignaturePath, $SbomSignaturePath, $ProvenancePath)) {
+        if (-not (Test-Path -LiteralPath $TrustPath) -or (Get-Item -LiteralPath $TrustPath).Length -eq 0) {
+            throw "Release trust material is empty: $(Split-Path -Leaf $TrustPath)"
+        }
+    }
+
+    $EscapedRepo = [regex]::Escape($Repo)
+    $EscapedVersion = [regex]::Escape($Version)
+    $IdentityRegex = "^https://github\.com/$EscapedRepo/\.github/workflows/release\.yml@refs/tags/$EscapedVersion$"
+    Invoke-SigstoreVerification -BlobPath $ZipPath -BundlePath $ArchiveSignaturePath -IdentityRegex $IdentityRegex
+    Invoke-SigstoreVerification -BlobPath $SbomPath -BundlePath $SbomSignaturePath -IdentityRegex $IdentityRegex
 
     Write-Host "Extracting..."
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
