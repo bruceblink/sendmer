@@ -14,6 +14,7 @@ Sendmer 是一个基于 [iroh](https://crates.io/crates/iroh) 和 [iroh-blobs](h
 - 对外暴露 `send` 和 `receive` 两个 Rust API
 - 带有有序会话和结构化错误的版本化传输事件
 - 支持 sender 共享上传限速、CLI 进度显示和剪贴板辅助
+- 可选的 TM1 传输清单，用于保留空目录和可移植文件元数据
 
 sendmer 使用 256 位节点 ID，因此 ticket 在 IP 地址变化后仍可继续使用。连接使用 TLS 加密。
 
@@ -131,7 +132,10 @@ sendmer receive <ticket>
 
 接收过程默认使用临时 iroh store。只有所有导出条目都报告完成后，才会把文件或目录发布到最终目标；接收失败会清理临时数据，不会替换已有目标。使用 `--cache-dir <path>` 可显式保留失败或取消前已经验证的数据；后续进程接收相同内容时会重新打开该 store，成功导出后则删除已完成的缓存条目。
 
-目录必须包含常规文件。由于当前 collection 格式不能安全保留目录元数据，sendmer 会拒绝空目录、含空子目录的目录和符号链接。
+默认的旧 collection 模式要求目录包含常规文件。由于该格式不能安全保留目录元数据，sendmer
+会拒绝空目录、含空子目录的目录和符号链接。使用 `sendmer send --manifest <文件或目录>`
+可显式启用 v0.10 TM1 传输清单，从而保留空目录和受支持的文件元数据；符号链接以及无法
+安全还原的路径仍会被拒绝。
 
 ## 常用参数
 
@@ -180,6 +184,7 @@ sendmer cache prune --cache-dir <path>
 - `--max-total-size <bytes>`：可选地限制共享路径中普通文件的总 payload 大小；超过上限会在网络和临时存储初始化前拒绝
 - `--max-import-memory <bytes>`：可选地限制并行 sender 导入任务估算的普通文件字节预算；这是导入工作集上限，不是进程 RSS 上限
 - `--session-lifetime-seconds <seconds>`：可选地在共享就绪后按固定生命周期关闭 sender；零值会被拒绝，接收方活动不会延长生命周期
+- `--manifest`：显式启用 v0.10 TM1 传输清单，以保留空目录和可移植文件元数据；默认仍使用旧 collection 模式
 - `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板（默认启用 `clipboard` feature 时可用）
 
 ## 作为库使用
@@ -205,6 +210,9 @@ async fn main() -> anyhow::Result<()> {
 
 嵌入式调用方可设置 `SendOptions::session_lifetime`。生命周期到期后 router 会关闭，sender
 发出一次不可重试的超时事件，并发布 `SenderTransferStatus::Expired`，调用方随后复用正常清理路径。
+
+需要保留空目录或使用 v0.10 可移植元数据契约的嵌入式调用方可设置
+`SendOptions::manifest_mode`。为保持兼容，默认仍使用旧的 file-only collection 格式。
 
 调用 `SendHandle::cancel` 可主动撤销共享。它会先停止 provider，再关闭 router，因此撤销后旧
 ticket 不能再建立新的接收连接。ticket 只在发送方 router 存活期间作为 bearer capability 有效，

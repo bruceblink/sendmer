@@ -14,6 +14,7 @@ It is based on [n0-computer/sendme v0.31.0](https://github.com/n0-computer/sendm
 - Reusable Rust API via exported `send` and `receive` functions
 - Versioned transfer events with ordered sessions and structured errors
 - Optional shared sender upload limit, CLI progress output, and clipboard helper
+- Optional TM1 transfer manifest for empty directories and portable file metadata
 
 sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses change during a session. Connections are encrypted with TLS.
 
@@ -132,7 +133,11 @@ sendmer receive <ticket>
 
 Receive-side data uses a temporary iroh store by default. Final files or directories are published only after every export reports completion; a failed receive cleans its temporary data without replacing an existing target. To keep verified ranges after a failure or cancellation, opt in with `--cache-dir <path>`; a later receive for the same content can reopen that store, while a successful export removes the completed cache entry.
 
-Directories must contain regular files. sendmer rejects empty directories, directories with empty subdirectories, and symbolic links because the current collection format cannot preserve them safely.
+In the default legacy collection mode, directories must contain regular files. sendmer rejects empty
+directories, directories with empty subdirectories, and symbolic links because that collection format
+cannot preserve them safely. Use `sendmer send --manifest <file-or-directory>` to opt into the v0.10
+TM1 transfer manifest, which preserves empty directories and supported file metadata; symbolic links
+and paths that cannot be materialized safely are still rejected.
 
 ## Useful Options
 
@@ -181,6 +186,7 @@ Send-specific options:
 - `--max-total-size <bytes>`: optionally reject a share before startup when regular files exceed the configured total payload size
 - `--max-import-memory <bytes>`: optionally bound estimated regular-file bytes held by concurrent sender imports; this is an import working-set budget, not a process RSS limit
 - `--session-lifetime-seconds <seconds>`: optionally close the sender after a fixed lifetime once the share is ready; zero is rejected and receiver activity does not extend it
+- `--manifest`: opt into the v0.10 TM1 transfer manifest for empty directories and portable file metadata; legacy collection mode remains the default
 - `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard (available in the default `clipboard` feature build)
 
 ## Library Usage
@@ -207,6 +213,10 @@ can use `receive` or `receive_with_cancellation` with `ReceiveOptions`.
 Set `SendOptions::session_lifetime` when an embedding needs a bounded sender lifetime. On expiry,
 the router closes, the sender emits one non-retryable timeout event, and
 `SenderTransferStatus::Expired` lets the owner enter its normal cleanup path.
+
+Set `SendOptions::manifest_mode` when an embedding needs empty-directory preservation or the v0.10
+portable metadata contract. The default remains the legacy file-only collection format for
+compatibility.
 
 Call `SendHandle::cancel` to actively revoke a share. It stops the provider before closing the router,
 so the existing ticket cannot establish new receives after cancellation. A ticket is only a bearer
