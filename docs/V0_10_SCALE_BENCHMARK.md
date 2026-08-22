@@ -43,3 +43,15 @@ case=large-directory summary=min_ms:54.551,avg_ms:64.536,max_ms:69.981
 
 这些数值是当前机器的参考快照，不是 release gate；改变案例大小或导入预算后应重新记录
 完整输出和运行环境。
+
+## Relay Smoke
+
+relay-only 验收不进入默认离线门禁。设置 `SENDMER_RELAY_SMOKE=1` 后，可选用
+`SENDMER_RELAY_URL` 指定 relay URL（未设置时使用 iroh production default relay），再运行：
+
+```powershell
+$env:SENDMER_RELAY_SMOKE = "1"
+cargo test --locked --test relay_smoke -- --ignored --nocapture
+```
+
+测试强制 Ticket 只包含 relay 地址，验证 sender online、receiver round-trip 和 payload 完整性。
