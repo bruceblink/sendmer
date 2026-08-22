@@ -188,10 +188,11 @@ mod tests {
     use super::{finalize_sender_shutdown, normalize_sender_cleanup_result};
     use crate::core::{
         events::{EventEmitter, TransferEvent, TransferEventData},
-        options::{RelayModeOption, SendOptions},
-        sender,
+        options::{ReceiveOptions, ReceiveRetryPolicy, RelayModeOption, SendOptions},
+        receiver, sender,
     };
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     #[derive(Default)]
     struct RecordingEmitter {
@@ -299,5 +300,56 @@ mod tests {
         assert!(matches!(events[1].event, TransferEventData::Cancelled));
         assert_eq!(events[0].session_id, events[1].session_id);
         assert_eq!([events[0].sequence, events[1].sequence], [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn send_handle_cancel_revokes_ticket_for_later_receives() {
+        let source_dir = tempfile::tempdir().expect("source directory");
+        let target_dir = tempfile::tempdir().expect("target directory");
+        let source_file = source_dir.path().join("revoked.bin");
+        tokio::fs::write(&source_file, b"revoked ticket")
+            .await
+            .expect("write source file");
+        let options = SendOptions {
+            relay_mode: RelayModeOption::Disabled,
+            ..SendOptions::default()
+        };
+
+        let result = sender::send(source_file, options, None)
+            .await
+            .expect("start sender");
+        let ticket = result.ticket.to_string();
+        result.into_handle().cancel().await.expect("cancel sender");
+
+        let receive_options = ReceiveOptions {
+            output_dir: Some(target_dir.path().to_path_buf()),
+            relay_mode: RelayModeOption::Disabled,
+            retry_policy: ReceiveRetryPolicy {
+                size_fetch_retry_limit: 1,
+                size_fetch_backoff_ms: 0,
+                download_retry_limit: 1,
+                download_retry_backoff_ms: 0,
+                connect_timeout_ms: Some(100),
+                metadata_timeout_ms: Some(100),
+                download_idle_timeout_ms: Some(100),
+                ..ReceiveRetryPolicy::default()
+            },
+            ..ReceiveOptions::default()
+        };
+        let receive = tokio::time::timeout(
+            Duration::from_secs(2),
+            receiver::receive(ticket, receive_options, None),
+        )
+        .await
+        .expect("revoked ticket should fail promptly")
+        .expect_err("a cancelled sender must reject later receives");
+
+        assert!(!target_dir.path().join("revoked.bin").exists());
+        assert!(
+            receive.to_string().contains("connect")
+                || receive.to_string().contains("sender")
+                || receive.to_string().contains("interrupted"),
+            "revoked receive should report a connection failure: {receive:#}"
+        );
     }
 }

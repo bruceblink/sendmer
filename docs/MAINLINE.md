@@ -92,6 +92,8 @@ flowchart LR
 
 - `SendHandle` 是发送会话的 opaque 所有者，负责 `status`、`cancel` 和 `close`；兼容用旧 API
   不应成为新消费者的首选。
+- `SendHandle::cancel` 是主动撤销：它先唤醒并停止 provider，再关闭 router，因此旧 Ticket
+  只在 router 存活期间有效；Ticket 是 bearer capability，不代表账号、持久 ACL 或撤销列表。
 - sender 关闭时依次停止 router/progress/store，释放文件句柄后再删除临时目录。
 - receive 取消、失败和成功都必须有单一终态；清理失败保留原始业务错误并附加清理上下文。
 - 单个接收方完成或中止不会终止整个 sender 会话，CLI 默认持续共享到用户主动停止。
@@ -170,7 +172,8 @@ relay token 或底层连接标识。
 - `SendOptions::max_receivers` 与 CLI `--max-receivers` 已实现同时活动 provider 连接数上限；默认不限制，断开连接会释放名额，超限连接由 provider 层拒绝。
 - `SendOptions::max_files` 与 CLI `--max-files` 已实现普通文件数量上限；默认不限制，目录超限会在网络和临时存储初始化前以 `InvalidInput` 拒绝。
 - `SendOptions::max_total_size_bytes` 与 CLI `--max-total-size` 已实现普通文件总 payload 大小上限；默认不限制，文件长度总量超限会在网络和临时存储初始化前以 `InvalidInput` 拒绝。
-- 继续设计 sender 会话过期、主动撤销，明确 ticket bearer capability 的兼容性。
+- `SendHandle::cancel` 的主动撤销和旧 Ticket 失效已有本地回归；sender 会话自动过期仍待设计，
+  不改变现有 Ticket 的 bearer capability 兼容性。
 - 增加内存上限，建立大文件和大目录基准。
 - 已补两个真实并行接收方共享总上传上限的本地 E2E；sender 关闭会立即唤醒并终止尚未放行
   的限速等待；真实 relay 和弱网 smoke tests 仍待补。

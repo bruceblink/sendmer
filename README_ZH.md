@@ -196,6 +196,10 @@ async fn main() -> anyhow::Result<()> {
 旧的 `send` 函数和 `SendResult::shutdown` 仍保留用于兼容。接收端可以使用 `receive`，
 或使用带取消能力的 `receive_with_cancellation` 与 `ReceiveOptions`。
 
+调用 `SendHandle::cancel` 可主动撤销共享。它会先停止 provider，再关闭 router，因此撤销后旧
+ticket 不能再建立新的接收连接。ticket 只在发送方 router 存活期间作为 bearer capability 有效，
+不代表账号、持久 ACL 或撤销列表。
+
 `TransferEvent` 现在是版本化 `TransferEventEnvelope` 的公开别名。每个 send 或 receive 会话
 具有一个随机 `session_id`、严格递增的 `sequence`、显式阶段，并且 completed、failed、
 cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode`、失败阶段、可重试属性和

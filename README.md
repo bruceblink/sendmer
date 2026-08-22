@@ -196,6 +196,10 @@ async fn main() -> anyhow::Result<()> {
 The legacy `send` function and `SendResult::shutdown` remain available for compatibility. A receiver
 can use `receive` or `receive_with_cancellation` with `ReceiveOptions`.
 
+Call `SendHandle::cancel` to actively revoke a share. It stops the provider before closing the router,
+so the existing ticket cannot establish new receives after cancellation. A ticket is only a bearer
+capability while its sender router is alive; it is not an account, persistent ACL, or revocation list.
+
 `TransferEvent` is now the versioned `TransferEventEnvelope` alias. Each send or receive session has
 one random `session_id`, strictly increasing `sequence` values, an explicit phase, and at most one of
 completed, failed, or cancelled. Failed events contain `TransferErrorCode`, failure phase,
