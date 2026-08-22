@@ -48,6 +48,8 @@ jobs:
         run: bash ./tests/release-version.sh
       - name: release asset contract rehearsal
         run: bash ./tests/release-assets.sh
+      - name: release notes contract
+        run: python3 ./tests/release-notes.py
       - name: shell installer target validation
         run: bash ./tests/install-target.sh
 
