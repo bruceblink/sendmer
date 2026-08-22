@@ -10,6 +10,14 @@ for version in "${INVALID_VERSIONS[@]}"; do
   ! [[ "$version" =~ $VERSION_PATTERN ]]
 done
 
+# Keep the package, lockfile, and both README install examples on one version.
+CRATE_VERSION="$(python3 -c 'import pathlib, tomllib; manifest = tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8")); lock = tomllib.loads(pathlib.Path("Cargo.lock").read_text(encoding="utf-8")); expected = manifest["package"]["version"]; actual = next(package["version"] for package in lock["package"] if package["name"] == "sendmer"); assert actual == expected, (expected, actual); print(expected)')"
+EXPECTED_TAG="v${CRATE_VERSION}"
+for readme in README.md README_ZH.md; do
+  grep -Fq "SENDMER_VERSION=\"${EXPECTED_TAG}\"" "$readme"
+  grep -Fq "SENDMER_VERSION=${EXPECTED_TAG}" "$readme"
+done
+
 # Keep the release workflow and Unix installer on the same validation contract.
 grep -Fq "$VERSION_PATTERN" .github/workflows/release.yml
 grep -Fq "$VERSION_PATTERN" install.sh
