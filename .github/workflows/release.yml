@@ -337,7 +337,8 @@ jobs:
           SBOM_SIGNATURE="${RELEASE_SBOM}.sigstore.json"
           cosign sign-blob "$RELEASE_ASSET" --bundle "$ASSET_SIGNATURE" --yes
           cosign sign-blob "$RELEASE_SBOM" --bundle "$SBOM_SIGNATURE" --yes
-          IDENTITY_REGEX="^https://github\\.com/${GITHUB_REPOSITORY}/\\.github/workflows/release\\.yml@refs/tags/${RELEASE_VERSION}$"
+          # Bracketed dots survive Git Bash's Windows argument conversion unchanged.
+          IDENTITY_REGEX="^https://github[.]com/${GITHUB_REPOSITORY}/[.]github/workflows/release[.]yml@refs/tags/${RELEASE_VERSION}$"
           cosign verify-blob "$RELEASE_ASSET" \
             --bundle "$ASSET_SIGNATURE" \
             --certificate-identity-regexp "$IDENTITY_REGEX" \

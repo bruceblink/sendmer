@@ -84,6 +84,13 @@ validate_workflow_matrix() {
   done
 }
 
+# Git Bash on Windows rewrites backslash escapes in command arguments. Keep the
+# cosign identity pattern free of backslashes so Windows verification matches
+# the same certificate identity as Linux and macOS.
+validate_windows_safe_identity_regex() {
+  grep -Fq 'IDENTITY_REGEX="^https://github[.]com/${GITHUB_REPOSITORY}/[.]github/workflows/release[.]yml@refs/tags/${RELEASE_VERSION}$"' .github/workflows/release.yml
+}
+
 # Keep CI's native acceptance matrix aligned with the platform contract. Release
 # cross-builds alone cannot prove native filesystem semantics on ARM runners.
 validate_ci_native_matrix() {
@@ -127,6 +134,7 @@ run_negative_cases() {
 }
 
 validate_workflow_matrix
+validate_windows_safe_identity_regex
 validate_ci_native_matrix
 run_expected_matrix
 run_negative_cases
