@@ -198,9 +198,10 @@ relay token 或底层连接标识。
 - 保持旧 file-only collection 可读取，并提供明确的 schema 迁移和不支持错误。
 
 验收：Windows UTF-8 round-trip 和空目录 fixture 已通过；manifest JSON、恶意路径、未来 schema、
-文件/目录冲突和 Unix 非 UTF-8 编解码已有测试。CI 的原生矩阵覆盖 Linux、macOS、Windows
-（MSVC/GNU），并将真实权限/时间戳与原始名称检查作为发布前门禁；当前开发机已完成 Windows
-与 WSL Linux 全量测试，macOS 结果仍以对应 runner 的 CI 记录为准。失败或冲突时仍无半导出和越界写入。
+文件/目录冲突、Unix 非 UTF-8 文件名、Unix mode 和跨平台时间戳均有测试。CI 的原生矩阵覆盖
+Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名称检查作为发布前门禁；当前
+开发机已完成 Windows 与 WSL Linux 全量测试，macOS 结果仍以对应 runner 的 CI 记录为准。
+失败或冲突时仍无半导出和越界写入。
 
 ### M10.3 供应链与平台覆盖
 

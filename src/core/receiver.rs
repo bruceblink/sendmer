@@ -332,6 +332,15 @@ fn apply_manifest_metadata(
     target: &Path,
     metadata: &crate::core::manifest::ManifestMetadata,
 ) -> anyhow::Result<()> {
+    // Apply timestamps before the final permission state: a Windows read-only
+    // file rejects later metadata writes with ERROR_ACCESS_DENIED.
+    if let Some(modified) = metadata.modified {
+        filetime::set_file_mtime(
+            target,
+            filetime::FileTime::from_unix_time(modified.seconds, modified.nanos),
+        )?;
+    }
+
     if let Some(permissions) = &metadata.permissions {
         #[cfg(unix)]
         if let Some(mode) = permissions.posix_mode {
@@ -344,12 +353,6 @@ fn apply_manifest_metadata(
             current.set_readonly(read_only);
             std::fs::set_permissions(target, current)?;
         }
-    }
-    if let Some(modified) = metadata.modified {
-        filetime::set_file_mtime(
-            target,
-            filetime::FileTime::from_unix_time(modified.seconds, modified.nanos),
-        )?;
     }
     Ok(())
 }
