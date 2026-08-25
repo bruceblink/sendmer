@@ -1,6 +1,6 @@
 # sendmer 下一阶段开发计划：v0.10.0 发布后的桌面适配
 
-> 文档状态：执行计划，基线日期：2026-08-25。<br>
+> 文档状态：已完成执行记录，基线日期：2026-08-25。<br>
 > 适用范围：`F:\project\sendmer` 及其正式桌面消费者 `F:\project\alter-sendme-gpui`。<br>
 > 计划边界：本文件把下一阶段拆成可验收的跨项目批次，不修改 `sendmer v0.10.0` 已冻结的核心协议；稳定契约仍以 [MAINLINE.md](MAINLINE.md) 为准。
 
@@ -29,16 +29,26 @@
 | 核心发布 | tag `v0.10.0` 已发布，tag 指向 `fe1f475`；`main` 文档收尾提交为 `37a932e` | `git tag`、`git ls-remote origin`、[MAINLINE.md](MAINLINE.md) |
 | v0.10 范围 | sender 会话生命周期、接收方/文件/总大小/导入工作集限制、TM1 manifest、供应链证明和六平台发布矩阵已完成 | [MAINLINE.md](MAINLINE.md)、[V0_10_MANIFEST_DESIGN.md](V0_10_MANIFEST_DESIGN.md)、[V0_10_RELEASE_PROVENANCE.md](V0_10_RELEASE_PROVENANCE.md) |
 | 核心仓库状态 | 开始本计划前，本地 `main` 与 `origin/main` 同步且工作区干净；当前没有 `v0.11` 标签 | `git status --short --branch`、`git ls-remote origin` |
-| 桌面消费者 | `AlterSendmer v0.5.0` 仍通过 crates.io 使用 `sendmer = "0.9.0"` | [AlterSendmer 主线计划](../../alter-sendme-gpui/docs/MAINLINE.md)、该仓库 `Cargo.toml` |
+| 桌面消费者 | `AlterSendmer v0.6.0` 已通过 crates.io 使用 `sendmer = "0.10.0"` 并完成正式发布 | [AlterSendmer 主线计划](../../alter-sendme-gpui/docs/MAINLINE.md)、该仓库 `Cargo.toml`、GitHub Release `v0.6.0` |
 
-### 2.2 下一阶段结论
+### 2.2 阶段结论（已完成）
 
-下一阶段的主线是“正式包升级和桌面验收”，不是继续向核心端追加协议功能：
+本阶段已按“正式包升级和桌面验收”完成，未向核心端追加协议功能：
 
-1. 在 `AlterSendmer` 中把依赖从 `0.9.0` 升级为正式发布的 `0.10.0`，只使用公开接口。
-2. 将会话过期、接收方上限、主动撤销和 TM1 结果映射为清晰的桌面状态；桌面端不解释 wire schema。
-3. 用跨进程回归、Windows 原生窗口/文件系统验收和三平台 CI 证明升级没有破坏既有能力。
-4. 只有适配过程中发现可复现的核心缺陷时，才单独创建 `sendmer 0.10.x` 修复批次；不以桌面需求为理由启动 `v0.11`。
+1. `AlterSendmer` 已从 `0.9.0` 升级到正式发布的 `0.10.0`，只使用公开接口。
+2. 会话过期、接收方上限、主动撤销和 TM1 结果已映射为清晰的桌面状态；桌面端不解释 wire schema。
+3. 跨进程回归、Windows 原生窗口/文件系统验收和 Windows/Ubuntu/macOS CI 均已通过。
+4. 未发现需要 `sendmer 0.10.x` 修复批次的核心缺陷，也未因桌面需求启动 `v0.11`。
+
+### 2.3 执行结果与发布证据
+
+| 批次 | 当前结果 | 证据 |
+| --- | --- | --- |
+| P11 | 依赖迁移完成 | AlterSendmer `0d1761a`，`cargo tree -i sendmer@0.10.0` |
+| P12 | 会话控制与能力映射完成 | AlterSendmer `ff88953`，状态机/结构化错误测试 |
+| P13 | TM1 选择与跨进程兼容完成 | AlterSendmer `4a3e91d`，legacy/TM1 adapter fixture |
+| P14 | 原生与跨平台验收完成 | Windows 截图产物、CI run `32859241361` |
+| P15 | 版本、文档和正式发布完成 | AlterSendmer tag/Release `v0.6.0`，Release workflow `32866559790`，23 个资产；三个平台打包、签名、SBOM、provenance、更新清单和 checksum 均已上传 |
 
 ## 3. 阶段目标与完成定义
 
@@ -203,7 +213,7 @@ cargo test --workspace --all-features --locked
 
 ### 7.3 文档回写
 
-P11 完成后更新 AlterSendmer 的依赖版本；P15 发布后同步 [MAINLINE.md](MAINLINE.md) 与
+P11 完成后更新 AlterSendmer 的依赖版本；P15 发布后已同步 [MAINLINE.md](MAINLINE.md) 与
 [AlterSendmer 主线计划](../../alter-sendme-gpui/docs/MAINLINE.md) 的版本矩阵和下一主线状态。
 本文件在本阶段完成后保留为执行记录，不取代稳定契约、迁移指南或历史 Release Notes。
 
