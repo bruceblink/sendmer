@@ -2,7 +2,7 @@
 
 本文件包含开发者在本仓库中常用的本地检查、Clippy 与工具链设置说明。
 
-架构、稳定契约和主线迭代计划统一见：[docs/MAINLINE.md](docs/MAINLINE.md)
+架构、稳定接口约定和主线迭代计划统一见：[docs/MAINLINE.md](docs/MAINLINE.md)
 
 ## Clippy & 项目配置
 本项目在 crate 根使用了 Clippy 警告（`#![warn(clippy::all)]` 和 `#![warn(clippy::nursery)]`），并包含 `clippy.toml`（`msrv = "1.91.0"`）。为避免工具链不匹配，推荐使用 Rust 1.91 或更高版本。
@@ -84,13 +84,13 @@ bash scripts/install-git-hooks.sh
 - `cargo test --locked --workspace --all-features --bins --tests --examples`
 - `git status --short` 为空，且发布说明会包含本次变更和验证结果。
 
-本地质量门通过后，先创建本地标签并运行无上传演练；脚本会在临时 worktree 中校验标签版本并执行同一组质量门禁：
+本地质量检查通过后，先创建本地标签并运行无上传演练；脚本会在临时 worktree 中校验标签版本并执行同一组发布前检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rehearse-release.ps1 -Tag v0.6.0
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rehearse-release.ps1 -Tag v0.10.0
 ```
 
-演练通过后推送标签；推送标签会触发 release workflow。随后可使用 `-RequireRemoteTag -SkipQualityGate` 确认远端标签仍指向同一提交。release workflow 会再次校验标签版本与 `Cargo.toml`，让 quality-gate/create/build/publish 全部使用该标签，并在构建产物上传前执行同一组质量门禁和 `.sha256` sidecar 校验。
+演练通过后推送标签；推送标签会触发 release workflow。随后可使用 `-RequireRemoteTag -SkipQualityGate` 确认远端标签仍指向同一提交。release workflow 会再次校验标签版本与 `Cargo.toml`，让 quality-gate/create/build/publish 全部使用该标签，并在构建产物上传前执行同一组发布前检查和 `.sha256` sidecar 校验。
 
 ## 提交与推送
 在本地确认 lint 与测试通过后提交并推送：
