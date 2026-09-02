@@ -4,12 +4,13 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     str::FromStr,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use iroh::EndpointAddr;
 use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
-use sendmer::{TransferErrorCode, TransferEvent, TransferEventData};
+use sendmer::{EventEmitter, TransferErrorCode, TransferEvent, TransferEventData};
 
 // Resolve the binary before changing the child working directory so parallel
 // tests cannot make the command path point at a temporary directory.
@@ -114,6 +115,26 @@ fn assert_ordered_single_session(events: &[TransferEvent]) {
         1
     );
     assert!(events.last().expect("terminal event").event.is_terminal());
+}
+
+#[derive(Default)]
+struct RecordingEmitter {
+    events: Mutex<Vec<TransferEvent>>,
+}
+
+impl RecordingEmitter {
+    fn snapshot(&self) -> Vec<TransferEvent> {
+        self.events.lock().expect("event recording lock").clone()
+    }
+}
+
+impl EventEmitter for RecordingEmitter {
+    fn emit(&self, event: &TransferEvent) {
+        self.events
+            .lock()
+            .expect("event recording lock")
+            .push(event.clone());
+    }
 }
 
 #[test]
@@ -289,6 +310,86 @@ fn send_recv_file() {
     let tgt_file = tgt_dir.path().join(name);
     let tgt_data = std::fs::read(tgt_file).unwrap();
     assert_eq!(tgt_data, data);
+}
+
+#[test]
+fn cancellable_receive_preserves_cache_and_emits_one_cancelled_terminal() {
+    let name = "cancelled-receive.bin";
+    let data = vec![13u8; 2 * 1024 * 1024];
+    let source_dir = tempfile::tempdir().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let cache_root = tempfile::tempdir().unwrap();
+    let source_file = source_dir.path().join(name);
+    std::fs::write(&source_file, &data).unwrap();
+
+    let mut send =
+        RunningSend::spawn_with_upload_rate(&source_file, source_dir.path(), Some(128 * 1024))
+            .unwrap();
+    let ticket = send.read_ticket();
+    let cache_entry = cache_root
+        .path()
+        .join("v1")
+        .join(format!("1-{}", ticket.hash().to_hex()));
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let options = sendmer::ReceiveOptions {
+        output_dir: Some(output_dir.path().to_path_buf()),
+        relay_mode: sendmer::RelayModeOption::Disabled,
+        retry_policy: sendmer::core::options::ReceiveRetryPolicy {
+            connect_timeout_ms: Some(1_000),
+            metadata_timeout_ms: Some(1_000),
+            download_idle_timeout_ms: Some(1_000),
+            ..Default::default()
+        },
+        receive_cache: Some(sendmer::ReceiveCacheOptions::new(cache_root.path())),
+        ..Default::default()
+    };
+    let receiver = runtime.spawn(sendmer::receive_with_cancellation(
+        ticket.to_string(),
+        options,
+        Some(emitter.clone()),
+        Some(cancel_rx),
+    ));
+
+    // Wait for actual payload progress before cancelling, so this covers the receive cleanup
+    // path after a cache entry has been opened and verified data has reached disk.
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if emitter.snapshot().iter().any(|event| {
+                    matches!(
+                        &event.event,
+                        TransferEventData::Progress { processed, .. } if *processed > 0
+                    )
+                }) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("receive should report payload progress before cancellation");
+        cancel_tx.send(true).expect("send receive cancellation");
+        let result = receiver.await.expect("receive task should join");
+        result.expect_err("cancelled receive must return an error");
+    });
+    send.cleanup();
+
+    assert!(cache_entry.join("manifest.json").is_file());
+    assert!(cache_entry.join("blobs.db").is_file());
+    assert!(!output_dir.path().join(name).exists());
+    let events = emitter.snapshot();
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        events.last().map(|event| &event.event),
+        Some(TransferEventData::Cancelled)
+    ));
+
+    let report = runtime
+        .block_on(sendmer::prune_receive_cache(cache_root.path()))
+        .expect("cancelled receive must release the cache lock");
+    assert_eq!(report.retained_entries, 1);
 }
 
 #[test]
