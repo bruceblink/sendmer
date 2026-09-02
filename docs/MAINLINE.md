@@ -314,6 +314,11 @@ Linux/macOS CI 有对应结果；无 sendmer 私有类型进入桌面代码。
 JSON Lines 只保留一个不可重试的 `Timeout` 终态，JSON 模式的人类接收命令仍写入 stderr，并在
 隔离临时目录中确认 sender store 已清理。该测试同样使用本地禁用 relay 的 headless 运行。
 
+随后补充 CLI `--max-receivers 1` 的跨进程回归：首个 receiver 在实际 payload 进度期间占用名额，
+第二个 receiver 被 provider 拒绝并收到可重试的结构化 `TransferInterrupted` 元数据失败；首个
+receiver 完成并释放连接后，第三个 receiver 使用同一 ticket 成功导出。该测试确认超限请求不写入
+部分目标文件，并覆盖名额释放而不依赖底层错误文本分支。
+
 #### C11.2：可观测性与 API 评审
 
 - 为 `TransferEventEnvelope` 固定 `schema_version`、`session_id`、严格递增 `sequence`、阶段、

@@ -189,6 +189,28 @@ impl RunningSend {
         Self::spawn_with_config(path, cwd, max_upload_rate, None, None)
     }
 
+    /// Launch a sender with an active receiver ceiling for cross-process admission tests.
+    fn spawn_with_receiver_limit(
+        path: &Path,
+        cwd: &Path,
+        max_receivers: u64,
+        max_upload_rate: u64,
+    ) -> io::Result<Self> {
+        let child = Command::new(sendmer_bin())
+            .args(["send", "--no-progress", "--relay", "disabled"])
+            .arg("--max-receivers")
+            .arg(max_receivers.to_string())
+            .arg("--max-upload-rate")
+            .arg(max_upload_rate.to_string())
+            .arg(path)
+            .current_dir(cwd)
+            .env_remove("RUST_LOG")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        Ok(Self { child })
+    }
+
     /// Launch a sender in explicit TM1 manifest mode for v0.10 directory fixtures.
     fn spawn_with_manifest(path: &Path, cwd: &Path) -> io::Result<Self> {
         let child = Command::new(sendmer_bin())
@@ -455,6 +477,147 @@ fn cli_session_lifetime_expires_and_cleans_sender_storage() {
     assert!(
         leaked.is_empty(),
         "sender lifetime shutdown should remove temporary storage: {leaked:?}"
+    );
+}
+
+#[test]
+fn cli_max_receivers_rejects_over_limit_and_releases_slot() {
+    let name = "receiver-limit.bin";
+    let data = vec![7u8; 2 * 1024 * 1024];
+    let source_dir = tempfile::tempdir().unwrap();
+    let first_output = tempfile::tempdir().unwrap();
+    let rejected_output = tempfile::tempdir().unwrap();
+    let reopened_output = tempfile::tempdir().unwrap();
+    let source_file = source_dir.path().join(name);
+    std::fs::write(&source_file, &data).unwrap();
+
+    let mut sender =
+        RunningSend::spawn_with_receiver_limit(&source_file, source_dir.path(), 1, 256 * 1024)
+            .expect("limited sender should start");
+    let ticket = sender.read_ticket();
+
+    let mut first_receive = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--relay",
+            "disabled",
+            "--json-events",
+            "--output-dir",
+            first_output.path().to_str().unwrap(),
+            &ticket.to_string(),
+        ])
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("first receive should start");
+    let stdout = first_receive.stdout.take().expect("first receive stdout");
+    let (line_sender, line_receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match stdout.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) if line_sender.send(line).is_err() => break,
+                Ok(_) => {}
+            }
+        }
+    });
+
+    let minimum_progress = 256 * 1024;
+    loop {
+        let line = line_receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("first receive should report progress before the second connection");
+        let event: TransferEvent = serde_json::from_str(line.trim()).unwrap_or_else(|error| {
+            panic!("first receive emitted invalid JSON event: {error}: {line}")
+        });
+        match event.event {
+            TransferEventData::Progress { processed, .. } if processed >= minimum_progress => {
+                break;
+            }
+            TransferEventData::Failed { error } => {
+                panic!("first receive failed before admission check: {error:?}")
+            }
+            TransferEventData::Completed => {
+                panic!("first receive completed before admission check")
+            }
+            _ => {}
+        }
+    }
+
+    let rejected = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--relay",
+            "disabled",
+            "--json-events",
+            "--retry-limit",
+            "1",
+            "--connect-timeout-ms",
+            "1000",
+            "--metadata-timeout-ms",
+            "1000",
+            "--download-idle-timeout-ms",
+            "1000",
+            "--output-dir",
+            rejected_output.path().to_str().unwrap(),
+            &ticket.to_string(),
+        ])
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("second receive should run");
+    assert!(!rejected.status.success(), "over-limit receive must fail");
+    let rejected_events = parse_json_events(&rejected.stdout);
+    assert_ordered_single_session(&rejected_events);
+    assert!(
+        matches!(
+            rejected_events.last().map(|event| &event.event),
+            Some(TransferEventData::Failed { error })
+                if error.code == TransferErrorCode::TransferInterrupted
+                    && error.phase == sendmer::core::events::TransferPhase::Metadata
+                    && error.retryable
+        ),
+        "over-limit receive should expose a retryable metadata failure: {rejected_events:?}"
+    );
+    assert!(
+        !rejected_output.path().join(name).exists(),
+        "rejected receive must not export a partial file"
+    );
+
+    let first_status = first_receive.wait().expect("wait for first receive");
+    reader.join().expect("join first receive event reader");
+    assert!(
+        first_status.success(),
+        "first receive should finish after the rejected connection: {first_status}"
+    );
+    assert_eq!(std::fs::read(first_output.path().join(name)).unwrap(), data);
+
+    let reopened = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--relay",
+            "disabled",
+            "--no-progress",
+            "--output-dir",
+            reopened_output.path().to_str().unwrap(),
+            &ticket.to_string(),
+        ])
+        .env_remove("RUST_LOG")
+        .output()
+        .expect("receive after slot release should run");
+    sender.cleanup();
+    assert!(
+        reopened.status.success(),
+        "released receiver slot should accept a later receive: {}",
+        String::from_utf8_lossy(&reopened.stderr)
+    );
+    assert_eq!(
+        std::fs::read(reopened_output.path().join(name)).unwrap(),
+        data
     );
 }
 
