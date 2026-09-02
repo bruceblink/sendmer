@@ -310,6 +310,10 @@ Linux/macOS CI 有对应结果；无 sendmer 私有类型进入桌面代码。
 使用本地禁用 relay 的 headless 传输，不替代真实 relay 或弱网 smoke；C11.1 其他取消、过期、
 重试和资源清理场景继续按出口条件推进。
 
+同日再补 CLI `--session-lifetime-seconds` 的跨进程回归：sender 在固定生命周期到期后正常退出，
+JSON Lines 只保留一个不可重试的 `Timeout` 终态，JSON 模式的人类接收命令仍写入 stderr，并在
+隔离临时目录中确认 sender store 已清理。该测试同样使用本地禁用 relay 的 headless 运行。
+
 #### C11.2：可观测性与 API 评审
 
 - 为 `TransferEventEnvelope` 固定 `schema_version`、`session_id`、严格递增 `sequence`、阶段、

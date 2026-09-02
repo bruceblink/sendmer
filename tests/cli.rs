@@ -393,6 +393,72 @@ fn cancellable_receive_preserves_cache_and_emits_one_cancelled_terminal() {
 }
 
 #[test]
+fn cli_session_lifetime_expires_and_cleans_sender_storage() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let isolated_temp = tempfile::tempdir().unwrap();
+    let source_file = source_dir.path().join("session-lifetime.bin");
+    std::fs::write(&source_file, b"session lifetime cleanup").unwrap();
+    let temp_path = isolated_temp.path().to_str().unwrap();
+
+    let output = Command::new(sendmer_bin())
+        .args([
+            "send",
+            "--no-progress",
+            "--json-events",
+            "--relay",
+            "disabled",
+            "--session-lifetime-seconds",
+            "1",
+        ])
+        .arg(&source_file)
+        .current_dir(source_dir.path())
+        .env("TMPDIR", temp_path)
+        .env("TEMP", temp_path)
+        .env("TMP", temp_path)
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+
+    // The CLI should treat an expected lifetime expiry as a clean shutdown while still
+    // publishing the structured timeout event that explains why the share ended.
+    assert!(
+        output.status.success(),
+        "expired sender should exit cleanly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = parse_json_events(&output.stdout);
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        events.last().map(|event| &event.event),
+        Some(TransferEventData::Failed { error })
+            if error.code == TransferErrorCode::Timeout
+                && error.phase == sendmer::core::events::TransferPhase::Finalizing
+                && !error.retryable
+    ));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("sendmer receive"),
+        "JSON mode should keep the receive command in stderr"
+    );
+
+    let leaked = std::fs::read_dir(isolated_temp.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".sendmer-send-"))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        leaked.is_empty(),
+        "sender lifetime shutdown should remove temporary storage: {leaked:?}"
+    );
+}
+
+#[test]
 fn send_upload_rate_caps_local_payload_transfer() {
     let name = "rate-limited.bin";
     let data = vec![9u8; 256 * 1024];
