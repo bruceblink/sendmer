@@ -319,6 +319,12 @@ JSON Lines 只保留一个不可重试的 `Timeout` 终态，JSON 模式的人�
 receiver 完成并释放连接后，第三个 receiver 使用同一 ticket 成功导出。该测试确认超限请求不写入
 部分目标文件，并覆盖名额释放而不依赖底层错误文本分支。
 
+本阶段再补公开 `SendHandle::cancel` 的跨进程回归：测试进程通过 library API 启动 sender，外部
+CLI receiver 在实际 payload 传输期间建立连接并取得进度，随后调用 `cancel`。receiver 进程以
+可重试的 `ConnectionFailed` 或 `TransferInterrupted` 失败终态退出，事件序号和单一终态保持有效，
+输出目录没有半导出文件；sender 取消返回成功，资源关闭由既有生命周期 API 完成。该测试使用
+本地禁用 relay 和固定 loopback 地址，不替代真实 relay 或弱网 smoke。
+
 #### C11.2：可观测性与 API 评审
 
 - 为 `TransferEventEnvelope` 固定 `schema_version`、`session_id`、严格递增 `sequence`、阶段、

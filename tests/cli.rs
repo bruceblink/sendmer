@@ -1,6 +1,6 @@
 use std::{
     io::{self, BufRead, BufReader, Read},
-    net::UdpSocket,
+    net::{Ipv4Addr, SocketAddrV4, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     str::FromStr,
@@ -477,6 +477,158 @@ fn cli_session_lifetime_expires_and_cleans_sender_storage() {
     assert!(
         leaked.is_empty(),
         "sender lifetime shutdown should remove temporary storage: {leaked:?}"
+    );
+}
+
+/// Exercise the public sender handle while an external CLI receiver is actively downloading.
+#[test]
+fn send_handle_cancel_stops_active_cli_receive_without_export() {
+    let name = "cancelled-sender.bin";
+    let data = vec![21u8; 4 * 1024 * 1024];
+    let source_dir = tempfile::tempdir().unwrap();
+    let output_dir = tempfile::tempdir().unwrap();
+    let source_file = source_dir.path().join(name);
+    std::fs::write(&source_file, &data).unwrap();
+    let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let magic_ipv4_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let sender = runtime
+        .block_on(sendmer::send_handle(
+            source_file,
+            sendmer::SendOptions {
+                relay_mode: sendmer::RelayModeOption::Disabled,
+                ticket_type: sendmer::AddrInfoOptions::Addresses,
+                magic_ipv4_addr: Some(magic_ipv4_addr),
+                max_upload_rate_bytes_per_sec: std::num::NonZeroU64::new(128 * 1024),
+                ..Default::default()
+            },
+            None,
+        ))
+        .expect("library sender should start");
+    let ticket = sender.ticket().to_string();
+
+    let mut receiver = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--relay",
+            "disabled",
+            "--json-events",
+            "--retry-limit",
+            "1",
+            "--retry-backoff-ms",
+            "0",
+            "--connect-timeout-ms",
+            "1000",
+            "--metadata-timeout-ms",
+            "1000",
+            "--download-idle-timeout-ms",
+            "1000",
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            &ticket,
+        ])
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("CLI receiver should start");
+    let stdout = receiver.stdout.take().expect("receiver stdout");
+    let (line_sender, line_receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match stdout.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) if line_sender.send(line).is_err() => break,
+                Ok(_) => {}
+            }
+        }
+    });
+
+    // Wait for real payload progress before cancelling, proving the receiver had an active
+    // provider connection and that cancellation interrupts an in-flight transfer.
+    let mut events = Vec::new();
+    loop {
+        let line = match line_receiver.recv_timeout(Duration::from_secs(30)) {
+            Ok(line) => line,
+            Err(error) => {
+                let _ = receiver.kill();
+                let _ = receiver.wait();
+                panic!("receiver did not report progress before sender cancellation: {error}");
+            }
+        };
+        let event: TransferEvent = serde_json::from_str(line.trim()).unwrap_or_else(|error| {
+            panic!("receiver emitted invalid JSON before sender cancellation: {error}: {line}")
+        });
+        let progress_reached = matches!(
+            &event.event,
+            TransferEventData::Progress { processed, .. } if *processed >= 128 * 1024
+        );
+        match &event.event {
+            TransferEventData::Failed { error } => {
+                panic!("receiver failed before sender cancellation: {error:?}")
+            }
+            TransferEventData::Completed => {
+                panic!("receiver completed before sender cancellation")
+            }
+            _ => {}
+        }
+        events.push(event);
+        if progress_reached {
+            break;
+        }
+    }
+
+    let cancel_result = runtime.block_on(sender.cancel());
+    if let Err(error) = cancel_result {
+        let _ = receiver.kill();
+        let _ = receiver.wait();
+        panic!("sender cancellation should close resources cleanly: {error:#}");
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let receiver_status = loop {
+        if let Some(status) = receiver.try_wait().expect("check receiver status") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = receiver.kill();
+            let _ = receiver.wait();
+            panic!("receiver did not stop after sender cancellation");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    reader.join().expect("join receiver event reader");
+
+    assert!(
+        !receiver_status.success(),
+        "receiver must fail after the sender is cancelled"
+    );
+    for line in line_receiver.try_iter() {
+        events.push(
+            serde_json::from_str::<TransferEvent>(line.trim())
+                .expect("receiver event after cancellation should be valid JSON"),
+        );
+    }
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        events.last().map(|event| &event.event),
+        Some(TransferEventData::Failed { error })
+            if error.retryable
+                && matches!(
+                    error.code,
+                    TransferErrorCode::ConnectionFailed | TransferErrorCode::TransferInterrupted
+                )
+    ));
+    assert!(
+        !output_dir.path().join(name).exists(),
+        "cancelled sender must not leave a partially exported file"
     );
 }
 
