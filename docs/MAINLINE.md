@@ -264,7 +264,8 @@ Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名
 - 核对 `Cargo.toml`、`Cargo.lock`、crates.io source、远端 tag、GitHub Release 和两个仓库的
   `main` 状态；记录核对日期和提交，而不是沿用旧执行记录中的数字。
 - 建立公开 API 使用清单：`SendOptions`、`ReceiveOptions`、`SendHandle`、
-  `ReceiveCacheOptions`、`TransferEventEnvelope`、`TransferError` 和 `prune_receive_cache`。
+  `ReceiveCacheOptions`、`TransferEventEnvelope`、`TransferEventStreamValidator`、
+  `TransferEventStreamError`、`TransferError` 和 `prune_receive_cache`。
 - 建立日志脱敏清单：完整 ticket、绝对路径、节点密钥、relay token、底层连接标识和缓存内部
   路径不得进入事件、历史、诊断导出或 Release 产物。
 - 将过时的下一阶段文件从仓库移除；版本设计、迁移指南和历史 Release Notes 仍按其用途保留，
@@ -337,7 +338,9 @@ CLI receiver 在实际 payload 传输期间建立连接并取得进度，随后�
 截至 2026-09-04，sendmer 已完成 C11.2 的首个独立切片：`TransferEventEnvelope` 只接受当前
 `schema_version = 1`，未知版本在 Rust 反序列化阶段直接失败；信封和载荷中的未知可选字段仍
 保持兼容并被忽略。`transfer_event_unknown_schema.json` 与对应回归测试已加入，重复序号、序号
-缺口、敏感字段和 stdout/stderr 诊断边界继续作为独立批次验证。
+缺口校验的 `TransferEventStreamValidator` 已提供给 Rust 消费端，敏感字段和 stdout/stderr 诊断
+边界继续作为独立批次验证。AlterSendmer 仍按已发布 `sendmer 0.10.0` 运行，本批次不改变桌面依赖
+版本；待核心版本发布后再将桌面适配器切换到该 validator。
 
 出口条件：接口 fixture、文档示例和 API 使用清单在 stable、MSRV 和 `--all-features` 下
 通过；发现破坏性变化时停止发布决策，先制定迁移路径。

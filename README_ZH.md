@@ -221,14 +221,16 @@ ticket 不能再建立新的接收连接。ticket 只在发送方 router 存活�
 `TransferEvent` 现在是版本化 `TransferEventEnvelope` 的公开别名。每个 send 或 receive 会话
 具有一个随机 `session_id`、严格递增的 `sequence`、显式阶段，并且 completed、failed、
 cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode`、失败阶段、可重试属性和
-安全消息。消费者应匹配 `event.event`，不得解析错误文本。参见
+安全消息。消费者应匹配 `event.event`，不得解析错误文本。使用
+`TransferEventStreamValidator` 可在更新 UI 或历史前拒绝重复序号、序号缺口、会话切换和终态后
+的迟到事件；它针对一条会话流保存状态，新传输开始时应创建新的校验器。参见
 [v0.8.0 迁移指南](docs/V0_8_MIGRATION.md)和可编译的
 [`event_consumer` 示例](examples/event_consumer.rs)。
 
 库层会 re-export：
 
 - 参数和选项类型
-- 传输事件类型与 `EventEmitter`
+- 传输事件类型、`EventEmitter` 与 `TransferEventStreamValidator`
 - `send`、`send_handle`、`receive` 和 `receive_with_cancellation`
 - 推荐使用的 `SendHandle`，以及兼容用的 `SendResult` 与 `ReceiveResult`
 

@@ -13,7 +13,8 @@ pub use core::{
     events::{
         AppHandle, EventEmitter, LegacyTransferEvent, Role, TRANSFER_EVENT_SCHEMA_VERSION,
         TransferError, TransferErrorCode, TransferEvent, TransferEventData, TransferEventEnvelope,
-        TransferPhase, TransferSessionId, emit_event,
+        TransferEventStreamError, TransferEventStreamValidator, TransferPhase, TransferSessionId,
+        emit_event,
     },
     options::{
         AddrInfoOptions, ReceiveCacheOptions, ReceiveOptions, RelayModeOption, SendOptions,

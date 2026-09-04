@@ -97,6 +97,23 @@ fn may_retry(event: &TransferEvent) -> bool {
 
 消费者必须使用 `sequence` 排序，不能使用 `timestamp_ms` 决定同一会话内的先后。
 
+Rust 消费者可以使用 `TransferEventStreamValidator` 在更新 UI 或历史记录前校验一条事件流：
+
+```rust
+use sendmer::{TransferEvent, TransferEventStreamValidator};
+
+fn accept_event(
+    validator: &mut TransferEventStreamValidator,
+    event: &TransferEvent,
+) -> Result<(), sendmer::TransferEventStreamError> {
+    validator.accept(event)
+}
+```
+
+校验器要求首事件是 `Started` 且 `sequence = 1`，后续事件必须来自同一个 `session_id` 并且
+序号连续；重复、缺口、会话切换、终态后的迟到事件会拒绝整条流。首次错误会被保留，后续输入
+继续返回同一个错误，调用方应丢弃该会话的后续状态更新。
+
 ## 5. CLI JSONL 迁移
 
 `--json-events` 现在把事件信封逐行写入并刷新到 `stdout`。日志、票据提示和人类可读结果写入

@@ -226,13 +226,16 @@ capability while its sender router is alive; it is not an account, persistent AC
 one random `session_id`, strictly increasing `sequence` values, an explicit phase, and at most one of
 completed, failed, or cancelled. Failed events contain `TransferErrorCode`, failure phase,
 retryability, and a safe message. Consumers should match `event.event` and must not parse error text.
+Use `TransferEventStreamValidator` to reject duplicate, missing, cross-session, or late terminal
+events before updating UI or history. The validator is stateful for one session stream and should be
+reset when a new transfer starts.
 See the [v0.8.0 migration guide](docs/V0_8_MIGRATION.md) and the buildable
 [`event_consumer` example](examples/event_consumer.rs).
 
 The library re-exports:
 
 - argument and option types
-- transfer event types and `EventEmitter`
+- transfer event types, `EventEmitter`, and `TransferEventStreamValidator`
 - `send`, `send_handle`, `receive`, and `receive_with_cancellation`
 - preferred `SendHandle`, plus legacy `SendResult` and `ReceiveResult`
 
