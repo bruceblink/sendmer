@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::core::events::{
     AppHandle, Role, TransferError, TransferEventData, TransferEventEnvelope, TransferPhase,
-    TransferSessionId, emit_event,
+    TransferSessionId, emit_event, is_safe_event_file_name,
 };
 use crate::core::types::EntryType;
 use tokio::sync::{Mutex, watch};
@@ -91,7 +91,15 @@ impl TransferEventEmitter {
         self.emit_data(phase, TransferEventData::Cancelled);
     }
 
+    /// Emit relative logical names without exposing absolute or traversing paths.
     pub fn emit_file_names(&self, file_names: Vec<String>) {
+        if file_names.iter().any(|name| !is_safe_event_file_name(name)) {
+            tracing::warn!(
+                file_count = file_names.len(),
+                "ignored transfer file-name event with unsafe path"
+            );
+            return;
+        }
         self.emit_data(
             TransferPhase::Metadata,
             TransferEventData::FileNames { file_names },
@@ -557,6 +565,35 @@ mod tests {
         let emitter = TransferEventEmitter::new(Some(sink), role);
         emitter.emit_started(TransferPhase::Transferring);
         emitter
+    }
+
+    #[test]
+    fn transfer_event_emitter_filters_unsafe_file_names() {
+        let sink = Arc::new(RecordingEmitter::default());
+        let emitter = started_emitter(sink.clone(), Role::Receiver);
+
+        emitter.emit_file_names(vec!["safe/path.txt".to_owned()]);
+        emitter.emit_file_names(vec!["../secret.txt".to_owned(), "C:/secret.txt".to_owned()]);
+        emitter.emit_completed();
+
+        let events = sink.events();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match &event.event {
+                    TransferEventData::FileNames { file_names } => Some(file_names.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![vec!["safe/path.txt".to_owned()]]
+        );
     }
 
     #[test]

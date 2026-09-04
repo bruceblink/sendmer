@@ -2,7 +2,7 @@
 //!
 //! 本文件定义：事件发射器 trait、传输事件枚举、角色枚举。
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -230,8 +230,40 @@ impl TransferEventData {
     }
 }
 
+/// Return whether a file name is safe to expose as a relative logical event path.
+///
+/// Event consumers must never receive absolute paths or traversal components. Forward slashes
+/// are the only supported separator so that the same JSONL stream has one meaning on every host.
+pub(crate) fn is_safe_event_file_name(name: &str) -> bool {
+    if name.is_empty() || name.contains('\0') || name.starts_with('/') || name.starts_with('\\') {
+        return false;
+    }
+
+    // Reject drive-qualified names such as `C:/secret` and `C:secret` before they reach a
+    // Windows consumer. A colon in a later component is not a path root by itself.
+    let first_component = name.split('/').next().unwrap_or_default();
+    let first_bytes = first_component.as_bytes();
+    if first_bytes.len() >= 2 && first_bytes[0].is_ascii_alphabetic() && first_bytes[1] == b':' {
+        return false;
+    }
+
+    name.split('/').all(|component| {
+        !component.is_empty() && component != "." && component != ".." && !component.contains('\\')
+    })
+}
+
+fn contains_unsafe_event_file_name(event: &TransferEventData) -> bool {
+    matches!(
+        event,
+        TransferEventData::FileNames { file_names }
+            if file_names
+                .iter()
+                .any(|name| !is_safe_event_file_name(name))
+    )
+}
+
 /// Stable versioned envelope for JSON Lines and external event consumers.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TransferEventEnvelope {
     pub schema_version: u16,
     pub session_id: TransferSessionId,
@@ -240,6 +272,17 @@ pub struct TransferEventEnvelope {
     pub role: Role,
     pub phase: TransferPhase,
     pub event: TransferEventData,
+}
+
+#[derive(Serialize)]
+struct TransferEventEnvelopeRef<'a> {
+    schema_version: u16,
+    session_id: &'a TransferSessionId,
+    sequence: u64,
+    timestamp_ms: u64,
+    role: Role,
+    phase: TransferPhase,
+    event: &'a TransferEventData,
 }
 
 /// Wire fields used to validate the event schema before exposing an envelope to consumers.
@@ -257,6 +300,35 @@ struct TransferEventEnvelopeFields {
     event: TransferEventData,
 }
 
+impl Serialize for TransferEventEnvelope {
+    /// Serialize only an envelope that obeys the current schema and privacy boundary.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if self.schema_version != TRANSFER_EVENT_SCHEMA_VERSION {
+            return Err(S::Error::custom(format!(
+                "unsupported transfer event schema version {}",
+                self.schema_version
+            )));
+        }
+        if contains_unsafe_event_file_name(&self.event) {
+            return Err(S::Error::custom("transfer event contains unsafe file name"));
+        }
+
+        TransferEventEnvelopeRef {
+            schema_version: self.schema_version,
+            session_id: &self.session_id,
+            sequence: self.sequence,
+            timestamp_ms: self.timestamp_ms,
+            role: self.role,
+            phase: self.phase,
+            event: &self.event,
+        }
+        .serialize(serializer)
+    }
+}
+
 impl<'de> Deserialize<'de> for TransferEventEnvelope {
     /// Deserialize one event only when its required schema version is understood.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -270,7 +342,7 @@ impl<'de> Deserialize<'de> for TransferEventEnvelope {
                 fields.schema_version
             )));
         }
-        Ok(Self {
+        let envelope = Self {
             schema_version: fields.schema_version,
             session_id: fields.session_id,
             sequence: fields.sequence,
@@ -278,7 +350,11 @@ impl<'de> Deserialize<'de> for TransferEventEnvelope {
             role: fields.role,
             phase: fields.phase,
             event: fields.event,
-        })
+        };
+        if contains_unsafe_event_file_name(&envelope.event) {
+            return Err(D::Error::custom("transfer event contains unsafe file name"));
+        }
+        Ok(envelope)
     }
 }
 
@@ -324,6 +400,8 @@ pub enum TransferEventStreamError {
     StartedAfterStart { sequence: u64 },
     /// No event is accepted after a terminal payload.
     EventAfterTerminal { sequence: u64 },
+    /// A file-name payload contains an absolute, traversing, or otherwise unsafe path.
+    UnsafeFileName { sequence: u64 },
     /// A non-terminal event cannot advance beyond the representable sequence range.
     SequenceExhausted { sequence: u64 },
 }
@@ -364,6 +442,12 @@ impl std::fmt::Display for TransferEventStreamError {
                 write!(
                     formatter,
                     "transfer event arrived after terminal event at sequence {sequence}"
+                )
+            }
+            Self::UnsafeFileName { sequence } => {
+                write!(
+                    formatter,
+                    "transfer event at sequence {sequence} contains unsafe file name"
                 )
             }
             Self::SequenceExhausted { sequence } => {
@@ -454,6 +538,11 @@ impl TransferEventStreamValidator {
             return self.reject(TransferEventStreamError::SequenceMismatch {
                 expected: self.expected_sequence,
                 found: event.sequence,
+            });
+        }
+        if contains_unsafe_event_file_name(&event.event) {
+            return self.reject(TransferEventStreamError::UnsafeFileName {
+                sequence: event.sequence,
             });
         }
         if matches!(event.event, TransferEventData::Started) {
@@ -632,7 +721,8 @@ mod tests {
         LegacyTransferEvent, Role, TRANSFER_EVENT_SCHEMA_VERSION, TransferError, TransferErrorCode,
         TransferEventData, TransferEventEnvelope, TransferEventStreamError,
         TransferEventStreamValidator, TransferPhase, TransferSessionId, classified_transfer_error,
-        classify_transfer_error, is_transfer_cancelled, transfer_cancelled_error,
+        classify_transfer_error, is_safe_event_file_name, is_transfer_cancelled,
+        transfer_cancelled_error,
     };
     use std::str::FromStr;
 
@@ -728,6 +818,83 @@ mod tests {
             .expect("unknown optional fields should remain compatible");
         assert_eq!(event.schema_version, TRANSFER_EVENT_SCHEMA_VERSION);
         assert!(matches!(event.event, TransferEventData::Progress { .. }));
+    }
+
+    #[test]
+    fn event_file_names_accept_only_relative_logical_paths() {
+        for valid in [
+            "file.txt",
+            "dir/sub/file.txt",
+            "中文/报告.txt",
+            "name:with-colon",
+        ] {
+            assert!(
+                is_safe_event_file_name(valid),
+                "expected safe name: {valid}"
+            );
+        }
+        for invalid in [
+            "",
+            "/etc/passwd",
+            "\\windows\\system32",
+            "../secret.txt",
+            "dir/../../secret.txt",
+            "dir\\file.txt",
+            "foo//bar",
+            "./file.txt",
+            "C:/secret.txt",
+            "C:secret.txt",
+            "file\0name.txt",
+        ] {
+            assert!(
+                !is_safe_event_file_name(invalid),
+                "expected unsafe name: {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn versioned_event_serialization_rejects_unknown_schema_and_unsafe_names() {
+        let session = "0123456789abcdef0123456789abcdef";
+        let mut unknown_schema = stream_event(session, 1, TransferEventData::Started);
+        unknown_schema.schema_version = TRANSFER_EVENT_SCHEMA_VERSION + 1;
+        let schema_error = serde_json::to_string(&unknown_schema)
+            .expect_err("unknown schema should not be serialized");
+        assert!(
+            schema_error
+                .to_string()
+                .contains("unsupported transfer event schema version")
+        );
+
+        let unsafe_name = "/secret.txt";
+        let unsafe_event = stream_event(
+            session,
+            2,
+            TransferEventData::FileNames {
+                file_names: vec![unsafe_name.to_owned()],
+            },
+        );
+        let name_error = serde_json::to_string(&unsafe_event)
+            .expect_err("unsafe file name should not be serialized");
+        assert!(name_error.to_string().contains("unsafe file name"));
+        assert!(!name_error.to_string().contains(unsafe_name));
+    }
+
+    #[test]
+    fn versioned_event_deserialization_rejects_unsafe_names() {
+        let value = serde_json::json!({
+            "schema_version": TRANSFER_EVENT_SCHEMA_VERSION,
+            "session_id": "0123456789abcdef0123456789abcdef",
+            "sequence": 2,
+            "timestamp_ms": 1_786_982_400_000u64,
+            "role": "receiver",
+            "phase": "metadata",
+            "event": {"type": "file_names", "file_names": ["../secret.txt"]}
+        });
+        let error = serde_json::from_value::<TransferEventEnvelope>(value)
+            .expect_err("unsafe file name should not be deserialized");
+        assert!(error.to_string().contains("unsafe file name"));
+        assert!(!error.to_string().contains("../secret.txt"));
     }
 
     fn stream_event(
@@ -914,6 +1081,31 @@ mod tests {
             validator.accept(&event),
             Err(TransferEventStreamError::UnsupportedSchemaVersion { found: 2 })
         );
+        assert!(validator.is_rejected());
+    }
+
+    #[test]
+    fn event_stream_validator_rejects_unsafe_file_names_without_echoing_them() {
+        let session = "0123456789abcdef0123456789abcdef";
+        let mut validator = TransferEventStreamValidator::new();
+        validator
+            .accept(&stream_event(session, 1, TransferEventData::Started))
+            .expect("started event");
+
+        let error = validator
+            .accept(&stream_event(
+                session,
+                2,
+                TransferEventData::FileNames {
+                    file_names: vec!["/secret.txt".to_owned()],
+                },
+            ))
+            .expect_err("unsafe file name should be rejected");
+        assert_eq!(
+            error,
+            TransferEventStreamError::UnsafeFileName { sequence: 2 }
+        );
+        assert!(!error.to_string().contains("/secret.txt"));
         assert!(validator.is_rejected());
     }
 

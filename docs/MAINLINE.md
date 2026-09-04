@@ -141,7 +141,9 @@ flowchart LR
 `completed`、`failed`、`cancelled` 三种终态互斥且只发出一次。公开错误码包括
 `invalid_input`、`connection_failed`、`timeout`、`remote_rejected`、`transfer_interrupted`、
 `target_conflict`、`filesystem` 和 `internal`。事件不得包含完整 ticket、绝对路径、私钥、
-relay token 或底层连接标识。
+relay token 或底层连接标识。`file_names` 只能携带使用 `/` 分隔的相对逻辑路径；空组件、`.`、
+`..`、绝对路径、Windows 驱动器限定路径（drive-qualified path）和反斜杠名称会在事件发射、
+反序列化或 JSON 序列化前拒绝，拒绝信息不回显原始名称。
 
 ### 4.5 持久接收缓存
 
@@ -335,12 +337,15 @@ CLI receiver 在实际 payload 传输期间建立连接并取得进度，随后�
 - 公开 API 变化必须同时更新 rustdoc、示例、fixture、迁移说明和桌面适配清单；若没有明确用户
   场景，不新增动态限速、接收端限速或缓存内部管理 API。
 
-截至 2026-09-04，sendmer 已完成 C11.2 的首个独立切片：`TransferEventEnvelope` 只接受当前
-`schema_version = 1`，未知版本在 Rust 反序列化阶段直接失败；信封和载荷中的未知可选字段仍
-保持兼容并被忽略。`transfer_event_unknown_schema.json` 与对应回归测试已加入，重复序号、序号
-缺口校验的 `TransferEventStreamValidator` 已提供给 Rust 消费端，敏感字段和 stdout/stderr 诊断
-边界继续作为独立批次验证。AlterSendmer 仍按已发布 `sendmer 0.10.0` 运行，本批次不改变桌面依赖
-版本；待核心版本发布后再将桌面适配器切换到该 validator。
+截至 2026-09-04，sendmer 已完成 C11.2 的事件输出切片：`TransferEventEnvelope` 只接受当前
+`schema_version = 1`，未知版本在反序列化与 JSON 序列化阶段直接失败；信封和载荷中的未知可选
+字段仍保持兼容并被忽略。`file_names` 仅允许相对逻辑路径，绝对路径、路径遍历（path traversal）、
+反斜杠和 Windows 驱动器限定名称（drive-qualified path）会在发射、反序列化或序列化前拒绝，
+错误信息不包含原始路径。CLI `--json-events` 在写入 stdout 前使用
+`TransferEventStreamValidator` 校验 schema、会话、序号和终态；无效事件只写入 stderr，不能污染
+JSONL 管道。`transfer_event_unknown_schema.json`、
+路径隐私回归和 stdout 边界测试均已加入。AlterSendmer 仍按已发布 `sendmer 0.10.0` 运行，本批次
+不改变桌面依赖版本；待核心版本发布后再将桌面适配器切换到该 validator。
 
 出口条件：接口 fixture、文档示例和 API 使用清单在 stable、MSRV 和 `--all-features` 下
 通过；发现破坏性变化时停止发布决策，先制定迁移路径。

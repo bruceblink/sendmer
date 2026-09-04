@@ -119,6 +119,11 @@ fn accept_event(
 `--json-events` 现在把事件信封逐行写入并刷新到 `stdout`。日志、票据提示和人类可读结果写入
 `stderr`，因此管道只会收到 JSON：
 
+CLI 在写入每一行前会校验当前 `schema_version`、会话、连续序号和生命周期；不符合规则的事件
+只报告到 `stderr`，不会进入 JSONL。`file_names` 只允许 `/` 分隔的相对逻辑路径，绝对路径、
+路径遍历（path traversal）、反斜杠、空组件和 Windows 驱动器限定路径（drive-qualified path）
+会在输出前拒绝，拒绝信息不会回显原始文件名。
+
 ```bash
 sendmer receive --json-events <ticket> | jq -c \
   'select(.event.type == "progress") | {session_id, sequence, phase, progress: .event}'
@@ -147,6 +152,7 @@ fixture，确保升级时不会把未知版本当作当前版本解析。
 - 使用 `error.code` 驱动本地化摘要，不解析 `error.message`。
 - 仅在 `error.retryable` 为 `true` 时提供自动重试入口。
 - 使用 `error.phase` 展示失败阶段；不要从事件类型反推阶段。
+- `event.file_names` 只包含相对逻辑路径；消费者仍应在写入本地历史或 UI 前执行路径边界检查。
 - 诊断日志不得记录完整 ticket、绝对路径、节点密钥或底层连接 ID。
 - `session_id` 只用于关联应用层事件，不能替代内容 hash 或访问控制。
 

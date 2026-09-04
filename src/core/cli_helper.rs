@@ -4,7 +4,9 @@
 //! 以及一个命令行环境下的事件发射器实现 `CliEventEmitter`，
 //! 用于在控制台显示文件传输进度条。
 
-use crate::core::events::{EventEmitter, TransferEvent, TransferEventData};
+use crate::core::events::{
+    EventEmitter, TransferEvent, TransferEventData, TransferEventStreamValidator,
+};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::io::Write as _;
 use std::sync::{Arc, Mutex};
@@ -20,6 +22,7 @@ pub struct CliEventEmitter {
     pb: Mutex<Option<ProgressBar>>,
     prefix: String,
     json_lines: bool,
+    json_validator: Option<Mutex<TransferEventStreamValidator>>,
 }
 
 impl CliEventEmitter {
@@ -32,6 +35,7 @@ impl CliEventEmitter {
             pb: Mutex::new(None),
             prefix: prefix.to_string(),
             json_lines: false,
+            json_validator: None,
         }
     }
 
@@ -42,6 +46,7 @@ impl CliEventEmitter {
             pb: Mutex::new(None),
             prefix: String::new(),
             json_lines: true,
+            json_validator: Some(Mutex::new(TransferEventStreamValidator::new())),
         }
     }
 
@@ -59,6 +64,16 @@ impl CliEventEmitter {
 impl EventEmitter for CliEventEmitter {
     fn emit(&self, event: &TransferEvent) {
         if self.json_lines {
+            if let Some(validator) = &self.json_validator {
+                let validation = {
+                    let mut validator = validator.lock().unwrap_or_else(|error| error.into_inner());
+                    validator.accept(event)
+                };
+                if let Err(error) = validation {
+                    eprintln!("rejected transfer event: {error}");
+                    return;
+                }
+            }
             match serde_json::to_string(event) {
                 Ok(json) => {
                     let stdout = std::io::stdout();
