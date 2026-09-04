@@ -231,7 +231,7 @@ impl TransferEventData {
 }
 
 /// Stable versioned envelope for JSON Lines and external event consumers.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TransferEventEnvelope {
     pub schema_version: u16,
     pub session_id: TransferSessionId,
@@ -240,6 +240,46 @@ pub struct TransferEventEnvelope {
     pub role: Role,
     pub phase: TransferPhase,
     pub event: TransferEventData,
+}
+
+/// Wire fields used to validate the event schema before exposing an envelope to consumers.
+///
+/// Serde still ignores unknown optional fields, so newer producers can add non-required data
+/// without breaking an older consumer; an unknown schema version is rejected explicitly.
+#[derive(Debug, Deserialize)]
+struct TransferEventEnvelopeFields {
+    schema_version: u16,
+    session_id: TransferSessionId,
+    sequence: u64,
+    timestamp_ms: u64,
+    role: Role,
+    phase: TransferPhase,
+    event: TransferEventData,
+}
+
+impl<'de> Deserialize<'de> for TransferEventEnvelope {
+    /// Deserialize one event only when its required schema version is understood.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let fields = TransferEventEnvelopeFields::deserialize(deserializer)?;
+        if fields.schema_version != TRANSFER_EVENT_SCHEMA_VERSION {
+            return Err(D::Error::custom(format!(
+                "unsupported transfer event schema version {}",
+                fields.schema_version
+            )));
+        }
+        Ok(Self {
+            schema_version: fields.schema_version,
+            session_id: fields.session_id,
+            sequence: fields.sequence,
+            timestamp_ms: fields.timestamp_ms,
+            role: fields.role,
+            phase: fields.phase,
+            event: fields.event,
+        })
+    }
 }
 
 impl TransferEventEnvelope {
@@ -471,6 +511,37 @@ mod tests {
             event
         );
         assert_eq!(event.schema_version, TRANSFER_EVENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn versioned_event_rejects_unknown_schema_versions() {
+        let fixture = include_str!("../../tests/fixtures/transfer_event_unknown_schema.json");
+        let fixture: serde_json::Value = serde_json::from_str(fixture).expect("parse fixture");
+        for version in [0, 2, u16::MAX] {
+            let mut value = fixture.clone();
+            value["schema_version"] = serde_json::Value::from(version);
+            let error = serde_json::from_value::<TransferEventEnvelope>(value)
+                .expect_err("unknown schema version must be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported transfer event schema version"),
+                "unexpected error for schema {version}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn versioned_event_ignores_unknown_optional_fields() {
+        let fixture = include_str!("../../tests/fixtures/transfer_event_v1_progress.json");
+        let mut value: serde_json::Value = serde_json::from_str(fixture).expect("parse fixture");
+        value["future_optional_field"] = serde_json::json!({"kept": true});
+        value["event"]["future_optional_field"] = serde_json::Value::from("ignored");
+
+        let event = serde_json::from_value::<TransferEventEnvelope>(value)
+            .expect("unknown optional fields should remain compatible");
+        assert_eq!(event.schema_version, TRANSFER_EVENT_SCHEMA_VERSION);
+        assert!(matches!(event.event, TransferEventData::Progress { .. }));
     }
 
     #[test]

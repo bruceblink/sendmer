@@ -119,7 +119,11 @@ v0.8.0 的版本化行：
 {"schema_version":1,"session_id":"0123456789abcdef0123456789abcdef","sequence":3,"timestamp_ms":1786982400000,"role":"receiver","phase":"transferring","event":{"type":"progress","processed":512,"total":1024,"speed_bytes_per_sec":256.0}}
 ```
 
-脚本应拒绝未知的必需 `schema_version`，但应忽略信封和载荷中的未知可选字段。
+脚本应拒绝未知的必需 `schema_version`，但应忽略信封和载荷中的未知可选字段。Rust 库对
+`TransferEventEnvelope` 的反序列化遵循同一规则：当前只接受 `schema_version = 1`，未知版本
+直接返回错误；未声明的可选字段会被忽略。请在接入测试中保留
+[`transfer_event_unknown_schema.json`](../tests/fixtures/transfer_event_unknown_schema.json)
+fixture，确保升级时不会把未知版本当作当前版本解析。
 
 ## 6. 错误与隐私
 

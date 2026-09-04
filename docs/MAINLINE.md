@@ -250,7 +250,7 @@ Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名
 | N11.0 基线冻结 | 已完成本次整理 | 两个仓库 | 记录版本、tag、依赖来源、测试矩阵、未完成项和敏感信息清单；清除旧计划引用 | `v0.10.0`、`AlterSendmer v0.6.0` 可回读 | 本文件基线记录、干净工作区、链接检查和公开 API 清单 |
 | A11.1 桌面质量 | 进行中 | AlterSendmer | 长 ticket、键盘焦点、AccessKit 标签、最小窗口、高 DPI、21 种语言、历史/偏好迁移、诊断导出、退出清理和更新失败恢复 | N11.0；不需要新的 sendmer API | Windows 真实截图与操作日志、Linux/macOS 原生 CI、locale 完整性和隐私检查 |
 | C11.1 核心可靠性 | 进行中 | sendmer | 补齐 sender 中断/过期、receiver 取消/重试、持久缓存恢复、接收方上限释放、staging 清理和冲突保护的跨进程回归；只修复可复现问题 | N11.0；发现缺陷时建立最小复现 | locked workspace 测试、失败日志、无半导出、无临时目录泄漏、目标内容不变 |
-| C11.2 可观测性评审 | 待启动 | sendmer 与 AlterSendmer | 固定 JSON Lines 的 stdout/stderr 边界、schema `1` 序号/终态、结构化错误和敏感字段脱敏；评估是否需要新的缓存诊断或运行时控制 API | C11.1；新 API 必须先在本文件冻结边界 | rustdoc、可编译示例、事件 fixture、未知字段/乱序事件测试和迁移说明 |
+| C11.2 可观测性评审 | 进行中 | sendmer 与 AlterSendmer | 固定 JSON Lines 的 stdout/stderr 边界、schema `1` 序号/终态、结构化错误和敏感字段脱敏；评估是否需要新的缓存诊断或运行时控制 API | C11.1；新 API 必须先在本文件冻结边界 | rustdoc、可编译示例、事件 fixture、未知字段/乱序事件测试和迁移说明 |
 | R11.1 发布可复现性 | 待启动 | 两个仓库 | 维护六平台 CI、原生验收、安装器失败清理、release notes 提交范围、checksum、签名、SBOM、provenance 和重跑幂等性 | A11.1/C11.1/C11.2 相关批次通过 | actionlint、版本/资产/安装器测试、release rehearsal、GitHub workflow 与资产清单 |
 | D11.1 版本决策 | 待启动 | 两个仓库 | 根据实际变更选择桌面次版本、sendmer `0.10.1` 或 `0.11.0`；同步 README、版本矩阵和迁移入口 | R11.1 通过且没有未完成项 | tag、crate、Release、依赖解析和两仓库文档可回读 |
 
@@ -333,6 +333,11 @@ CLI receiver 在实际 payload 传输期间建立连接并取得进度，随后�
   不得包含敏感信息。
 - 公开 API 变化必须同时更新 rustdoc、示例、fixture、迁移说明和桌面适配清单；若没有明确用户
   场景，不新增动态限速、接收端限速或缓存内部管理 API。
+
+截至 2026-09-04，sendmer 已完成 C11.2 的首个独立切片：`TransferEventEnvelope` 只接受当前
+`schema_version = 1`，未知版本在 Rust 反序列化阶段直接失败；信封和载荷中的未知可选字段仍
+保持兼容并被忽略。`transfer_event_unknown_schema.json` 与对应回归测试已加入，重复序号、序号
+缺口、敏感字段和 stdout/stderr 诊断边界继续作为独立批次验证。
 
 出口条件：接口 fixture、文档示例和 API 使用清单在 stable、MSRV 和 `--all-features` 下
 通过；发现破坏性变化时停止发布决策，先制定迁移路径。
