@@ -123,12 +123,20 @@ impl TransferEventEmitter {
     )]
     fn emit_data(&self, phase: TransferPhase, event: TransferEventData) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let event_kind = match &event {
+            TransferEventData::Started => "started",
+            TransferEventData::Progress { .. } => "progress",
+            TransferEventData::FileNames { .. } => "file_names",
+            TransferEventData::Completed => "completed",
+            TransferEventData::Failed { .. } => "failed",
+            TransferEventData::Cancelled => "cancelled",
+        };
         let is_started = matches!(event, TransferEventData::Started);
         if state.terminal || (is_started && state.started) || (!is_started && !state.started) {
             tracing::debug!(
                 session_id = %state.session_id,
                 ?phase,
-                ?event,
+                event_kind,
                 "ignored transfer event that violates session lifecycle"
             );
             return false;
@@ -540,6 +548,7 @@ mod tests {
         TransferStats,
         events::{RequestUpdate, TransferAborted, TransferCompleted, TransferProgress},
     };
+    use std::io::{self, Write};
     use std::sync::{Arc, Mutex as StdMutex};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
@@ -559,6 +568,49 @@ mod tests {
         fn emit(&self, event: &TransferEvent) {
             self.events.lock().expect("events lock").push(event.clone());
         }
+    }
+
+    /// Capture formatted tracing output so privacy-sensitive fields can be asserted directly.
+    struct SharedLogWriter(Arc<StdMutex<Vec<u8>>>);
+
+    impl Write for SharedLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("log buffer lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn lifecycle_diagnostic_does_not_log_failed_payload() {
+        let logs = Arc::new(StdMutex::new(Vec::new()));
+        let writer_logs = Arc::clone(&logs);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || SharedLogWriter(Arc::clone(&writer_logs)))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let emitter = TransferEventEmitter::new(None, Role::Receiver);
+            emitter.emit_failed(TransferError::new(
+                TransferErrorCode::Internal,
+                TransferPhase::Preparing,
+                false,
+                r"C:\private\secret.txt",
+            ));
+        });
+
+        let output = String::from_utf8(logs.lock().expect("log buffer lock").clone())
+            .expect("tracing output should be UTF-8");
+        assert!(output.contains("event_kind=\"failed\""));
+        assert!(!output.contains(r"C:\private\secret.txt"));
     }
 
     fn started_emitter(sink: Arc<RecordingEmitter>, role: Role) -> TransferEventEmitter {

@@ -226,6 +226,8 @@ cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode
 的迟到事件；它针对一条会话流保存状态，新传输开始时应创建新的校验器。参见
 [v0.8.0 迁移指南](docs/V0_8_MIGRATION.md)和可编译的
 [`event_consumer` 示例](examples/event_consumer.rs)。
+核心 tracing 的失败与清理诊断只保留稳定的错误类别、阶段、可重试属性和尝试次数，不包含
+源/目标路径、ticket 或底层连接错误文本。
 
 库层会 re-export：
 

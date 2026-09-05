@@ -143,7 +143,9 @@ flowchart LR
 `target_conflict`、`filesystem` 和 `internal`。事件不得包含完整 ticket、绝对路径、私钥、
 relay token 或底层连接标识。`file_names` 只能携带使用 `/` 分隔的相对逻辑路径；空组件、`.`、
 `..`、绝对路径、Windows 驱动器限定路径（drive-qualified path）和反斜杠名称会在事件发射、
-反序列化或 JSON 序列化前拒绝，拒绝信息不回显原始名称。
+反序列化或 JSON 序列化前拒绝，拒绝信息不回显原始名称。核心 tracing 的失败与清理诊断只记录
+稳定的阶段、错误类别、重试属性和尝试次数，不记录源路径、输出路径、ticket 或底层连接错误文本；
+发送模式、规模和进度等非敏感运行元数据可以保留。
 
 ### 4.5 持久接收缓存
 
@@ -346,6 +348,12 @@ CLI receiver 在实际 payload 传输期间建立连接并取得进度，随后�
 JSONL 管道。`transfer_event_unknown_schema.json`、
 路径隐私回归和 stdout 边界测试均已加入。AlterSendmer 仍按已发布 `sendmer 0.10.0` 运行，本批次
 不改变桌面依赖版本；待核心版本发布后再将桌面适配器切换到该 validator。
+
+截至 2026-09-05，sendmer 已完成 C11.2 的诊断日志隐私切片：sender、receiver、缓存和 CLI 的
+tracing 日志不再回显源/目标路径、临时目录、底层连接错误或导出错误详情；失败日志保留结构化
+错误码、阶段、可重试属性和尝试次数等稳定字段，事件与函数返回值的既有错误语义不变。导入、
+下载和 `GetError` 日志只记录进度或错误类别，便于排障而不复制敏感上下文；新增生命周期日志
+回归，确认失败事件载荷不会进入诊断输出。
 
 出口条件：接口 fixture、文档示例和 API 使用清单在 stable、MSRV 和 `--all-features` 下
 通过；发现破坏性变化时停止发布决策，先制定迁移路径。

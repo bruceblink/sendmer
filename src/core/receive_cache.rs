@@ -91,7 +91,7 @@ impl ReceiveCacheLease {
                 "removed expired receive cache entries"
             ),
             Ok(_) => {}
-            Err(error) => tracing::warn!(error = %error, "unable to prune receive cache"),
+            Err(_error) => tracing::warn!("unable to prune receive cache"),
         }
         let root_lock = open_lock_file(&cache_root.join(CACHE_ROOT_LOCK_FILE))?;
         match FileExt::try_lock_shared(&root_lock) {

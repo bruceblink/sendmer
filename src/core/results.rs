@@ -53,8 +53,8 @@ fn finalize_sender_shutdown(
     shutdown_result: anyhow::Result<()>,
     cleanup_result: anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    if let Err(error) = cleanup_result {
-        tracing::warn!(error = %error, "failed to clean sender temporary data dir");
+    if cleanup_result.is_err() {
+        tracing::warn!("failed to clean sender temporary data dir");
     }
     shutdown_result
 }
@@ -107,8 +107,8 @@ impl SendResult {
                         false,
                         "sender session lifetime expired",
                     )),
-                    Err(error) => {
-                        tracing::warn!(error = %error, "failed to shut down expired sender session");
+                    Err(_error) => {
+                        tracing::warn!("failed to shut down expired sender session");
                         event_emitter
                             .emit_internal_failure("unable to shut down expired sender session");
                     }

@@ -123,8 +123,8 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     let wait_result = wait_for_send_shutdown(&res).await;
     let shutdown_result = res.cancel().await;
     match (wait_result, shutdown_result) {
-        (Err(error), Err(shutdown_error)) => {
-            tracing::warn!(error = %shutdown_error, "failed to shutdown sender after wait error");
+        (Err(error), Err(_shutdown_error)) => {
+            tracing::warn!("failed to shutdown sender after wait error");
             Err(error)
         }
         (Err(error), Ok(())) => Err(error),

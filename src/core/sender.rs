@@ -45,7 +45,7 @@ use tokio::{
     task::JoinSet,
     time::Instant,
 };
-use tracing::{info, trace, warn};
+use tracing::{info, warn};
 use walkdir::WalkDir;
 
 const PROVIDER_PROGRESS_TASK_LIMIT: usize = 32;
@@ -306,8 +306,8 @@ fn finalize_failed_sender_setup(
     primary_error: anyhow::Error,
     cleanup_result: anyhow::Result<()>,
 ) -> anyhow::Error {
-    if let Err(error) = cleanup_result {
-        warn!(error = %error, "failed to clean sender temporary data after setup error");
+    if cleanup_result.is_err() {
+        warn!("failed to clean sender temporary data after setup error");
     }
     primary_error
 }
@@ -428,9 +428,8 @@ async fn wait_until_endpoint_is_online(
     if wait_for_online {
         match tokio::time::timeout(ENDPOINT_ONLINE_WAIT_TIMEOUT, endpoint.online()).await {
             Ok(()) => {}
-            Err(error) => {
+            Err(_error) => {
                 warn!(
-                    error = %error,
                     timeout_secs = ENDPOINT_ONLINE_WAIT_TIMEOUT.as_secs(),
                     "endpoint online probe timed out; continuing with available addresses"
                 );
@@ -587,7 +586,6 @@ async fn send_started(
     event_emitter: TransferEventEmitter,
 ) -> anyhow::Result<SendResult> {
     info!(
-        path = %path.display(),
         relay_mode = ?options.relay_mode,
         ticket_type = ?options.ticket_type,
         manifest_mode = options.manifest_mode,
@@ -1111,7 +1109,6 @@ async fn import_source(db: &Store, source: ImportedSource) -> anyhow::Result<Imp
             .next()
             .await
             .context("import stream ended without a tag")?;
-        trace!("importing {} {item:?}", source.name);
         match item {
             iroh_blobs::api::blobs::AddProgressItem::Size(size) => {
                 item_size = size;

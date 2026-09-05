@@ -33,7 +33,6 @@ use std::sync::Arc as StdArc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::select;
 use tracing::info;
-use tracing::log::trace;
 
 // event helpers provided by `core::progress`
 
@@ -123,8 +122,18 @@ pub async fn receive_with_cancellation(
     let artifacts = match receive_result {
         Ok(artifacts) => artifacts,
         Err(error) => {
-            tracing::error!(error = %receive_failed_message(&error), "download operation failed");
             let cancelled = is_transfer_cancelled(&error);
+            if let Some(details) = classified_transfer_error(&error) {
+                tracing::error!(
+                    ?details.code,
+                    ?details.phase,
+                    retryable = details.retryable,
+                    cancelled,
+                    "download operation failed"
+                );
+            } else {
+                tracing::error!(cancelled, "download operation failed");
+            }
             let error = finalize_failed_receive(error, cleanup_failed_receive(&mut context).await);
             if cancelled {
                 event_emitter.emit_cancelled();
@@ -154,7 +163,7 @@ pub async fn receive_with_cancellation(
         }
     };
     event_emitter.emit_completed();
-    info!(output = %result.file_path.display(), message = %result.message, "receive completed");
+    info!("receive completed");
     Ok(result)
 }
 
@@ -453,11 +462,7 @@ fn cleanup_staging_dir(path: &Path) {
     if let Err(error) = std::fs::remove_dir_all(path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
-        tracing::warn!(
-            path = %path.display(),
-            error = %error,
-            "failed to clean export staging directory"
-        );
+        tracing::warn!("failed to clean export staging directory");
     }
 }
 
@@ -720,7 +725,7 @@ async fn receive_once(
     output_dir: &Path,
     event_emitter: TransferEventEmitter,
 ) -> anyhow::Result<ReceiveArtifacts> {
-    trace!("load done!");
+    tracing::trace!("load done!");
 
     let download = download_missing_data(context, event_emitter.clone()).await?;
     let collection = context
@@ -885,8 +890,8 @@ fn finalize_failed_receive(
     primary_error: anyhow::Error,
     cleanup_result: anyhow::Result<()>,
 ) -> anyhow::Error {
-    if let Err(error) = cleanup_result {
-        tracing::warn!(error = %error, "failed to cleanup receive context after error");
+    if cleanup_result.is_err() {
+        tracing::warn!("failed to cleanup receive context after error");
     }
     primary_error
 }
@@ -1047,7 +1052,7 @@ async fn execute_download_with_retries(
         match result {
             Ok(()) => return Ok(()),
             Err(error) => {
-                tracing::warn!(error = %error, attempt, "blob download attempt failed");
+                tracing::warn!(attempt, "blob download attempt failed");
                 last_error = Some(error);
                 if attempt < context.retry_policy.download_retry_limit {
                     tokio::time::sleep(download_backoff(attempt, context.retry_policy)).await;
@@ -1189,13 +1194,13 @@ fn finalize_cleanup(
     shutdown_result: anyhow::Result<()>,
     cleanup_result: anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    if let Err(error) = cleanup_result {
-        tracing::warn!(error = %error, "failed to clean temporary receive dir");
+    if cleanup_result.is_err() {
+        tracing::warn!("failed to clean temporary receive dir");
     }
     shutdown_result
 }
 
-/// 将 `GetError` 打印到日志并原样返回，便于上层处理。
+/// 记录 `GetError` 的稳定类别并原样返回，便于上层保留结构化失败语义。
 fn show_get_error(e: GetError) -> GetError {
     log_get_error(&e);
     e
@@ -1221,30 +1226,26 @@ fn log_get_error(e: &GetError) {
 
 fn log_get_error_connection(e: &GetError) {
     match e {
-        GetError::InitialNext { source, .. } => {
-            tracing::error!("initial connection error: {source}")
-        }
-        GetError::ConnectedNext { source, .. } => tracing::error!("connected error: {source}"),
-        GetError::AtBlobHeaderNext { source, .. } => {
-            tracing::error!("reading blob header error: {source}")
-        }
+        GetError::InitialNext { .. } => tracing::error!("initial connection error"),
+        GetError::ConnectedNext { .. } => tracing::error!("connected error"),
+        GetError::AtBlobHeaderNext { .. } => tracing::error!("reading blob header error"),
         _ => {}
     }
 }
 
 fn log_get_error_decode_or_irpc(e: &GetError) {
     match e {
-        GetError::Decode { source, .. } => tracing::error!("decoding error: {source}"),
-        GetError::IrpcSend { source, .. } => tracing::error!("error sending over irpc: {source}"),
+        GetError::Decode { .. } => tracing::error!("decoding error"),
+        GetError::IrpcSend { .. } => tracing::error!("error sending over irpc"),
         _ => {}
     }
 }
 
 fn log_get_error_misc(e: &GetError) {
     match e {
-        GetError::AtClosingNext { source, .. } => tracing::error!("error at closing: {source}"),
+        GetError::AtClosingNext { .. } => tracing::error!("error at closing"),
         GetError::BadRequest { .. } => tracing::error!("bad request"),
-        GetError::LocalFailure { source, .. } => tracing::error!("local failure {source:?}"),
+        GetError::LocalFailure { .. } => tracing::error!("local failure"),
         _ => {}
     }
 }
@@ -1384,11 +1385,8 @@ async fn prepare_env(
                 Some(lease) => lease.preserve(),
                 None => remove_temp_receive_dir(&iroh_data_dir).await,
             };
-            if let Err(cleanup_error) = cleanup_result {
-                tracing::warn!(
-                    error = %cleanup_error,
-                    "failed to finalize receiver storage after open error"
-                );
+            if cleanup_result.is_err() {
+                tracing::warn!("failed to finalize receiver storage after open error");
             }
             return Err(receive_failure(
                 error,
@@ -1436,7 +1434,7 @@ async fn get_sizes_with_retries(
                     true,
                     "unable to connect to the sender",
                 );
-                tracing::error!("Attempt {attempt} to connect for sizes failed: {error}");
+                tracing::error!(attempt, "collection metadata connection attempt failed");
                 last_err = Some(error);
                 if attempt < retry_policy.size_fetch_retry_limit {
                     tokio::time::sleep(size_fetch_backoff(attempt, retry_policy)).await;
@@ -1465,7 +1463,7 @@ async fn get_sizes_with_retries(
                     TransferPhase::Metadata,
                     "collection metadata transfer was interrupted",
                 );
-                tracing::error!("Attempt {attempt} to get sizes failed: {error:?}");
+                tracing::error!(attempt, "collection metadata attempt failed");
                 last_err = Some(error);
                 if attempt < retry_policy.size_fetch_retry_limit {
                     tokio::time::sleep(size_fetch_backoff(attempt, retry_policy)).await;
@@ -1497,9 +1495,9 @@ where
 {
     let mut seen_done = false;
     while let Some(item) = next_get_progress_item(stream, idle_timeout).await? {
-        trace!("got item {item:?}");
         match item {
             GetProgressItem::Progress(offset) => {
+                tracing::trace!(offset, "received download progress");
                 reporter.on_progress(already_downloaded.saturating_add(offset));
             }
             GetProgressItem::Done(value) => {
@@ -1509,7 +1507,6 @@ where
                 break;
             }
             GetProgressItem::Error(cause) => {
-                tracing::error!("Download error: {:?}", cause);
                 let error = show_get_error(cause);
                 anyhow::bail!(error);
             }

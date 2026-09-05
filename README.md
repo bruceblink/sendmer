@@ -229,6 +229,8 @@ retryability, and a safe message. Consumers should match `event.event` and must 
 Use `TransferEventStreamValidator` to reject duplicate, missing, cross-session, or late terminal
 events before updating UI or history. The validator is stateful for one session stream and should be
 reset when a new transfer starts.
+Failure and cleanup diagnostics in core tracing keep stable error categories, phases, retryability, and
+attempt counts; they do not include source/destination paths, tickets, or lower-level connection text.
 See the [v0.8.0 migration guide](docs/V0_8_MIGRATION.md) and the buildable
 [`event_consumer` example](examples/event_consumer.rs).
 
