@@ -10,7 +10,9 @@ use std::{
 
 use iroh::EndpointAddr;
 use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
-use sendmer::{EventEmitter, TransferErrorCode, TransferEvent, TransferEventData};
+use sendmer::{
+    EventEmitter, TransferErrorCode, TransferEvent, TransferEventData, TransferEventStreamValidator,
+};
 
 // Resolve the binary before changing the child working directory so parallel
 // tests cannot make the command path point at a temporary directory.
@@ -82,6 +84,13 @@ fn list_receive_temp_dirs() -> std::collections::HashSet<PathBuf> {
         .collect()
 }
 
+/// Select a UDP port on loopback for local sender fixtures, then release it for the sender.
+fn ephemeral_loopback_addr() -> SocketAddrV4 {
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve loopback UDP port");
+    let port = socket.local_addr().expect("read reserved UDP port").port();
+    SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)
+}
+
 fn parse_json_events(stdout: &[u8]) -> Vec<TransferEvent> {
     let stdout = std::str::from_utf8(stdout).expect("JSON event stdout should be UTF-8");
     assert!(!stdout.trim().is_empty(), "JSON event stdout was empty");
@@ -99,13 +108,19 @@ fn parse_json_events(stdout: &[u8]) -> Vec<TransferEvent> {
         .collect()
 }
 
+/// Check role consistency and validate the complete public event-stream lifecycle.
 fn assert_ordered_single_session(events: &[TransferEvent]) {
     let first = events.first().expect("started event");
     assert!(matches!(first.event, TransferEventData::Started));
+    let mut validator = TransferEventStreamValidator::new();
     for (index, event) in events.iter().enumerate() {
         assert_eq!(event.schema_version, 1);
         assert_eq!(event.session_id, first.session_id);
+        assert_eq!(event.role, first.role);
         assert_eq!(event.sequence, u64::try_from(index + 1).expect("sequence"));
+        validator
+            .accept(event)
+            .unwrap_or_else(|error| panic!("invalid transfer event stream: {error}"));
     }
     assert_eq!(
         events
@@ -115,6 +130,7 @@ fn assert_ordered_single_session(events: &[TransferEvent]) {
         1
     );
     assert!(events.last().expect("terminal event").event.is_terminal());
+    assert!(validator.is_terminal());
 }
 
 #[derive(Default)]
@@ -180,13 +196,13 @@ impl RunningSend {
         Self::spawn_with_upload_rate(path, cwd, None)
     }
 
-    /// Launch a sender with an optional payload cap so integration tests exercise the public CLI.
+    /// Launch a CLI sender with a direct loopback ticket and an optional payload cap.
     fn spawn_with_upload_rate(
         path: &Path,
         cwd: &Path,
         max_upload_rate: Option<u64>,
     ) -> io::Result<Self> {
-        Self::spawn_with_config(path, cwd, max_upload_rate, None, None)
+        Self::spawn_with_config(path, cwd, max_upload_rate, None, Some("127.0.0.1:0"))
     }
 
     /// Launch a sender with an active receiver ceiling for cross-process admission tests.
@@ -197,7 +213,16 @@ impl RunningSend {
         max_upload_rate: u64,
     ) -> io::Result<Self> {
         let child = Command::new(sendmer_bin())
-            .args(["send", "--no-progress", "--relay", "disabled"])
+            .args([
+                "send",
+                "--no-progress",
+                "--relay",
+                "disabled",
+                "--ticket-type",
+                "addresses",
+                "--magic-ipv4-addr",
+                "127.0.0.1:0",
+            ])
             .arg("--max-receivers")
             .arg(max_receivers.to_string())
             .arg("--max-upload-rate")
@@ -214,7 +239,17 @@ impl RunningSend {
     /// Launch a sender in explicit TM1 manifest mode for v0.10 directory fixtures.
     fn spawn_with_manifest(path: &Path, cwd: &Path) -> io::Result<Self> {
         let child = Command::new(sendmer_bin())
-            .args(["send", "--no-progress", "--relay", "disabled", "--manifest"])
+            .args([
+                "send",
+                "--no-progress",
+                "--relay",
+                "disabled",
+                "--ticket-type",
+                "addresses",
+                "--magic-ipv4-addr",
+                "127.0.0.1:0",
+            ])
+            .arg("--manifest")
             .arg(path)
             .current_dir(cwd)
             .env_remove("RUST_LOG")
@@ -358,16 +393,12 @@ fn cancellable_receive_preserves_cache_and_emits_one_cancelled_terminal() {
     let options = sendmer::ReceiveOptions {
         output_dir: Some(output_dir.path().to_path_buf()),
         relay_mode: sendmer::RelayModeOption::Disabled,
-        retry_policy: sendmer::core::options::ReceiveRetryPolicy {
-            connect_timeout_ms: Some(1_000),
-            metadata_timeout_ms: Some(1_000),
-            download_idle_timeout_ms: Some(1_000),
-            ..Default::default()
-        },
+        magic_ipv4_addr: Some(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)),
+        retry_policy: Default::default(),
         receive_cache: Some(sendmer::ReceiveCacheOptions::new(cache_root.path())),
         ..Default::default()
     };
-    let receiver = runtime.spawn(sendmer::receive_with_cancellation(
+    let mut receiver = runtime.spawn(sendmer::receive_with_cancellation(
         ticket.to_string(),
         options,
         Some(emitter.clone()),
@@ -376,7 +407,7 @@ fn cancellable_receive_preserves_cache_and_emits_one_cancelled_terminal() {
 
     // Wait for actual payload progress before cancelling, so this covers the receive cleanup
     // path after a cache entry has been opened and verified data has reached disk.
-    runtime.block_on(async {
+    let progress_wait = runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 if emitter.snapshot().iter().any(|event| {
@@ -385,16 +416,43 @@ fn cancellable_receive_preserves_cache_and_emits_one_cancelled_terminal() {
                         TransferEventData::Progress { processed, .. } if *processed > 0
                     )
                 }) {
-                    return;
+                    return Ok(());
                 }
-                tokio::time::sleep(Duration::from_millis(25)).await;
+                tokio::select! {
+                    result = &mut receiver => {
+                        return Err((result, emitter.snapshot()));
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+                }
             }
         })
         .await
-        .expect("receive should report payload progress before cancellation");
+    });
+    match progress_wait {
+        Ok(Ok(())) => {}
+        Ok(Err((result, events))) => match result {
+            Ok(Ok(_)) => {
+                panic!("receive completed before payload progress: structured events={events:?}")
+            }
+            Ok(Err(_)) => panic!(
+                "receive returned an error before payload progress: structured events={events:?}"
+            ),
+            Err(join_error) => panic!(
+                "receive task join failed before payload progress: {join_error}; structured events={events:?}"
+            ),
+        },
+        Err(error) => {
+            let events = emitter.snapshot();
+            panic!(
+                "receive made no payload progress within 30 seconds: {error}; events={events:?}"
+            );
+        }
+    }
+
+    runtime.block_on(async {
         cancel_tx.send(true).expect("send receive cancellation");
         let result = receiver.await.expect("receive task should join");
-        result.expect_err("cancelled receive must return an error");
+        assert!(result.is_err(), "cancelled receive must return an error");
     });
     send.cleanup();
 
@@ -489,12 +547,7 @@ fn send_handle_cancel_stops_active_cli_receive_without_export() {
     let output_dir = tempfile::tempdir().unwrap();
     let source_file = source_dir.path().join(name);
     std::fs::write(&source_file, &data).unwrap();
-    let port = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let magic_ipv4_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    let magic_ipv4_addr = ephemeral_loopback_addr();
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let sender = runtime
@@ -517,17 +570,13 @@ fn send_handle_cancel_stops_active_cli_receive_without_export() {
             "receive",
             "--relay",
             "disabled",
+            "--magic-ipv4-addr",
+            "127.0.0.1:0",
             "--json-events",
             "--retry-limit",
             "1",
             "--retry-backoff-ms",
             "0",
-            "--connect-timeout-ms",
-            "1000",
-            "--metadata-timeout-ms",
-            "1000",
-            "--download-idle-timeout-ms",
-            "1000",
             "--output-dir",
             output_dir.path().to_str().unwrap(),
             &ticket,
@@ -558,9 +607,28 @@ fn send_handle_cancel_stops_active_cli_receive_without_export() {
         let line = match line_receiver.recv_timeout(Duration::from_secs(30)) {
             Ok(line) => line,
             Err(error) => {
-                let _ = receiver.kill();
-                let _ = receiver.wait();
-                panic!("receiver did not report progress before sender cancellation: {error}");
+                let status = match receiver
+                    .try_wait()
+                    .expect("check receiver after progress wait")
+                {
+                    Some(status) => status,
+                    None => {
+                        let _ = receiver.kill();
+                        receiver
+                            .wait()
+                            .expect("wait for receiver after progress wait")
+                    }
+                };
+                reader.join().expect("join receiver event reader");
+                let stderr_nonempty = receiver.stderr.take().is_some_and(|mut pipe| {
+                    let mut stderr = String::new();
+                    let _ = pipe.read_to_string(&mut stderr);
+                    !stderr.is_empty()
+                });
+                panic!(
+                    "receiver ended before payload progress: channel={error}; status={status};\n\
+                     structured events={events:?}; stderr_nonempty={stderr_nonempty}"
+                );
             }
         };
         let event: TransferEvent = serde_json::from_str(line.trim()).unwrap_or_else(|error| {
@@ -653,6 +721,8 @@ fn cli_max_receivers_rejects_over_limit_and_releases_slot() {
             "receive",
             "--relay",
             "disabled",
+            "--magic-ipv4-addr",
+            "127.0.0.1:0",
             "--json-events",
             "--output-dir",
             first_output.path().to_str().unwrap(),
@@ -699,20 +769,16 @@ fn cli_max_receivers_rejects_over_limit_and_releases_slot() {
         }
     }
 
-    let rejected = Command::new(sendmer_bin())
+    let mut rejected_receive = Command::new(sendmer_bin())
         .args([
             "receive",
             "--relay",
             "disabled",
+            "--magic-ipv4-addr",
+            "127.0.0.1:0",
             "--json-events",
             "--retry-limit",
             "1",
-            "--connect-timeout-ms",
-            "1000",
-            "--metadata-timeout-ms",
-            "1000",
-            "--download-idle-timeout-ms",
-            "1000",
             "--output-dir",
             rejected_output.path().to_str().unwrap(),
             &ticket.to_string(),
@@ -720,8 +786,33 @@ fn cli_max_receivers_rejects_over_limit_and_releases_slot() {
         .env_remove("RUST_LOG")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .expect("second receive should run");
+    // Admission rejection produces only metadata events, so its small output fits the pipes.
+    // Bound the child lifetime independently of network timeouts and reap it on failure.
+    let rejection_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if rejected_receive
+            .try_wait()
+            .expect("check rejected receive")
+            .is_some()
+        {
+            break;
+        }
+        if Instant::now() >= rejection_deadline {
+            rejected_receive
+                .kill()
+                .expect("stop stalled rejected receive");
+            rejected_receive
+                .wait()
+                .expect("reap stalled rejected receive");
+            panic!("over-limit receive did not exit within 30 seconds");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let rejected = rejected_receive
+        .wait_with_output()
+        .expect("read rejected receive result");
     assert!(!rejected.status.success(), "over-limit receive must fail");
     let rejected_events = parse_json_events(&rejected.stdout);
     assert_ordered_single_session(&rejected_events);
@@ -753,6 +844,8 @@ fn cli_max_receivers_rejects_over_limit_and_releases_slot() {
             "receive",
             "--relay",
             "disabled",
+            "--magic-ipv4-addr",
+            "127.0.0.1:0",
             "--no-progress",
             "--output-dir",
             reopened_output.path().to_str().unwrap(),
@@ -1209,6 +1302,8 @@ fn persistent_receive_cache_recovers_after_receiver_process_is_killed() {
             "receive",
             "--relay",
             "disabled",
+            "--magic-ipv4-addr",
+            "127.0.0.1:0",
             "--json-events",
             "--cache-dir",
             cache_root.path().to_str().unwrap(),
@@ -1305,6 +1400,8 @@ fn persistent_receive_cache_recovers_after_receiver_process_is_killed() {
             "receive",
             "--relay",
             "disabled",
+            "--magic-ipv4-addr",
+            "127.0.0.1:0",
             "--no-progress",
             "--cache-dir",
             cache_root.path().to_str().unwrap(),
@@ -1342,12 +1439,9 @@ fn persistent_receive_cache_recovers_after_sender_restart() {
     // Reusing both identity and address makes the second sender advertise the original ticket.
     let secret_key = iroh::SecretKey::generate();
     let secret = data_encoding::HEXLOWER.encode(&secret_key.to_bytes());
-    let port = UdpSocket::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let magic_ipv4_addr = format!("127.0.0.1:{port}");
+    let fixed_sender_addr = ephemeral_loopback_addr();
+    let port = fixed_sender_addr.port();
+    let magic_ipv4_addr = fixed_sender_addr.to_string();
     let mut first_sender = RunningSend::spawn_with_config(
         &src_file,
         src_dir.path(),
@@ -1371,15 +1465,15 @@ fn persistent_receive_cache_recovers_after_sender_restart() {
             "receive",
             "--relay",
             "disabled",
+            "--magic-ipv4-addr",
+            "127.0.0.1:0",
             "--json-events",
             "--retry-limit",
             "40",
             "--retry-backoff-ms",
             "100",
             "--connect-timeout-ms",
-            "500",
-            "--metadata-timeout-ms",
-            "500",
+            "5000",
             "--download-idle-timeout-ms",
             "500",
             "--cache-dir",
@@ -1548,29 +1642,36 @@ fn receive_defaults_to_current_directory_when_output_dir_is_missing() {
     let mut send = RunningSend::spawn(&src_file, src_dir.path()).unwrap();
     let ticket = send.read_ticket();
 
-    let current = std::env::current_dir().unwrap();
-    std::env::set_current_dir(work_dir.path()).unwrap();
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let opts = sendmer::ReceiveOptions {
-        output_dir: None,
-        relay_mode: Default::default(),
-        magic_ipv4_addr: None,
-        magic_ipv6_addr: None,
-        retry_policy: Default::default(),
-        receive_cache: None,
-    };
-    let result = rt.block_on(async { sendmer::receive(ticket.to_string(), opts, None).await });
-
-    std::env::set_current_dir(current).unwrap();
+    let output = Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--relay",
+            "disabled",
+            "--magic-ipv4-addr",
+            "127.0.0.1:0",
+            "--json-events",
+        ])
+        .arg(ticket.to_string())
+        .current_dir(work_dir.path())
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("receive without an output directory should run in its child working directory");
     send.cleanup();
 
-    let res = result.expect("receive should succeed with default output directory");
-    assert!(res.message.contains("Downloaded"));
-
-    let received_file = work_dir.path().join(name);
-    let received_data = std::fs::read(received_file).unwrap();
-    assert_eq!(received_data, data);
+    assert!(
+        output.status.success(),
+        "receive should succeed with the child working directory: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = parse_json_events(&output.stdout);
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        events.last().map(|event| &event.event),
+        Some(TransferEventData::Completed)
+    ));
+    assert_eq!(std::fs::read(work_dir.path().join(name)).unwrap(), data);
 }
 
 #[test]

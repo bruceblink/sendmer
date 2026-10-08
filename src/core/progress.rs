@@ -548,7 +548,7 @@ mod tests {
         TransferStats,
         events::{RequestUpdate, TransferAborted, TransferCompleted, TransferProgress},
     };
-    use std::io::{self, Write};
+    use std::process::{Command, Stdio};
     use std::sync::{Arc, Mutex as StdMutex};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
@@ -570,31 +570,60 @@ mod tests {
         }
     }
 
-    /// Capture formatted tracing output so privacy-sensitive fields can be asserted directly.
-    struct SharedLogWriter(Arc<StdMutex<Vec<u8>>>);
-
-    impl Write for SharedLogWriter {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0
-                .lock()
-                .expect("log buffer lock")
-                .extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[test]
     fn lifecycle_diagnostic_does_not_log_failed_payload() {
+        const CAPTURE_CHILD_ENV: &str = "SENDMER_PRIVACY_CAPTURE_CHILD";
+
+        if std::env::var_os(CAPTURE_CHILD_ENV).is_none() {
+            // Run capture in a fresh process so parallel tests cannot change the tracing callsite cache.
+            let mut child = Command::new(std::env::current_exe().expect("test executable path"))
+                .args([
+                    "--exact",
+                    "core::progress::tests::lifecycle_diagnostic_does_not_log_failed_payload",
+                    "--nocapture",
+                ])
+                .env(CAPTURE_CHILD_ENV, "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start isolated privacy diagnostic test");
+            let deadline = Instant::now() + Duration::from_secs(30);
+
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        let output = child
+                            .wait_with_output()
+                            .expect("collect isolated privacy diagnostic test output");
+                        assert!(
+                            output.status.success(),
+                            "isolated privacy diagnostic test failed"
+                        );
+                        return;
+                    }
+                    Ok(None) if Instant::now() < deadline => {
+                        sleep(Duration::from_millis(10));
+                    }
+                    Ok(None) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        panic!("isolated privacy diagnostic test exceeded 30 seconds");
+                    }
+                    Err(_) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        panic!("could not inspect isolated privacy diagnostic test status");
+                    }
+                }
+            }
+        }
+
         let logs = Arc::new(StdMutex::new(Vec::new()));
         let writer_logs = Arc::clone(&logs);
         let subscriber = tracing_subscriber::fmt()
             .with_ansi(false)
             .with_max_level(tracing::Level::DEBUG)
-            .with_writer(move || SharedLogWriter(Arc::clone(&writer_logs)))
+            .with_writer(move || TestLogWriter(Arc::clone(&writer_logs)))
             .finish();
 
         tracing::subscriber::with_default(subscriber, || {
@@ -611,6 +640,23 @@ mod tests {
             .expect("tracing output should be UTF-8");
         assert!(output.contains("event_kind=\"failed\""));
         assert!(!output.contains(r"C:\private\secret.txt"));
+    }
+
+    /// Capture formatted tracing output for privacy assertions in the isolated child process.
+    struct TestLogWriter(Arc<StdMutex<Vec<u8>>>);
+
+    impl std::io::Write for TestLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("log buffer lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     fn started_emitter(sink: Arc<RecordingEmitter>, role: Role) -> TransferEventEmitter {
