@@ -394,6 +394,8 @@ pub enum TransferEventStreamError {
         expected: TransferSessionId,
         found: TransferSessionId,
     },
+    /// All events in one stream must keep the role established by its first event.
+    RoleChanged { expected: Role, found: Role },
     /// An accepted event must use the next contiguous sequence number.
     SequenceMismatch { expected: u64, found: u64 },
     /// A second `started` payload is not valid after the stream begins.
@@ -431,6 +433,12 @@ impl std::fmt::Display for TransferEventStreamError {
                 formatter,
                 "transfer event session changed from {expected} to {found}"
             ),
+            Self::RoleChanged { expected, found } => write!(
+                formatter,
+                "transfer event role changed from {} to {}",
+                expected.as_str(),
+                found.as_str()
+            ),
             Self::SequenceMismatch { expected, found } => write!(
                 formatter,
                 "expected transfer event sequence {expected}, found {found}"
@@ -462,11 +470,14 @@ impl std::error::Error for TransferEventStreamError {}
 /// Stateful validator for one consumer-facing transfer event stream.
 ///
 /// The validator accepts one `Started` event at sequence `1`, then only events from the same
-/// session with contiguous sequence numbers. Once an input violates a rule, the validator stays
-/// rejected and returns the original error for later inputs.
+/// session and role with contiguous sequence numbers. The first accepted event binds both the
+/// session identifier and its role; a consumer must create a new validator for another stream.
+/// Once an input violates a rule, the validator stays rejected and returns the original error
+/// for later inputs, without exposing any event payload in its diagnostics.
 #[derive(Debug, Clone)]
 pub struct TransferEventStreamValidator {
     session_id: Option<TransferSessionId>,
+    role: Option<Role>,
     expected_sequence: u64,
     terminal: bool,
     rejected: Option<TransferEventStreamError>,
@@ -483,6 +494,7 @@ impl TransferEventStreamValidator {
     pub const fn new() -> Self {
         Self {
             session_id: None,
+            role: None,
             expected_sequence: 1,
             terminal: false,
             rejected: None,
@@ -515,6 +527,7 @@ impl TransferEventStreamValidator {
                 });
             }
             self.session_id = Some(event.session_id.clone());
+            self.role = Some(event.role);
             self.expected_sequence = 2;
             return Ok(());
         }
@@ -538,6 +551,14 @@ impl TransferEventStreamValidator {
             return self.reject(TransferEventStreamError::SequenceMismatch {
                 expected: self.expected_sequence,
                 found: event.sequence,
+            });
+        }
+        if let Some(expected) = self.role
+            && expected != event.role
+        {
+            return self.reject(TransferEventStreamError::RoleChanged {
+                expected,
+                found: event.role,
             });
         }
         if contains_unsafe_event_file_name(&event.event) {
@@ -1032,6 +1053,113 @@ mod tests {
             repeated_start.accept(&stream_event(first_session, 2, TransferEventData::Started)),
             Err(TransferEventStreamError::StartedAfterStart { sequence: 2 })
         );
+    }
+
+    #[test]
+    fn event_stream_validator_rejects_role_changes_for_every_payload() {
+        let session = "0123456789abcdef0123456789abcdef";
+        let payloads = [
+            TransferEventData::Progress {
+                processed: 1,
+                total: 2,
+                speed_bytes_per_sec: 1.0,
+            },
+            TransferEventData::FileNames {
+                file_names: vec!["safe.txt".to_owned()],
+            },
+            TransferEventData::Completed,
+            TransferEventData::Failed {
+                error: TransferError::new(
+                    TransferErrorCode::Internal,
+                    TransferPhase::Transferring,
+                    false,
+                    "private payload must not appear in diagnostics",
+                ),
+            },
+            TransferEventData::Cancelled,
+        ];
+        for (expected, found) in [
+            (Role::Receiver, Role::Sender),
+            (Role::Sender, Role::Receiver),
+        ] {
+            for payload in &payloads {
+                let mut validator = TransferEventStreamValidator::new();
+                let mut started = stream_event(session, 1, TransferEventData::Started);
+                started.role = expected;
+                validator.accept(&started).expect("started event");
+                let mut changed = stream_event(session, 2, payload.clone());
+                changed.role = found;
+
+                let error = validator
+                    .accept(&changed)
+                    .expect_err("role change must fail");
+                assert_eq!(
+                    error,
+                    TransferEventStreamError::RoleChanged { expected, found }
+                );
+                assert!(error.to_string().contains("role changed"));
+                assert!(!error.to_string().contains("private payload"));
+                assert!(validator.is_rejected());
+                assert!(!validator.is_terminal());
+
+                changed.role = expected;
+                assert_eq!(validator.accept(&changed), Err(error));
+            }
+        }
+    }
+
+    #[test]
+    fn event_stream_validator_accepts_each_terminal_for_both_roles() {
+        let session = "0123456789abcdef0123456789abcdef";
+        let terminals = [
+            TransferEventData::Completed,
+            TransferEventData::Failed {
+                error: TransferError::new(
+                    TransferErrorCode::Timeout,
+                    TransferPhase::Transferring,
+                    true,
+                    "transfer timed out",
+                ),
+            },
+            TransferEventData::Cancelled,
+        ];
+        for role in [Role::Sender, Role::Receiver] {
+            for terminal in &terminals {
+                let mut validator = TransferEventStreamValidator::new();
+                let mut started = stream_event(session, 1, TransferEventData::Started);
+                started.role = role;
+                let mut finished = stream_event(session, 2, terminal.clone());
+                finished.role = role;
+
+                validator.accept(&started).expect("started event");
+                validator
+                    .accept(&finished)
+                    .expect("same-role terminal event");
+                assert!(validator.is_terminal());
+                assert!(!validator.is_rejected());
+            }
+        }
+    }
+
+    #[test]
+    fn event_stream_validator_rejects_role_change_jsonl_fixture() {
+        let events: Vec<TransferEventEnvelope> =
+            include_str!("../../tests/fixtures/transfer_event_role_change.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("valid envelope in JSONL fixture"))
+                .collect();
+        let mut validator = TransferEventStreamValidator::new();
+        validator.accept(&events[0]).expect("started event");
+        let error = validator
+            .accept(&events[1])
+            .expect_err("fixture role change must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("role changed from receiver to sender")
+        );
+        assert_eq!(validator.accept(&events[2]), Err(error));
+        assert!(!validator.is_terminal());
     }
 
     #[test]

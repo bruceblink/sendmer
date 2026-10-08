@@ -223,7 +223,8 @@ ticket 不能再建立新的接收连接。ticket 只在发送方 router 存活�
 cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode`、失败阶段、可重试属性和
 安全消息。消费者应匹配 `event.event`，不得解析错误文本。使用
 `TransferEventStreamValidator` 可在更新 UI 或历史前拒绝重复序号、序号缺口、会话切换和终态后
-的迟到事件；它针对一条会话流保存状态，新传输开始时应创建新的校验器。参见
+的迟到事件；首事件确定本会话的 sender/receiver 角色，后续角色变化也会拒绝。校验器针对一条
+会话流保存状态，新传输开始时应创建新的校验器。参见
 [v0.8.0 迁移指南](docs/V0_8_MIGRATION.md)和可编译的
 [`event_consumer` 示例](examples/event_consumer.rs)。
 核心 tracing 的失败与清理诊断只保留稳定的错误类别、阶段、可重试属性和尝试次数，不包含

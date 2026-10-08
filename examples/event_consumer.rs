@@ -4,6 +4,8 @@ use sendmer::{
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// Validate one session before logging its events. The first event fixes both session ID and
+/// sender/receiver role; later role changes reject the stream without logging the payload.
 struct JsonEventLog {
     validator: Mutex<TransferEventStreamValidator>,
 }

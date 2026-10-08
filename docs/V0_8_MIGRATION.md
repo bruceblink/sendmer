@@ -89,7 +89,7 @@ fn may_retry(event: &TransferEvent) -> bool {
 每个事件消费者必须按以下规则更新状态：
 
 1. 仅在 `started` 建立新的活动会话，首个 `sequence` 必须为 `1`。
-2. 同一 `session_id` 只接受严格大于已处理值的 `sequence`。
+2. 同一 `session_id` 的 `role` 必须保持一致，`sequence` 必须连续递增。
 3. completed、failed、cancelled 互斥；收到一个终态后丢弃该会话的迟到事件。
 4. 新 `session_id` 启动后，旧会话事件不得覆盖当前 UI。
 5. sender 的单个 provider request 完成或中断不是共享发送会话终态。
@@ -110,9 +110,20 @@ fn accept_event(
 }
 ```
 
-校验器要求首事件是 `Started` 且 `sequence = 1`，后续事件必须来自同一个 `session_id` 并且
-序号连续；重复、缺口、会话切换、终态后的迟到事件会拒绝整条流。首次错误会被保留，后续输入
-继续返回同一个错误，调用方应丢弃该会话的后续状态更新。
+校验器要求首事件是 `Started` 且 `sequence = 1`。首事件确定本会话的 `session_id` 和 `role`。
+后续事件必须使用相同会话、相同角色和连续序号；角色变化、重复、缺口、会话切换、终态后的
+迟到事件会拒绝整条流。首次错误会被保留，后续输入继续返回同一个错误，调用方应丢弃该会话
+的后续状态更新。
+
+尚未发布的 C11.2 实现新增 `TransferEventStreamError::RoleChanged { expected, found }`。
+穷举匹配 `TransferEventStreamError` 的 Rust 消费者需要增加该分支；使用通用错误处理的消费者
+继续按首次失败停止处理。JSON schema 保持为 `1`，单条事件的反序列化规则不变，跨事件角色
+检查由校验器负责。接入回归可使用
+[`transfer_event_role_change.jsonl`](../tests/fixtures/transfer_event_role_change.jsonl)：首行建立
+receiver 会话，第二行切换到 sender 后被拒绝，第三行恢复 receiver 也不能恢复被拒绝的流。
+
+桌面适配清单：在正式核心版本发布后，为每个 send 或 receive 会话单独创建校验器；在更新
+UI 或历史前调用 `accept`；收到 `RoleChanged` 后停止该会话的事件更新并显示事件流无效摘要。
 
 ## 5. CLI JSONL 迁移
 

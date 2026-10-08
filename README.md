@@ -226,8 +226,9 @@ capability while its sender router is alive; it is not an account, persistent AC
 one random `session_id`, strictly increasing `sequence` values, an explicit phase, and at most one of
 completed, failed, or cancelled. Failed events contain `TransferErrorCode`, failure phase,
 retryability, and a safe message. Consumers should match `event.event` and must not parse error text.
-Use `TransferEventStreamValidator` to reject duplicate, missing, cross-session, or late terminal
-events before updating UI or history. The validator is stateful for one session stream and should be
+Use `TransferEventStreamValidator` to reject role changes, duplicate, missing, cross-session, or late
+terminal events before updating UI or history. The first event fixes the session's sender/receiver
+role. The validator is stateful for one session stream and should be
 reset when a new transfer starts.
 Failure and cleanup diagnostics in core tracing keep stable error categories, phases, retryability, and
 attempt counts; they do not include source/destination paths, tickets, or lower-level connection text.

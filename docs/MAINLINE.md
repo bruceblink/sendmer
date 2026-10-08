@@ -134,7 +134,7 @@ flowchart LR
 | `session_id` | 独立随机 128 位标识，不从 ticket、hash 或网络身份派生 |
 | `sequence` | 每个会话从 `1` 严格递增，消费者以它判断顺序 |
 | `timestamp_ms` | Unix epoch 毫秒，仅用于展示和跨进程关联 |
-| `role` | `sender` 或 `receiver` |
+| `role` | `sender` 或 `receiver`，同一会话固定为首条事件的角色 |
 | `phase` | `preparing`、`connecting`、`metadata`、`transferring`、`exporting`、`finalizing` |
 | `event` | `started`、`progress`、`file_names` 或唯一终态 |
 
@@ -338,6 +338,19 @@ CLI receiver 在实际 payload 传输期间建立连接并取得进度，随后�
   不得包含敏感信息。
 - 公开 API 变化必须同时更新 rustdoc、示例、fixture、迁移说明和桌面适配清单；若没有明确用户
   场景，不新增动态限速、接收端限速或缓存内部管理 API。
+
+2026-10-08 执行范围：补齐事件流的会话角色一致性校验。
+
+- 负责组件：`TransferEventStreamValidator` 以首条 `Started` 的 `role` 为本会话固定角色；
+  后续事件角色不同即返回 `RoleChanged`，保留首次错误并拒绝后续输入。
+- 验收条件：发送方和接收方角色变化均被拒绝，包括 progress、file names 和三种终态；
+  同一角色的合法事件继续通过，真实 CLI 事件流角色固定，拒绝信息不复制事件载荷。
+- 接口边界：新增 `TransferEventStreamError::RoleChanged`；JSON schema 仍为 `1`，不新增 wire
+  字段。穷举匹配该错误枚举的消费者需要增加分支；迁移说明、fixture、示例和桌面适配清单
+  必须同步。核心正式版本发布后，桌面适配器再使用该检查。
+- 验证命令：第 8 节的 formatting、Clippy、workspace 测试和 build/check；另运行 rustdoc、
+  公开事件 fixture 与 MSRV `1.91` 检查。UI 验收与外部服务集成不适用。
+- 回退边界：本批代码、测试和说明可作为一个独立提交回退；不修改 ticket、缓存或传输协议。
 
 截至 2026-09-04，sendmer 已完成 C11.2 的事件输出切片：`TransferEventEnvelope` 只接受当前
 `schema_version = 1`，未知版本在反序列化与 JSON 序列化阶段直接失败；信封和载荷中的未知可选

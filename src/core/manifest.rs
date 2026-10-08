@@ -373,9 +373,12 @@ impl ManifestPath {
                             bytes.len().is_multiple_of(2),
                             "Windows UTF-16 path bytes must be even"
                         );
+                        // The even-length check above guarantees one UTF-16 unit per byte pair.
                         let wide = bytes
-                            .chunks_exact(2)
-                            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .map(|pair| u16::from_le_bytes(*pair))
                             .collect::<Vec<_>>();
                         validate_windows_wide_component(&wide)?;
                         path.push(OsString::from_wide(&wide));
