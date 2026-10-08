@@ -91,6 +91,9 @@ cargo install sendmer --locked
 
 ## 用法
 
+常规命令只需要文件路径或传输票据。使用 `sendmer send -h` 或 `sendmer receive -h`
+查看简短帮助。使用 `--help` 代替 `-h` 查看全部高级参数。已有参数和默认值保持不变。
+
 ### 发送
 
 ```bash
@@ -137,7 +140,7 @@ sendmer receive <ticket>
 可显式启用 v0.10 TM1 传输清单，从而保留空目录和受支持的文件元数据；符号链接以及无法
 安全还原的路径仍会被拒绝。
 
-## 常用参数
+## 高级参数参考
 
 `send` 和 `receive` 共同支持：
 

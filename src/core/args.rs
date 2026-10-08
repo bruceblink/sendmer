@@ -17,7 +17,11 @@ use super::options::{AddrInfoOptions, RelayModeOption};
 static PROCESS_SECRET: OnceLock<iroh::SecretKey> = OnceLock::new();
 
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(
+    version,
+    about,
+    after_help = "Examples:\n  sendmer send <PATH>\n  sendmer receive <TICKET>\n\nUse --help to show all options."
+)]
 pub struct Args {
     #[clap(subcommand)]
     pub command: Commands,
@@ -59,42 +63,79 @@ pub struct CommonArgs {
     ///
     /// If None, defaults to a random free port, but it can be useful to specify a fixed
     /// port, e.g. to configure a firewall rule.
-    #[clap(long, default_value = None)]
+    #[clap(
+        long,
+        default_value = None,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub magic_ipv4_addr: Option<SocketAddrV4>,
 
     /// The IPv6 address that magicsocket will listen on.
     ///
     /// If None, defaults to a random free port, but it can be useful to specify a fixed
     /// port, e.g. to configure a firewall rule.
-    #[clap(long, default_value = None)]
+    #[clap(
+        long,
+        default_value = None,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub magic_ipv6_addr: Option<SocketAddrV6>,
 
-    #[clap(long, default_value_t = Format::Hex)]
+    #[clap(
+        long,
+        default_value_t = Format::Hex,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub format: Format,
 
-    #[clap(short = 'v', long, action = clap::ArgAction::Count)]
+    #[clap(
+        short = 'v',
+        long,
+        action = clap::ArgAction::Count,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub verbose: u8,
 
     /// Suppress progress bars.
-    #[clap(long, default_value_t = false)]
+    #[clap(
+        long,
+        default_value_t = false,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub no_progress: bool,
 
     /// Emit transfer events as JSON Lines on stdout instead of progress bars.
-    #[clap(long, default_value_t = false)]
+    #[clap(
+        long,
+        default_value_t = false,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub json_events: bool,
 
     /// The relay URL to use as a home relay,
     ///
     /// Can be set to "disabled" to disable relay servers and "default"
     /// to configure default servers.
-    #[clap(long, default_value_t = RelayModeOption::Default)]
+    #[clap(
+        long,
+        default_value_t = RelayModeOption::Default,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub relay: RelayModeOption,
 
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub show_secret: bool,
 }
 
 #[derive(Parser, Debug)]
+#[command(after_help = "Example:\n  sendmer send <PATH>\n\nUse --help to show all options.")]
 pub struct SendArgs {
     /// Path to the file or directory to send.
     ///
@@ -115,36 +156,41 @@ pub struct SendArgs {
     ///
     /// This is most useful for debugging which methods of connection
     /// establishment work well.
-    #[clap(long, default_value_t = AddrInfoOptions::RelayAndAddresses)]
+    #[clap(
+        long,
+        default_value_t = AddrInfoOptions::RelayAndAddresses,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub ticket_type: AddrInfoOptions,
 
     /// Optional shared payload upload ceiling in bytes per second.
     ///
     /// The limit is shared by all receivers for this send command. It does not
     /// include relay, QUIC, or other protocol overhead.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub max_upload_rate: Option<NonZeroU64>,
 
     /// Maximum number of receiver connections that may be active at once.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub max_receivers: Option<NonZeroU64>,
 
     /// Maximum number of regular files included in the shared path.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub max_files: Option<NonZeroU64>,
 
     /// Maximum total size in bytes of regular files included in the shared path.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub max_total_size: Option<NonZeroU64>,
 
     /// Estimated regular-file bytes allowed in concurrent sender imports.
     ///
     /// This bounds the import working set, not the process RSS or operating-system memory.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub max_import_memory: Option<NonZeroU64>,
 
     /// Fixed sender session lifetime in seconds after the share becomes ready.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub session_lifetime_seconds: Option<NonZeroU64>,
 
     /// Use the v0.10 transfer manifest for empty directories and portable metadata.
@@ -161,6 +207,7 @@ pub struct SendArgs {
 }
 
 #[derive(Parser, Debug)]
+#[command(after_help = "Example:\n  sendmer receive <TICKET>\n\nUse --help to show all options.")]
 pub struct ReceiveArgs {
     /// The ticket to use to connect to the sender.
     pub ticket: BlobTicket,
@@ -172,31 +219,46 @@ pub struct ReceiveArgs {
     pub output_dir: Option<PathBuf>,
 
     /// Maximum number of attempts for the blob download phase.
-    #[clap(long, default_value_t = 3)]
+    #[clap(
+        long,
+        default_value_t = 3,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub retry_limit: u32,
 
     /// Delay in milliseconds between blob download retries.
-    #[clap(long, default_value_t = 250)]
+    #[clap(
+        long,
+        default_value_t = 250,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub retry_backoff_ms: u64,
 
     /// Optional connection timeout in milliseconds for each receive attempt.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub connect_timeout_ms: Option<u64>,
 
     /// Optional timeout in milliseconds while fetching collection metadata.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub metadata_timeout_ms: Option<u64>,
 
     /// Optional timeout in milliseconds without download-stream progress.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub download_idle_timeout_ms: Option<u64>,
 
     /// Optional directory for receive data that can resume in a later process.
-    #[clap(long)]
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub cache_dir: Option<PathBuf>,
 
     /// Lifetime in seconds recorded for a persistent receive-cache entry.
-    #[clap(long, default_value_t = 7 * 24 * 60 * 60)]
+    #[clap(
+        long,
+        default_value_t = 7 * 24 * 60 * 60,
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     pub cache_ttl_seconds: u64,
 
     #[clap(flatten)]
@@ -265,6 +327,57 @@ mod tests {
             BlobFormat::HashSeq,
         )
         .to_string()
+    }
+
+    #[test]
+    fn minimal_send_command_preserves_default_behavior() {
+        let args =
+            Args::try_parse_from(["sendmer", "send", "share"]).expect("send needs only a path");
+        let Commands::Send(send) = args.command else {
+            panic!("expected send command")
+        };
+        assert_eq!(send.path, PathBuf::from("share"));
+        assert!(!send.manifest);
+        assert_eq!(send.max_upload_rate, None);
+        assert_eq!(send.max_receivers, None);
+        assert_eq!(send.max_files, None);
+        assert_eq!(send.max_total_size, None);
+        assert_eq!(send.max_import_memory, None);
+        assert_eq!(send.session_lifetime_seconds, None);
+        assert!(matches!(
+            send.ticket_type,
+            super::AddrInfoOptions::RelayAndAddresses
+        ));
+        assert!(matches!(send.common.relay, super::RelayModeOption::Default));
+        assert!(!send.common.no_progress);
+        assert!(!send.common.json_events);
+    }
+
+    #[test]
+    fn minimal_receive_command_preserves_default_behavior() {
+        let ticket = sample_ticket();
+        for command in ["receive", "recv"] {
+            let args = Args::try_parse_from(["sendmer", command, ticket.as_str()])
+                .expect("receive needs only a ticket");
+            let Commands::Receive(receive) = args.command else {
+                panic!("expected receive command")
+            };
+            assert_eq!(receive.ticket.to_string(), ticket);
+            assert_eq!(receive.output_dir, None);
+            assert_eq!(receive.retry_limit, 3);
+            assert_eq!(receive.retry_backoff_ms, 250);
+            assert_eq!(receive.connect_timeout_ms, None);
+            assert_eq!(receive.metadata_timeout_ms, None);
+            assert_eq!(receive.download_idle_timeout_ms, None);
+            assert_eq!(receive.cache_dir, None);
+            assert_eq!(receive.cache_ttl_seconds, 604_800);
+            assert!(matches!(
+                receive.common.relay,
+                super::RelayModeOption::Default
+            ));
+            assert!(!receive.common.no_progress);
+            assert!(!receive.common.json_events);
+        }
     }
 
     #[test]

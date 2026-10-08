@@ -92,6 +92,10 @@ cargo install sendmer --locked
 
 ## Usage
 
+The usual commands need only a path or a ticket. Use `sendmer send -h` or
+`sendmer receive -h` for the short help. Use `--help` instead of `-h` to see all
+advanced options. Existing options and their defaults remain unchanged.
+
 ### Send
 
 ```bash
@@ -139,7 +143,7 @@ cannot preserve them safely. Use `sendmer send --manifest <file-or-directory>` t
 TM1 transfer manifest, which preserves empty directories and supported file metadata; symbolic links
 and paths that cannot be materialized safely are still rejected.
 
-## Useful Options
+## Advanced Options Reference
 
 Common options are available on both `send` and `receive`:
 
