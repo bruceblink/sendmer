@@ -122,7 +122,7 @@ fn accept_event(
 [`transfer_event_role_change.jsonl`](../tests/fixtures/transfer_event_role_change.jsonl)：首行建立
 receiver 会话，第二行切换到 sender 后被拒绝，第三行恢复 receiver 也不能恢复被拒绝的流。
 
-桌面适配清单：在正式核心版本发布后，为每个 send 或 receive 会话单独创建校验器；在更新
+桌面适配清单：从正式 `sendmer v0.11.0` 开始，为每个 send 或 receive 会话单独创建校验器；在更新
 UI 或历史前调用 `accept`；收到 `RoleChanged` 后停止该会话的事件更新并显示事件流无效摘要。
 
 ## 5. CLI JSONL 迁移

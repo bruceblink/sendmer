@@ -40,7 +40,10 @@ TM1 选择、跨进程回归、原生验收和正式发布。上一桌面版本 
 
 当前阶段事实：`sendmer v0.10.0` 的 tag 指向 `fe1f475`；`AlterSendmer v0.6.0` 的 Release
 workflow `32866559790` 已完成三个平台打包、签名、SBOM、provenance、更新清单和 checksum，
-共上传 23 个资产。当前已完成 `v0.11.0` 版本选择，待发布前检查和 tag 验证完成后再创建 Release。
+共上传 23 个资产。`sendmer v0.11.0` 已于 2026-10-09 发布，tag 指向
+`afb449069155d7d8b661f5f3a84ff1dfc573b54a`；GitHub Release 工作流 `37939914533` 全部成功，
+发布页上传 36 个归档、checksum、SBOM、Sigstore 签名和 provenance 资产，crates.io 已可解析
+`sendmer 0.11.0`。AlterSendmer 仍使用 `sendmer 0.10.0`，等待独立适配和跨项目验收。
 
 核心传输层不负责：
 
@@ -264,14 +267,20 @@ Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名
 变化，可能要求下游穷举匹配增加分支；README、迁移指南、事件 fixture 和版本矩阵已同步。
 发布 tag 只允许指向通过 release workflow 所有检查的提交。
 
+发布结果：`v0.11.0` 的 quality gate、六平台构建、Sigstore 签名、SBOM、provenance、Release
+创建和 crates.io 发布均成功。Release 地址为
+[`github.com/bruceblink/sendmer/releases/tag/v0.11.0`](https://github.com/bruceblink/sendmer/releases/tag/v0.11.0)。
+本地 RustSec 审计仍按用户指令暂缓；yanked 依赖警告已由 `cargo package` 记录，后续依赖维护批次
+需要单独处理。
+
 本阶段以已发布的 `sendmer v0.10.0` 和 `AlterSendmer v0.6.0` 为稳定基线，先提升桌面端的
 可用性、可访问性和诊断质量，再用可复现证据决定是否需要新的核心版本。默认策略如下：
 
 1. 只改 AlterSendmer 的界面、偏好、历史或打包行为时，发布桌面补丁或次版本，不升级 sendmer。
 2. 只修复 sendmer 中可复现的回归、清理、跨平台或发布工程问题时，按 SemVer 评估
    `v0.10.1`；修复必须保持已有公开接口和默认行为。
-3. 本阶段选择 `sendmer v0.11.0`，因为事件流错误枚举新增公开变体，穷举匹配的消费者需要迁移；
-   tag 仍必须等待发布前检查和 release rehearsal 完成。
+3. 本阶段已发布 `sendmer v0.11.0`，因为事件流错误枚举新增公开变体，穷举匹配的消费者需要迁移；
+   tag、Release、资产和 crates.io 版本已经完成回读。
 
 本阶段不以增加协议功能数量为完成标准，而以用户可完成一次可靠传输、开发者可消费稳定事件、
 维护者可复现发布结果为完成标准。每个批次均须有负责人、前置条件、出口证据和失败处理。
@@ -284,8 +293,8 @@ Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名
 | A11.1 桌面质量 | 进行中 | AlterSendmer | 长 ticket、键盘焦点、AccessKit 标签、最小窗口、高 DPI、21 种语言、历史/偏好迁移、诊断导出、退出清理和更新失败恢复 | N11.0；不需要新的 sendmer API | Windows 真实截图与操作日志、Linux/macOS 原生 CI、locale 完整性和隐私检查 |
 | C11.1 核心可靠性 | 进行中 | sendmer | 补齐 sender 中断/过期、receiver 取消/重试、持久缓存恢复、接收方上限释放、staging 清理和冲突保护的跨进程回归；只修复可复现问题 | N11.0；发现缺陷时建立最小复现 | locked workspace 测试、失败日志、无半导出、无临时目录泄漏、目标内容不变 |
 | C11.2 可观测性评审 | 进行中 | sendmer 与 AlterSendmer | 固定 JSON Lines 的 stdout/stderr 边界、schema `1` 序号/终态、结构化错误和敏感字段脱敏；评估是否需要新的缓存诊断或运行时控制 API | C11.1；新 API 必须先在本文件冻结边界 | rustdoc、可编译示例、事件 fixture、未知字段/乱序事件测试和迁移说明 |
-| R11.1 发布可复现性 | 待启动 | 两个仓库 | 维护六平台 CI、原生验收、安装器失败清理、release notes 提交范围、checksum、签名、SBOM、provenance 和重跑幂等性 | A11.1/C11.1/C11.2 相关批次通过 | actionlint、版本/资产/安装器测试、release rehearsal、GitHub workflow 与资产清单 |
-| D11.1 版本决策 | 已选择，发布中 | sendmer | 发布 `0.11.0`，同步 README、版本矩阵、迁移入口和 Release notes | R11.1 发布检查通过 | tag、crate、Release、依赖解析可回读 |
+| R11.1 发布可复现性 | `v0.11.0` 已完成 | sendmer | 维护六平台 CI、安装器失败清理、release notes、checksum、签名、SBOM、provenance 和重跑幂等性 | A11.1/C11.1/C11.2 相关批次通过 | actionlint、版本/资产/安装器测试、release rehearsal、workflow `37939914533` 和 36 个资产 |
+| D11.1 版本决策 | `v0.11.0` 已完成 | sendmer | 发布 `0.11.0`，同步 README、版本矩阵、迁移入口和 Release notes | R11.1 发布检查通过 | tag、crate、Release、依赖解析可回读 |
 
 每个批次只解决一个可验收主题。测试、原生验收或发布证据缺失时，批次保持“进行中”，不得
 通过文档措辞标记为完成；relay 或弱网服务不可达时只记录“未执行”和前置条件。
