@@ -40,7 +40,7 @@ TM1 选择、跨进程回归、原生验收和正式发布。上一桌面版本 
 
 当前阶段事实：`sendmer v0.10.0` 的 tag 指向 `fe1f475`；`AlterSendmer v0.6.0` 的 Release
 workflow `32866559790` 已完成三个平台打包、签名、SBOM、provenance、更新清单和 checksum，
-共上传 23 个资产。当前没有 `v0.11` tag；下一阶段先做质量改进和证据补齐，不预先承诺核心版本号。
+共上传 23 个资产。当前已完成 `v0.11.0` 版本选择，待发布前检查和 tag 验证完成后再创建 Release。
 
 核心传输层不负责：
 
@@ -169,6 +169,7 @@ relay token 或底层连接标识。`file_names` 只能携带使用 `/` 分隔�
 | `v0.8.0` | 版本化事件信封、严格序号、单终态与结构化错误 | `AlterSendmer v0.4.0` |
 | `v0.9.0` | 持久接收缓存、TTL/prune、跨进程中断与发送端重启恢复 | `AlterSendmer v0.5.0` |
 | `v0.10.0` | 会话生命周期与资源上限、TM1 manifest、供应链证明和六平台发布覆盖 | `AlterSendmer v0.6.0` |
+| `v0.11.0` | 事件流角色一致性校验、CLI 短帮助分层和依赖安全补丁 | 待 AlterSendmer 适配 |
 
 `AlterSendmer v0.6.0` 使用 `sendmer = "0.10.0"`，只映射公开配置、事件和结构化错误：上传
 上限以 MiB/s 输入后转换为 bytes/s；持久缓存默认启用并提供 `1 / 7 / 30` 天新条目 TTL 和安全
@@ -259,14 +260,18 @@ Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名
 `Cargo.lock`，不增加 CLI 参数。完整 RustSec 数据库审计按本阶段用户指令暂缓，发布前必须
 重新运行审计并记录剩余的未维护依赖、yanked 版本和最终结果。
 
+2026-10-09 版本决策：发布 `v0.11.0`。新增 `TransferEventStreamError::RoleChanged` 是公开枚举
+变化，可能要求下游穷举匹配增加分支；README、迁移指南、事件 fixture 和版本矩阵已同步。
+发布 tag 只允许指向通过 release workflow 所有检查的提交。
+
 本阶段以已发布的 `sendmer v0.10.0` 和 `AlterSendmer v0.6.0` 为稳定基线，先提升桌面端的
 可用性、可访问性和诊断质量，再用可复现证据决定是否需要新的核心版本。默认策略如下：
 
 1. 只改 AlterSendmer 的界面、偏好、历史或打包行为时，发布桌面补丁或次版本，不升级 sendmer。
 2. 只修复 sendmer 中可复现的回归、清理、跨平台或发布工程问题时，按 SemVer 评估
    `v0.10.1`；修复必须保持已有公开接口和默认行为。
-3. 只有确实需要新的公开 API 或传输语义时，才启动 `sendmer v0.11.0` 候选；在设计、兼容性、
-   测试和迁移说明完成前，不创建 `v0.11` tag。
+3. 本阶段选择 `sendmer v0.11.0`，因为事件流错误枚举新增公开变体，穷举匹配的消费者需要迁移；
+   tag 仍必须等待发布前检查和 release rehearsal 完成。
 
 本阶段不以增加协议功能数量为完成标准，而以用户可完成一次可靠传输、开发者可消费稳定事件、
 维护者可复现发布结果为完成标准。每个批次均须有负责人、前置条件、出口证据和失败处理。
@@ -280,7 +285,7 @@ Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名
 | C11.1 核心可靠性 | 进行中 | sendmer | 补齐 sender 中断/过期、receiver 取消/重试、持久缓存恢复、接收方上限释放、staging 清理和冲突保护的跨进程回归；只修复可复现问题 | N11.0；发现缺陷时建立最小复现 | locked workspace 测试、失败日志、无半导出、无临时目录泄漏、目标内容不变 |
 | C11.2 可观测性评审 | 进行中 | sendmer 与 AlterSendmer | 固定 JSON Lines 的 stdout/stderr 边界、schema `1` 序号/终态、结构化错误和敏感字段脱敏；评估是否需要新的缓存诊断或运行时控制 API | C11.1；新 API 必须先在本文件冻结边界 | rustdoc、可编译示例、事件 fixture、未知字段/乱序事件测试和迁移说明 |
 | R11.1 发布可复现性 | 待启动 | 两个仓库 | 维护六平台 CI、原生验收、安装器失败清理、release notes 提交范围、checksum、签名、SBOM、provenance 和重跑幂等性 | A11.1/C11.1/C11.2 相关批次通过 | actionlint、版本/资产/安装器测试、release rehearsal、GitHub workflow 与资产清单 |
-| D11.1 版本决策 | 待启动 | 两个仓库 | 根据实际变更选择桌面次版本、sendmer `0.10.1` 或 `0.11.0`；同步 README、版本矩阵和迁移入口 | R11.1 通过且没有未完成项 | tag、crate、Release、依赖解析和两仓库文档可回读 |
+| D11.1 版本决策 | 已选择，发布中 | sendmer | 发布 `0.11.0`，同步 README、版本矩阵、迁移入口和 Release notes | R11.1 发布检查通过 | tag、crate、Release、依赖解析可回读 |
 
 每个批次只解决一个可验收主题。测试、原生验收或发布证据缺失时，批次保持“进行中”，不得
 通过文档措辞标记为完成；relay 或弱网服务不可达时只记录“未执行”和前置条件。
@@ -465,7 +470,7 @@ release rehearsal。桌面变更还必须有真实窗口或原生 runner 证据�
 
 跨项目发布顺序固定为：
 
-1. 在 sendmer 完成功能、测试、文档和版本提交；若是桌面独立改进，则保持 `sendmer v0.10.0` 不变。
+1. 在 sendmer 完成功能、测试、文档和版本提交；本批目标为 `sendmer v0.11.0`。
 2. 核心版本变更先发布 crate 与 GitHub Release，并确认 crates.io 可解析该版本。
 3. AlterSendmer 只能使用正式 registry 版本，完成适配、跨项目回归、三平台 CI 和原生验收。
 4. 发布 AlterSendmer，并回读 tag、Release、资产和两仓库版本矩阵。

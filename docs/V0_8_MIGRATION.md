@@ -115,7 +115,7 @@ fn accept_event(
 迟到事件会拒绝整条流。首次错误会被保留，后续输入继续返回同一个错误，调用方应丢弃该会话
 的后续状态更新。
 
-尚未发布的 C11.2 实现新增 `TransferEventStreamError::RoleChanged { expected, found }`。
+`sendmer v0.11.0` 新增 `TransferEventStreamError::RoleChanged { expected, found }`。
 穷举匹配 `TransferEventStreamError` 的 Rust 消费者需要增加该分支；使用通用错误处理的消费者
 继续按首次失败停止处理。JSON schema 保持为 `1`，单条事件的反序列化规则不变，跨事件角色
 检查由校验器负责。接入回归可使用
