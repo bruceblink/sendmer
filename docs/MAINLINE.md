@@ -378,6 +378,26 @@ CLI receiver 在实际 payload 传输期间建立连接并取得进度，随后�
 输出目录没有半导出文件；sender 取消返回成功，资源关闭由既有生命周期 API 完成。该测试使用
 本地禁用 relay 和固定 loopback 地址，不替代真实 relay 或弱网 smoke。
 
+2026-10-14 执行范围：接收端导出期间取消的 staging 清理。
+
+- 负责组件：接收上下文保留当前导出 staging 的所有权；legacy Collection V0 和 TM1 导出
+  future 被取消后，仍在 blob store 关闭、后台导出写入停止后清理该目录。
+- 验收条件：在真实 store 的导出等待点取消，最终目标保持不存在，接收返回前不遗留 staging；
+  普通导出失败、目标冲突和成功路径继续通过，持久缓存按原规则保留或移除。
+- 接口边界：不新增公开 API、CLI 参数、事件字段或缓存格式；单一终态、no-replace 提交和
+  隐私诊断规则不变。只跟踪本次接收创建的 staging，不扫描或删除其他接收会话的目录。
+- 验证：先保留修复前失败的最小回归，再执行第 8 节检查和默认并行 workspace 测试。
+  跨平台结果以原生 CI 为准；relay 与弱网 smoke 仍按 opt-in 规则执行。
+- 回退边界：内部 staging 所有权、回归测试和本段记录可独立回退；本批不创建版本标签。
+
+本机验收（Linux、Rust `1.91.0`）：修复前的默认并行 workspace 测试通过，未重现
+2026-10-08 记录的无 payload 进度问题。新增两个真实 FsStore 回归在导出首次等待时取消；
+暂时移除两处 staging 登记后，两项测试均因 staging 残留失败，恢复修复后通过，并确认
+缓存 payload 内容保留。修复后的默认并行测试通过：库 164 项、二进制 5 项、CLI 27 项、
+帮助 3 项；format、严格 Clippy、bins check、rustdoc 和 doc-test 检查均通过。
+本次未执行 relay/弱网 smoke，两个 opt-in 用例仍为 ignored；Windows/macOS 的本次原生
+结果待 CI 回读，不将本机结果扩大为全平台验收或 C11.1 整批完成。
+
 #### C11.2：可观测性与 API 评审
 
 - 为 `TransferEventEnvelope` 固定 `schema_version`、`session_id`、严格递增 `sequence`、阶段、
@@ -420,6 +440,14 @@ tracing 日志不再回显源/目标路径、临时目录、底层连接错误�
 通过；发现破坏性变化时停止发布决策，先制定迁移路径。
 
 #### R11.1：发布可复现性
+
+2026-10-14 CI 维护：workflow `38055295590` 的六个 nightly matrix job 均在编译
+`iroh-blobs 0.103.1` 时触发 rustc 内部错误；同一提交的 stable、beta、lint 和 MSRV 检查通过。
+nightly 暂时固定为 `nightly-2026-10-09`（rustc `a30aa9064`），依据是 workflow
+[`37933637953`](https://github.com/bruceblink/sendmer/actions/runs/37933637953) 中六个 nightly
+job 的成功记录。stable、beta 和平台矩阵继续保留；只有当前 nightly 再次通过完整平台矩阵后
+才移除此 pin，不使用 `continue-on-error` 隐藏失败。workflow 本地使用 actionlint `1.7.12`
+检查；本批不修改 release workflow 或创建新 tag。
 
 - CI 继续覆盖 Linux x86_64/ARM64、macOS Intel/ARM64 和 Windows MSVC/GNU；原生文件名、权限、
   时间戳和窗口结果以对应 runner 的证据为准。
