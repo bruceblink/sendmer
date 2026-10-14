@@ -398,6 +398,24 @@ CLI receiver 在实际 payload 传输期间建立连接并取得进度，随后�
 本次未执行 relay/弱网 smoke，两个 opt-in 用例仍为 ignored；Windows/macOS 的本次原生
 结果待 CI 回读，不将本机结果扩大为全平台验收或 C11.1 整批完成。
 
+2026-10-14 后续范围：相对输出目录的跨进程接收回归。
+
+- 复现：CLI 在隔离工作目录中使用 `--output-dir relative-output`，legacy 和 TM1 均完成下载，
+  随后以 `Filesystem / Exporting` 失败；底层 FsStore 拒绝相对导出目标。
+- 负责组件：`resolve_output_dir` 在接收开始时将显式相对路径解析为绝对路径，保留绝对路径
+  和默认当前目录的行为。使用标准库路径解析，不要求目录已存在，不提前创建目录或解析符号链接。
+- 验收：真实 CLI sender/receiver 子进程覆盖旧格式文件和 TM1 嵌套目录；确认 payload 内容、
+  有序单一完成终态和无 staging 残留。测试只设置子进程工作目录，不修改测试进程的全局目录。
+- 边界：不新增公开 API 或 CLI 参数，不改变远端逻辑路径校验、冲突保护、缓存和取消规则；
+  仍按第 8 节运行默认并行测试及 MSRV/stable 检查，本批不创建新版本标签。
+
+本机验收（Linux）：两项 CLI 回归在修复前均因导出相对目标失败，修复后正常导出，内容、
+事件终态和 staging 清理断言通过。Rust `1.91.0` 与 stable `1.99.0` 的默认并行 workspace
+测试各通过 201 项（库 164、二进制 5、CLI 29、帮助 3）；两套严格 Clippy、format、MSRV
+bins check、rustdoc 和 doc-test 检查通过。测试使用有界连接、元数据及下载空闲预算。
+relay/弱网 smoke 仍未启用；本次原生矩阵结果以
+[PR #1](https://github.com/bruceblink/sendmer/pull/1) 对应提交的 workflow 记录为准。
+
 #### C11.2：可观测性与 API 评审
 
 - 为 `TransferEventEnvelope` 固定 `schema_version`、`session_id`、严格递增 `sequence`、阶段、
@@ -448,6 +466,14 @@ nightly 暂时固定为 `nightly-2026-10-09`（rustc `a30aa9064`），依据是 
 job 的成功记录。stable、beta 和平台矩阵继续保留；只有当前 nightly 再次通过完整平台矩阵后
 才移除此 pin，不使用 `continue-on-error` 隐藏失败。workflow 本地使用 actionlint `1.7.12`
 检查；本批不修改 release workflow 或创建新 tag。
+
+PR 首轮 workflow `38552579526` 的 MSRV 和已完成的平台测试通过，但 Rust `1.99.0` 的
+Clippy 拒绝新增测试中的手写空 waker（`manual_noop_waker`）。测试已改为标准库
+`Waker::noop()`；本机 Rust `1.91.0` 的两个导出取消回归及 Rust `1.99.0` 严格 Clippy
+通过。后续提交继续同时验证 MSRV 和当前 stable，不以单一工具链结果替代另一项检查。
+修正后的提交 `c09c7dc` 已通过完整 CI workflow
+[`38553327600`](https://github.com/bruceblink/sendmer/actions/runs/38553327600)，包括全部平台/
+toolchain matrix job、lint、MSRV、workflow 和安装器检查；相对输出目录后续提交另行验收。
 
 - CI 继续覆盖 Linux x86_64/ARM64、macOS Intel/ARM64 和 Windows MSVC/GNU；原生文件名、权限、
   时间戳和窗口结果以对应 runner 的证据为准。

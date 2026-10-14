@@ -128,6 +128,7 @@ sendmer receive <ticket>
 
 This downloads the data and writes it into the current working directory by default.
 Use `--output-dir <path>` to choose a different destination.
+Relative paths are resolved from the receiver's current working directory.
 
 Example:
 

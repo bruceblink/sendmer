@@ -1194,11 +1194,13 @@ fn resolve_root_item_path(output_dir: &Path, collection: &Collection) -> anyhow:
 }
 
 fn resolve_output_dir(output_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    let resolved = match output_dir {
-        Some(path) => path,
-        None => std::env::current_dir()?,
-    };
-    Ok(resolved)
+    match output_dir {
+        Some(path) if path.is_absolute() => Ok(path),
+        // FsStore requires absolute export targets. Resolve before receiving without
+        // requiring the destination to exist or changing its symlink semantics.
+        Some(path) => Ok(std::path::absolute(path)?),
+        None => Ok(std::env::current_dir()?),
+    }
 }
 
 fn size_fetch_backoff(attempt: u32, retry_policy: ReceiveRetryPolicy) -> std::time::Duration {
@@ -2263,10 +2265,21 @@ mod tests {
     }
 
     #[test]
-    fn resolve_output_dir_uses_explicit_value() {
+    fn resolve_output_dir_resolves_relative_and_preserves_absolute_paths() {
         let dir = Path::new("explicit-dir").to_path_buf();
-        let resolved = resolve_output_dir(Some(dir.clone())).expect("explicit output should pass");
-        assert_eq!(resolved, dir);
+        let expected = std::env::current_dir().expect("current dir").join(&dir);
+        let resolved = resolve_output_dir(Some(dir)).expect("relative output should resolve");
+        assert_eq!(resolved, expected);
+
+        let temp = tempfile::tempdir().expect("private output parent");
+        let absolute = temp.path().join("not-created");
+        let resolved =
+            resolve_output_dir(Some(absolute.clone())).expect("absolute output should pass");
+        assert_eq!(resolved, absolute);
+        assert!(
+            !absolute.exists(),
+            "resolving must not create the destination"
+        );
     }
 
     #[test]
