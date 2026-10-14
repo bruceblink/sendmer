@@ -1674,6 +1674,117 @@ fn receive_defaults_to_current_directory_when_output_dir_is_missing() {
     assert_eq!(std::fs::read(work_dir.path().join(name)).unwrap(), data);
 }
 
+fn receive_cli_with_relative_output_dir(
+    ticket: &BlobTicket,
+    work_dir: &Path,
+) -> std::process::Output {
+    Command::new(sendmer_bin())
+        .args([
+            "receive",
+            "--relay",
+            "disabled",
+            "--magic-ipv4-addr",
+            "127.0.0.1:0",
+            "--json-events",
+            "--retry-limit",
+            "1",
+            "--retry-backoff-ms",
+            "0",
+            "--connect-timeout-ms",
+            "5000",
+            "--metadata-timeout-ms",
+            "5000",
+            "--download-idle-timeout-ms",
+            "5000",
+            "--output-dir",
+            "relative-output",
+        ])
+        .arg(ticket.to_string())
+        .current_dir(work_dir)
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("receive CLI with relative output directory should run")
+}
+
+fn assert_relative_output_cli_completed(output: &std::process::Output, work_dir: &Path) {
+    let events = parse_json_events(&output.stdout);
+    assert_ordered_single_session(&events);
+    let output_dir = work_dir.join("relative-output");
+    let staging_dirs = std::fs::read_dir(&output_dir)
+        .expect("receive creates the relative output directory")
+        .map(|entry| entry.expect("output directory entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".sendmer-stage-"))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        staging_dirs.is_empty(),
+        "staging directories leaked: {staging_dirs:?}"
+    );
+    assert!(
+        output.status.success(),
+        "relative output directory receive should succeed; events={events:?}; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(matches!(
+        events.last().map(|event| &event.event),
+        Some(TransferEventData::Completed)
+    ));
+}
+
+#[test]
+fn receive_cli_legacy_file_supports_relative_output_dir() {
+    let name = "relative-output-legacy.bin";
+    let data = b"legacy relative output";
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_cwd = tempfile::tempdir().unwrap();
+    let source_file = source_dir.path().join(name);
+    std::fs::write(&source_file, data).unwrap();
+
+    let mut sender = RunningSend::spawn(&source_file, source_dir.path()).unwrap();
+    let ticket = sender.read_ticket();
+    let output = receive_cli_with_relative_output_dir(&ticket, receiver_cwd.path());
+    sender.cleanup();
+
+    assert_relative_output_cli_completed(&output, receiver_cwd.path());
+    assert_eq!(
+        std::fs::read(receiver_cwd.path().join("relative-output").join(name)).unwrap(),
+        data
+    );
+}
+
+#[test]
+fn receive_cli_tm1_directory_supports_relative_output_dir() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_cwd = tempfile::tempdir().unwrap();
+    let source_root = source_dir.path().join("relative-output-tm1");
+    let nested_dir = source_root.join("nested");
+    let payload = nested_dir.join("payload.bin");
+    std::fs::create_dir_all(&nested_dir).unwrap();
+    std::fs::write(&payload, b"TM1 relative output").unwrap();
+
+    let mut sender = RunningSend::spawn_with_manifest(&source_root, source_dir.path()).unwrap();
+    let ticket = sender.read_ticket();
+    let output = receive_cli_with_relative_output_dir(&ticket, receiver_cwd.path());
+    sender.cleanup();
+
+    assert_relative_output_cli_completed(&output, receiver_cwd.path());
+    assert_eq!(
+        std::fs::read(
+            receiver_cwd
+                .path()
+                .join("relative-output")
+                .join("relative-output-tm1/nested/payload.bin")
+        )
+        .unwrap(),
+        b"TM1 relative output"
+    );
+}
+
 #[test]
 fn receive_connection_failure_cleans_temp_dir_after_retries() {
     let output_dir = tempfile::tempdir().unwrap();
