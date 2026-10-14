@@ -1665,22 +1665,15 @@ mod tests {
     use std::future::Future;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex as StdMutex};
-    use std::task::{Context, Poll, Wake, Waker};
+    use std::task::{Context, Poll, Waker};
     use std::time::Duration;
-
-    struct NoopWake;
-
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
 
     fn poll_once_then_drop<F, T>(export: F)
     where
         F: Future<Output = anyhow::Result<T>>,
     {
         let mut export = Box::pin(export);
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut task_context = Context::from_waker(&waker);
+        let mut task_context = Context::from_waker(Waker::noop());
 
         assert!(
             matches!(export.as_mut().poll(&mut task_context), Poll::Pending),
