@@ -109,7 +109,7 @@ pub async fn receive_with_cancellation(
     };
 
     let receive_result = select! {
-        result = receive_once(&context, &output_dir, event_emitter.clone()) => result,
+        result = receive_once(&mut context, &output_dir, event_emitter.clone()) => result,
         _ = wait_for_cancellation(cancellation) => {
             tracing::warn!("operation cancelled by caller");
             Err(transfer_cancelled_error())
@@ -197,10 +197,12 @@ async fn export_atomically(
     db: &Store,
     collection: Collection,
     output_dir: &Path,
+    active_staging_dir: &mut Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let root = collection_root_name(&collection)?;
     ensure_export_root_available(output_dir, &root)?;
     let staging_dir = create_staging_dir(output_dir)?;
+    *active_staging_dir = Some(staging_dir.clone());
 
     if let Err(error) = export_to_staging(db, &collection, &staging_dir).await {
         cleanup_staging_dir(&staging_dir);
@@ -221,6 +223,7 @@ async fn export_manifest_atomically(
     collection: &Collection,
     manifest: &TransferManifest,
     output_dir: &Path,
+    active_staging_dir: &mut Option<PathBuf>,
 ) -> anyhow::Result<PathBuf> {
     let root_path = manifest.root.path.to_path_buf()?;
     anyhow::ensure!(
@@ -231,6 +234,7 @@ async fn export_manifest_atomically(
     );
     ensure_export_root_available_path(output_dir, &root_path)?;
     let staging_dir = create_staging_dir(output_dir)?;
+    *active_staging_dir = Some(staging_dir.clone());
     let result = async {
         let staged_root = staging_dir.join(&root_path);
         if manifest.root.kind == ManifestEntryKind::Directory {
@@ -629,6 +633,7 @@ struct ReceiveContext {
     db: Store,
     retry_policy: ReceiveRetryPolicy,
     cache_lease: Option<ReceiveCacheLease>,
+    active_staging_dir: Option<PathBuf>,
 }
 
 struct ReceiveArtifacts {
@@ -680,6 +685,7 @@ impl ReceiveContext {
             db,
             retry_policy: options.retry_policy,
             cache_lease,
+            active_staging_dir: None,
         })
     }
 
@@ -721,7 +727,7 @@ impl DownloadPlan {
 }
 
 async fn receive_once(
-    context: &ReceiveContext,
+    context: &mut ReceiveContext,
     output_dir: &Path,
     event_emitter: TransferEventEmitter,
 ) -> anyhow::Result<ReceiveArtifacts> {
@@ -774,18 +780,24 @@ async fn receive_once(
             .iter()
             .filter_map(|entry| entry.payload.as_ref().map(|payload| payload.size))
             .sum();
-        export_manifest_atomically(&context.db, &collection, &manifest, output_dir)
-            .await
-            .context("export transfer manifest")
-            .map_err(|error| {
-                receive_failure(
-                    error,
-                    TransferErrorCode::Filesystem,
-                    TransferPhase::Exporting,
-                    false,
-                    "unable to export transfer manifest",
-                )
-            })?;
+        export_manifest_atomically(
+            &context.db,
+            &collection,
+            &manifest,
+            output_dir,
+            &mut context.active_staging_dir,
+        )
+        .await
+        .context("export transfer manifest")
+        .map_err(|error| {
+            receive_failure(
+                error,
+                TransferErrorCode::Filesystem,
+                TransferPhase::Exporting,
+                false,
+                "unable to export transfer manifest",
+            )
+        })?;
         return Ok(ReceiveArtifacts {
             total_files: file_count,
             payload_size,
@@ -804,18 +816,23 @@ async fn receive_once(
                 "received collection contains unsupported paths",
             )
         })?;
-    export_atomically(&context.db, collection, output_dir)
-        .await
-        .context("export received files")
-        .map_err(|error| {
-            receive_failure(
-                error,
-                TransferErrorCode::Filesystem,
-                TransferPhase::Exporting,
-                false,
-                "unable to export received files",
-            )
-        })?;
+    export_atomically(
+        &context.db,
+        collection,
+        output_dir,
+        &mut context.active_staging_dir,
+    )
+    .await
+    .context("export received files")
+    .map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::Filesystem,
+            TransferPhase::Exporting,
+            false,
+            "unable to export received files",
+        )
+    })?;
 
     Ok(ReceiveArtifacts {
         total_files: download.total_files,
@@ -898,9 +915,11 @@ fn finalize_failed_receive(
 
 async fn cleanup_failed_receive(context: &mut ReceiveContext) -> anyhow::Result<()> {
     close_receive_endpoint(&context.endpoint).await;
-    let shutdown_result = context.db.shutdown().await.map_err(anyhow::Error::from);
-    let cleanup_result = finalize_receive_storage(context, false).await;
-    finalize_cleanup(shutdown_result, cleanup_result)
+    let store_cleanup_result =
+        shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
+            .await;
+    let storage_cleanup_result = finalize_receive_storage(context, false).await;
+    finalize_cleanup(store_cleanup_result, storage_cleanup_result)
 }
 
 async fn finish_receive(
@@ -908,9 +927,12 @@ async fn finish_receive(
     artifacts: ReceiveArtifacts,
 ) -> anyhow::Result<ReceiveResult> {
     close_receive_endpoint(&context.endpoint).await;
-    let shutdown_result = context.db.shutdown().await.map_err(anyhow::Error::from);
-    let cleanup_result = finalize_receive_storage(context, shutdown_result.is_ok()).await;
-    finalize_cleanup(shutdown_result, cleanup_result)?;
+    let store_cleanup_result =
+        shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
+            .await;
+    let storage_cleanup_result =
+        finalize_receive_storage(context, store_cleanup_result.is_ok()).await;
+    finalize_cleanup(store_cleanup_result, storage_cleanup_result)?;
 
     Ok(ReceiveResult {
         message: format!(
@@ -919,6 +941,45 @@ async fn finish_receive(
         ),
         file_path: artifacts.root_item_path,
     })
+}
+
+/// Drain submitted export work, shut down the store, then remove its tracked staging tree.
+///
+/// iroh-blobs dispatches exports on its own runtime; `Store::shutdown` only forwards to its
+/// metadata database. `wait_idle` is therefore required while an export owns a staging path,
+/// and cleanup runs after both operations have completed.
+async fn shutdown_receive_store_and_cleanup_staging(
+    db: &Store,
+    active_staging_dir: &mut Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let idle_result = if active_staging_dir.is_some() {
+        db.wait_idle().await.map_err(anyhow::Error::from)
+    } else {
+        Ok(())
+    };
+    let shutdown_result = db.shutdown().await.map_err(anyhow::Error::from);
+    let staging_cleanup_result = cleanup_active_staging_dir(active_staging_dir).await;
+    finalize_cleanup(idle_result.and(shutdown_result), staging_cleanup_result)
+}
+
+/// Remove the active export staging directory after the blob store has stopped its export tasks.
+async fn cleanup_active_staging_dir(
+    active_staging_dir: &mut Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let Some(path) = active_staging_dir.as_ref() else {
+        return Ok(());
+    };
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(()) => {
+            *active_staging_dir = None;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            *active_staging_dir = None;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Preserve persistent data after failure, but remove it after a clean export.
@@ -1576,12 +1637,14 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::shutdown_receive_store_and_cleanup_staging;
     use super::{
         DownloadPlan, ReceiveRetryPolicy, await_receive_phase, base_endpoint_builder,
         close_receive_endpoint, collection_root_name, commit_staged_export,
         completed_local_total_files, completed_local_total_files_from_children, create_staging_dir,
-        download_backoff, emit_receive_failed, finalize_cleanup, finalize_failed_receive,
-        get_export_path, move_staged_root_without_replacing, process_export_stream,
+        download_backoff, emit_receive_failed, export_atomically, export_manifest_atomically,
+        finalize_cleanup, finalize_failed_receive, get_export_path,
+        move_staged_root_without_replacing, process_export_stream,
         process_get_stream_with_reporter, receive, receive_failed_message, receive_failure,
         resolve_output_dir, size_fetch_backoff, validate_path_component, wait_for_cancellation,
     };
@@ -1589,14 +1652,93 @@ mod tests {
         EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
         classified_transfer_error,
     };
+    use crate::core::manifest::{
+        MANIFEST_ENTRY_PREFIX, ManifestEntry, ManifestEntryKind, ManifestMetadata, ManifestPath,
+        ManifestPayload, ManifestRoot, TransferManifest,
+    };
     use crate::core::options::{ReceiveOptions, RelayModeOption};
     use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
     use iroh_blobs::Hash;
     use iroh_blobs::api::{blobs::ExportProgressItem, remote::GetProgressItem};
+    use iroh_blobs::format::collection::Collection;
     use n0_future::stream;
-    use std::path::Path;
+    use std::future::Future;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex as StdMutex};
+    use std::task::{Context, Poll, Wake, Waker};
     use std::time::Duration;
+
+    struct NoopWake;
+
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    fn poll_once_then_drop<F, T>(export: F)
+    where
+        F: Future<Output = anyhow::Result<T>>,
+    {
+        let mut export = Box::pin(export);
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut task_context = Context::from_waker(&waker);
+
+        assert!(
+            matches!(export.as_mut().poll(&mut task_context), Poll::Pending),
+            "the export should suspend while the real blob store handles its request"
+        );
+        drop(export);
+    }
+
+    fn find_staging_dir(output_dir: &Path) -> PathBuf {
+        let mut staging_dirs = std::fs::read_dir(output_dir)
+            .expect("output directory exists before export")
+            .map(|entry| entry.expect("output directory entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".sendmer-stage-"))
+            });
+        let staging_dir = staging_dirs.next().expect("export created staging");
+        assert!(
+            staging_dirs.next().is_none(),
+            "one active staging directory"
+        );
+        staging_dir
+    }
+
+    async fn finish_cancelled_export_cleanup(
+        active_staging_dir: &mut Option<PathBuf>,
+        staging_dir: &Path,
+        db: &iroh_blobs::api::Store,
+        output_dir: &Path,
+    ) {
+        assert!(staging_dir.is_dir(), "staging exists before cancellation");
+        shutdown_receive_store_and_cleanup_staging(db, active_staging_dir)
+            .await
+            .expect("drain and shut down store before staging cleanup");
+
+        assert!(
+            !output_dir.join("root.bin").exists(),
+            "cancelled export never commits its root"
+        );
+        assert!(!staging_dir.exists(), "cancelled export removes staging");
+        assert!(active_staging_dir.is_none(), "staging ownership is cleared");
+        assert!(output_dir.is_dir(), "the requested output root remains");
+    }
+
+    async fn assert_cached_payload(
+        db: &iroh_blobs::api::Store,
+        payload_hash: Hash,
+        payload_len: usize,
+        payload_byte: u8,
+    ) {
+        let cached = db
+            .get_bytes(payload_hash)
+            .await
+            .expect("cancelled export keeps cached data");
+        assert_eq!(cached.len(), payload_len);
+        assert!(cached.iter().all(|byte| *byte == payload_byte));
+    }
 
     #[derive(Default)]
     struct RecordingEmitter {
@@ -1753,6 +1895,94 @@ mod tests {
             std::fs::read(first_target).expect("original file remains"),
             b"first entry"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_legacy_export_cleans_staging_after_store_shutdown() {
+        let output_temp = tempfile::tempdir().expect("output temp directory");
+        let store_temp = tempfile::tempdir().expect("store temp directory");
+        let output_dir = output_temp.path().join("downloads");
+        let store_dir = store_temp.path().to_path_buf();
+        let filesystem_store = iroh_blobs::store::fs::FsStore::load(&store_dir)
+            .await
+            .expect("load real filesystem store");
+        let db: iroh_blobs::api::Store = filesystem_store.into();
+        let payload = vec![0x5a; 16 * 1024 * 1024];
+        let payload_size = payload.len() as u64;
+        let payload_tag = db
+            .add_bytes(payload)
+            .temp_tag()
+            .await
+            .expect("store export payload");
+        let payload_hash = payload_tag.hash();
+        let collection: Collection = std::iter::once(("root.bin", payload_hash)).collect();
+        let mut active_staging_dir = None;
+
+        poll_once_then_drop(export_atomically(
+            &db,
+            collection,
+            &output_dir,
+            &mut active_staging_dir,
+        ));
+        let staging_dir = find_staging_dir(&output_dir);
+        assert_cached_payload(&db, payload_hash, payload_size as usize, 0x5a).await;
+        finish_cancelled_export_cleanup(&mut active_staging_dir, &staging_dir, &db, &output_dir)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_manifest_export_cleans_staging_after_store_shutdown() {
+        let output_temp = tempfile::tempdir().expect("output temp directory");
+        let store_temp = tempfile::tempdir().expect("store temp directory");
+        let output_dir = output_temp.path().join("downloads");
+        let store_dir = store_temp.path().to_path_buf();
+        let filesystem_store = iroh_blobs::store::fs::FsStore::load(&store_dir)
+            .await
+            .expect("load real filesystem store");
+        let db: iroh_blobs::api::Store = filesystem_store.into();
+        let payload = vec![0xa5; 16 * 1024 * 1024];
+        let payload_size = payload.len() as u64;
+        let payload_tag = db
+            .add_bytes(payload)
+            .temp_tag()
+            .await
+            .expect("store export payload");
+        let payload_hash = payload_tag.hash();
+        let collection_name = format!("{MANIFEST_ENTRY_PREFIX}00000000");
+        let payload_path =
+            ManifestPath::from_path(Path::new("root.bin"), true).expect("valid manifest path");
+        let manifest = TransferManifest {
+            schema_version: 1,
+            root: ManifestRoot {
+                kind: ManifestEntryKind::File,
+                path: payload_path.clone(),
+            },
+            entries: vec![ManifestEntry {
+                id: "00000000".to_owned(),
+                kind: ManifestEntryKind::File,
+                path: payload_path,
+                payload: Some(ManifestPayload {
+                    collection_name: collection_name.clone(),
+                    size: payload_size,
+                }),
+                metadata: ManifestMetadata::default(),
+            }],
+        };
+        manifest.validate().expect("valid TM1 fixture");
+        let collection: Collection = std::iter::once((collection_name, payload_hash)).collect();
+        let mut active_staging_dir = None;
+
+        poll_once_then_drop(export_manifest_atomically(
+            &db,
+            &collection,
+            &manifest,
+            &output_dir,
+            &mut active_staging_dir,
+        ));
+        let staging_dir = find_staging_dir(&output_dir);
+        assert_cached_payload(&db, payload_hash, payload_size as usize, 0xa5).await;
+        finish_cancelled_export_cleanup(&mut active_staging_dir, &staging_dir, &db, &output_dir)
+            .await;
     }
 
     #[test]
