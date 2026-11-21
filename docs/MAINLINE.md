@@ -521,7 +521,7 @@ toolchain matrix job、lint、MSRV、workflow 和安装器检查；相对输出�
   可在重启后请求缺失范围。发送端重启的现有测试使用相同节点身份、地址和内容。
   2026-11-21 在 macOS 使用 Rust stable 1.100.0 运行两个本地恢复用例，均通过。
 - `tests/weak_network_smoke.rs` 包含本地 UDP 弱网基线，以及需要 relay 的限速和发送端重启测试。
-  本地基线的执行结果见下文。延迟、抖动、组合故障和设备切换网络仍需实测。
+  本地基线的执行结果见下文。真实设备在 Wi-Fi 和热点之间切换仍需实测。
 - LocalSend 公开协议 v2.2 提供局域网发现、发现失败时的替代路径，以及发送元数据后由接收方
   确认的流程。LocalSend CLI 支持选设备、手输地址、批量文件和短文本。sendmer 借鉴这些操作，
   文件数据继续通过现有 iroh/QUIC、内容校验和缓存机制传输。
@@ -572,6 +572,31 @@ toolchain matrix job、lint、MSRV、workflow 和安装器检查；相对输出�
   TM1 空子目录保留。所有载荷的 BLAKE3 为
   `696629d7b9e50215bf202da7e15c1558ba7b890aef43137eefa21312db681b71`。
 
+**本地延迟、抖动和组合故障**
+
+- 执行环境、载荷、种子和重试参数沿用上面的记录。固定延迟为上下行各 75 ms。
+  抖动按 50、75、100、75 ms 的序列给每个包设置单程延迟，两个方向错开序列位置。
+- 组合用例在抖动基础上同时开启下行 256 KiB/s 限速和双向各 3% 丢包。下行已转发约 512 KiB
+  时，丢弃队列中的包并停止转发 15 s。恢复后继续限速、丢包和抖动。丢包比例以断网时段外
+  进入转发器的包为分母。
+- 首包和完成耗时均从断网结束开始计时。首包指任一方向恢复转发的首个 UDP 包。完成指接收端
+  发出 `Completed` 事件。UDP 字节包含 QUIC 重传和协议开销。应用层重试的续传依据为
+  iroh-blobs 成功请求读取的载荷字节数。
+
+| 用例 | 单文件 | TM1 目录 |
+| --- | --- | --- |
+| 固定 150 ms 往返延迟 | 2.028 s 完成，实测单程排队 75–77 ms | 2.046 s 完成，实测单程排队 75–77 ms |
+| 单程 50–100 ms 抖动 | 12.397 s 完成，实测单程排队 50–110 ms | 12.758 s 完成，实测单程排队 50–103 ms |
+| 组合故障，默认重试参数 | 0.760 s 恢复首包，14.352 s 完成，应用层重试 0 次 | 1.045 s 恢复首包，22.796 s 完成，应用层重试 0 次 |
+| 组合故障，主动触发重试 | 0.598 s 恢复首包，18.126 s 完成，应用层重试 4 次 | 0.802 s 恢复首包，18.090 s 完成，应用层重试 4 次 |
+
+- 组合用例恢复后，下行实际转发 776632–1015700 字节。四组恢复后均继续发生双向丢包，
+  下行丢 16–25 包，上行丢 14–21 包。默认参数在原下载请求中完成。
+  主动重试时，最终成功的请求分别读取 655360 字节（单文件）和 638976 字节（TM1 目录）。
+  两次读取都少于完整载荷的 1 MiB，确认重试复用了已验证数据。
+- 八组均通过。每组输出文件的 BLAKE3 与首轮记录一致。接收进度未回退，终态只出现一次，
+  断网用例恢复前输出目录为空，成功后清理缓存。TM1 用例同时核对了空子目录。
+
 **验证命令与回退**
 
 ```bash
@@ -581,6 +606,7 @@ cargo +stable build --locked --workspace --all-features
 cargo +stable test --locked --workspace --all-features --bins --tests --examples
 cargo +stable test --locked --test cli persistent_receive_cache_recovers_after
 SENDMER_WEAK_NETWORK_SMOKE=1 cargo +stable test --locked --test weak_network_smoke local_udp_weak_network_baseline -- --ignored --nocapture
+SENDMER_WEAK_NETWORK_SMOKE=1 cargo +stable test --locked --test weak_network_smoke local_udp_latency_and_combined -- --ignored --nocapture
 SENDMER_WEAK_NETWORK_SMOKE=1 cargo +stable test --locked --test weak_network_smoke throttled_relay_transfer_recovers_after_sender_restart -- --ignored
 ```
 
