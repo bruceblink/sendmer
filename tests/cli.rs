@@ -229,6 +229,9 @@ impl RunningSend {
             .arg(max_upload_rate.to_string())
             .arg(path)
             .current_dir(cwd)
+            .env("TMPDIR", cwd)
+            .env("TEMP", cwd)
+            .env("TMP", cwd)
             .env_remove("RUST_LOG")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1754,6 +1757,54 @@ fn receive_cli_legacy_file_supports_relative_output_dir() {
     assert_eq!(
         std::fs::read(receiver_cwd.path().join("relative-output").join(name)).unwrap(),
         data
+    );
+}
+
+/// 每次成功接收只释放该接收连接。同一票据仍可占用空出的名额。
+#[test]
+fn cli_ticket_survives_two_sequential_receives() {
+    let name = "shared-twice.bin";
+    let data = b"the original ticket serves both receivers";
+    let source_dir = tempfile::tempdir().unwrap();
+    let source_file = source_dir.path().join(name);
+    std::fs::write(&source_file, data).unwrap();
+    let mut sender =
+        RunningSend::spawn_with_receiver_limit(&source_file, source_dir.path(), 1, 256 * 1024)
+            .unwrap();
+    let ticket = sender.read_ticket();
+
+    for receive_index in 0..2 {
+        let receiver_cwd = tempfile::tempdir().unwrap();
+        let output = receive_cli_with_relative_output_dir(&ticket, receiver_cwd.path());
+        assert_relative_output_cli_completed(&output, receiver_cwd.path());
+        assert_eq!(
+            std::fs::read(receiver_cwd.path().join("relative-output").join(name)).unwrap(),
+            data
+        );
+        if receive_index == 0 {
+            // 等过发送端的 500 ms 请求汇总时间，再用原票据接收第二次。
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        assert!(sender.child.try_wait().unwrap().is_none());
+    }
+
+    // 发送进程关闭后，同一票据无法再导出文件。
+    sender.cleanup();
+    let receiver_cwd = tempfile::tempdir().unwrap();
+    let output = receive_cli_with_relative_output_dir(&ticket, receiver_cwd.path());
+    assert!(!output.status.success());
+    let events = parse_json_events(&output.stdout);
+    assert_ordered_single_session(&events);
+    assert!(matches!(
+        events.last().map(|event| &event.event),
+        Some(TransferEventData::Failed { .. })
+    ));
+    assert!(
+        !receiver_cwd
+            .path()
+            .join("relative-output")
+            .join(name)
+            .exists()
     );
 }
 

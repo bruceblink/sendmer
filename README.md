@@ -182,6 +182,10 @@ sendmer cache prune --cache-dir <path>
 
 Pruning uses each entry's recorded TTL, skips active entries, and preserves malformed or future-schema data instead of guessing. The cache format, privacy boundary, and interruption/restart E2E are defined in the [mainline design and development plan](docs/MAINLINE.md).
 
+The same ticket can serve multiple downloads while the sender is running. Receiving a copy
+leaves the share open. Press Ctrl+C to stop sharing, or set `--session-lifetime-seconds` to
+close the share automatically after a fixed time. Share the ticket through a trusted channel.
+
 Send-specific options:
 
 - `--ticket-type <id|RelayAndAddresses|relay|addresses>`: control how much addressing information is embedded in the ticket; the combined mode currently uses the exact `RelayAndAddresses` spelling
