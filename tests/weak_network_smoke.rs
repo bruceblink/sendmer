@@ -14,6 +14,10 @@ use tokio::{
     process::{Child, ChildStdout, Command},
 };
 
+#[cfg(target_os = "macos")]
+#[path = "support/weak_network.rs"]
+mod weak_network;
+
 /// Locate the binary built for this integration test, including Cargo's Windows fallback path.
 fn sendmer_bin() -> PathBuf {
     if let Some(path) = std::env::var_os("CARGO_BIN_EXE_sendmer") {

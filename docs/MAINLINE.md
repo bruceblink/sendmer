@@ -520,8 +520,8 @@ toolchain matrix job、lint、MSRV、workflow 和安装器检查；相对输出�
 - sendmer 已按内容哈希和 blob 格式缓存已验证的数据范围。接收端使用同一缓存目录和有效票据，
   可在重启后请求缺失范围。发送端重启的现有测试使用相同节点身份、地址和内容。
   2026-11-21 在 macOS 使用 Rust stable 1.100.0 运行两个本地恢复用例，均通过。
-- 现有 `tests/weak_network_smoke.rs` 通过限速、relay 和发送端重启验证恢复。
-  延迟、抖动、丢包、短时完全断网，以及双端在不同网络间切换，需分别取得实测数据。
+- `tests/weak_network_smoke.rs` 包含本地 UDP 弱网基线，以及需要 relay 的限速和发送端重启测试。
+  本地基线的执行结果见下文。延迟、抖动、组合故障和设备切换网络仍需实测。
 - LocalSend 公开协议 v2.2 提供局域网发现、发现失败时的替代路径，以及发送元数据后由接收方
   确认的流程。LocalSend CLI 支持选设备、手输地址、批量文件和短文本。sendmer 借鉴这些操作，
   文件数据继续通过现有 iroh/QUIC、内容校验和缓存机制传输。
@@ -548,6 +548,30 @@ toolchain matrix job、lint、MSRV、workflow 和安装器检查；相对输出�
 - 记录获取的故障前后进度、单一终态和缓存清理结果。票据、会话凭据与文本内容不进入日志或
   历史。附近设备的广播只包含发现所需的短期信息，接收决定基于已核验的设备身份。
 
+**本地基线执行记录**
+
+- 2026-11-21 在 macOS arm64 使用 Rust stable 1.100.0。回环 UDP 转发器记录双向包数和字节数。测试使用
+  macOS 的 `sandbox-exec` 限制两个 sendmer 进程只能向转发端口发包，避免 iroh 切换路径后绕过故障。
+- 使用种子 `21` 生成 1 MiB 载荷。单文件和含空目录的 TM1 目录分别执行无故障对照、下行
+  256 KiB/s 限速、双向各 3% 丢包和 15 秒双向断网。丢包位置按方向错开。断网在转发约 512 KiB
+  下行 UDP 数据后开始，默认重试参数和主动触发下载重试的参数各测一次。主动重试用例设置
+  最多 20 次下载尝试、3 s 连接超时和 2 s 下载空闲超时。每次重试前等待 500 ms 乘以已尝试次数。
+
+| 用例 | 单文件 | TM1 目录 |
+| --- | --- | --- |
+| 无故障 | 0.108 s 完成 | 0.102 s 完成 |
+| 下行限速 256 KiB/s | 5.529 s 完成 | 5.569 s 完成 |
+| 双向丢包 | 下行丢 24/798 包，上行丢 11/371 包，1.131 s 完成 | 下行丢 24/805 包，上行丢 10/351 包，1.113 s 完成 |
+| 断网 15 s，默认重试参数 | 恢复后下行 571468 字节，应用层重试 0 次 | 恢复后下行 571772 字节，应用层重试 0 次 |
+| 断网 15 s，主动触发重试 | 恢复后下行 580735 字节，应用层重试 4 次 | 恢复后下行 597600 字节，应用层重试 4 次 |
+
+- 断网结束后，默认参数下约 1.32–1.36 s 恢复转发，主动重试用例约 1.04–1.05 s 恢复转发。
+  恢复后的下行计数包含加密和协议开销，均小于 1 MiB 完整载荷的 75%。这表明接收端复用了
+  断网前已收到的数据。逐次请求的具体数据范围未在 UDP 转发器上测量。
+- 十组均通过。接收进度未回退，事件只有一个终态。恢复前输出目录为空，完成后清理接收缓存，
+  TM1 空子目录保留。所有载荷的 BLAKE3 为
+  `696629d7b9e50215bf202da7e15c1558ba7b890aef43137eefa21312db681b71`。
+
 **验证命令与回退**
 
 ```bash
@@ -556,11 +580,12 @@ cargo +stable clippy --locked --workspace --all-targets --all-features -- -D war
 cargo +stable build --locked --workspace --all-features
 cargo +stable test --locked --workspace --all-features --bins --tests --examples
 cargo +stable test --locked --test cli persistent_receive_cache_recovers_after
-SENDMER_WEAK_NETWORK_SMOKE=1 cargo +stable test --locked --test weak_network_smoke -- --ignored
+SENDMER_WEAK_NETWORK_SMOKE=1 cargo +stable test --locked --test weak_network_smoke local_udp_weak_network_baseline -- --ignored --nocapture
+SENDMER_WEAK_NETWORK_SMOKE=1 cargo +stable test --locked --test weak_network_smoke throttled_relay_transfer_recovers_after_sender_restart -- --ignored
 ```
 
-最后一个命令需要可达的 iroh relay。第一批还需加入本地故障注入测试命令，并记录执行环境及
-结果。局域网发现和桌面交互进入第 03 批后才做真实窗口验收。
+本地基线命令适用于带有 `/usr/bin/sandbox-exec` 的 macOS。最后一个命令需要可达的 iroh
+relay。局域网发现和桌面交互进入第 03 批后做真实窗口验收。
 
 第 01、02 批沿用现有票据、事件和缓存格式。第 03、04 批对不同版本端点进行能力核对，保持
 票据入口可用。每个可验收批次独立提交。发布前可回退对应提交。发布后使用新修复版本，保留
