@@ -105,7 +105,7 @@ jobs:
           - os: "macos-15-intel"
             toolchain: "x86_64-apple-darwin"
             name: "macOS Intel"
-          - os: "macos-14"
+          - os: "macos-15"
             toolchain: "aarch64-apple-darwin"
             name: "macOS ARM64"
           - os: "windows-latest"

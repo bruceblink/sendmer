@@ -99,7 +99,7 @@ validate_ci_native_matrix() {
     'os: "ubuntu-latest"' \
     'os: "ubuntu-24.04-arm"' \
     'os: "macos-15-intel"' \
-    'os: "macos-14"' \
+    'os: "macos-15"' \
     'toolchain: "x86_64-apple-darwin"' \
     'toolchain: "aarch64-apple-darwin"' \
     'toolchain: "x86_64-pc-windows-msvc"' \
