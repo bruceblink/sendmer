@@ -198,6 +198,48 @@ fn validate_share_limits(
     Ok(())
 }
 
+/// Recheck limits against the bytes and files that the blob store actually imported.
+///
+/// The first metadata scan happens before storage setup. A source file can change between
+/// that scan and import, so the imported blob totals are the final limit decision.
+fn validate_imported_share_limits(
+    imported: &ImportedCollection,
+    max_files: Option<NonZeroU64>,
+    max_total_size_bytes: Option<NonZeroU64>,
+) -> anyhow::Result<()> {
+    validate_imported_share_totals(
+        imported.file_count,
+        imported.size,
+        max_files,
+        max_total_size_bytes,
+    )
+}
+
+fn validate_imported_share_totals(
+    file_count: u64,
+    total_size_bytes: u64,
+    max_files: Option<NonZeroU64>,
+    max_total_size_bytes: Option<NonZeroU64>,
+) -> anyhow::Result<()> {
+    if let Some(max_files) = max_files {
+        anyhow::ensure!(
+            file_count <= max_files.get(),
+            "imported share contains more than {} files; --max-files is {}",
+            max_files,
+            max_files
+        );
+    }
+    if let Some(max_total_size_bytes) = max_total_size_bytes {
+        anyhow::ensure!(
+            total_size_bytes <= max_total_size_bytes.get(),
+            "imported share contains more than {} bytes; --max-total-size is {}",
+            max_total_size_bytes,
+            max_total_size_bytes
+        );
+    }
+    Ok(())
+}
+
 /// Set up data sharing and return immediately after the router starts.
 ///
 /// The caller owns the returned setup before it waits for endpoint readiness, so a
@@ -219,6 +261,8 @@ async fn setup_data_sharing(
             event_emitter,
             max_upload_rate_bytes_per_sec,
             max_receivers,
+            max_files,
+            max_total_size_bytes,
             max_import_memory_bytes,
             manifest_mode,
         } = share_request;
@@ -252,6 +296,17 @@ async fn setup_data_sharing(
                     "unable to import shared data",
                 )
             })?;
+        validate_imported_share_limits(&imported, max_files, max_total_size_bytes).map_err(
+            |error| {
+                sender_failure(
+                    error,
+                    TransferErrorCode::InvalidInput,
+                    TransferPhase::Preparing,
+                    false,
+                    "imported share exceeds the configured resource limit",
+                )
+            },
+        )?;
         let size = imported.size;
         let progress_handle = spawn_provider_progress_task(
             progress_rx,
@@ -329,6 +384,8 @@ struct ShareRequest {
     event_emitter: TransferEventEmitter,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
     max_receivers: Option<NonZeroU64>,
+    max_files: Option<NonZeroU64>,
+    max_total_size_bytes: Option<NonZeroU64>,
     max_import_memory_bytes: Option<NonZeroU64>,
     manifest_mode: bool,
 }
@@ -340,6 +397,8 @@ struct SharePlan {
     ticket_type: AddrInfoOptions,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
     max_receivers: Option<NonZeroU64>,
+    max_files: Option<NonZeroU64>,
+    max_total_size_bytes: Option<NonZeroU64>,
     max_import_memory_bytes: Option<NonZeroU64>,
     manifest_mode: bool,
 }
@@ -421,6 +480,13 @@ struct ProviderProgressControl {
     shutdown_signal_rx: watch::Receiver<bool>,
 }
 
+/// 尝试取得一个进度跟踪任务配额，不在提供者事件循环中等待。
+fn try_acquire_provider_progress_permit(
+    request_task_limit: &std::sync::Arc<Semaphore>,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    request_task_limit.clone().try_acquire_owned().ok()
+}
+
 async fn wait_until_endpoint_is_online(
     endpoint: &iroh::Endpoint,
     wait_for_online: bool,
@@ -452,6 +518,7 @@ struct SharingSetup {
 
 struct ImportedCollection {
     temp_tag: TempTag,
+    file_count: u64,
     size: u64,
     _collection: Collection,
 }
@@ -468,6 +535,8 @@ impl SharePlan {
             ticket_type: options.ticket_type,
             max_upload_rate_bytes_per_sec: options.max_upload_rate_bytes_per_sec,
             max_receivers: options.max_receivers,
+            max_files: options.max_files,
+            max_total_size_bytes: options.max_total_size_bytes,
             max_import_memory_bytes: options.max_import_memory_bytes,
             manifest_mode: options.manifest_mode,
         })
@@ -484,6 +553,8 @@ impl SharePlan {
             event_emitter,
             max_upload_rate_bytes_per_sec: self.max_upload_rate_bytes_per_sec,
             max_receivers: self.max_receivers,
+            max_files: self.max_files,
+            max_total_size_bytes: self.max_total_size_bytes,
             max_import_memory_bytes: self.max_import_memory_bytes,
             manifest_mode: self.manifest_mode,
         }
@@ -944,6 +1015,8 @@ async fn import_manifest(
     let mut collection = Collection::default();
     collection.push(MANIFEST_COLLECTION_NAME.to_owned(), manifest_tag.hash());
     let mut tags = vec![manifest_tag];
+    let file_count = u64::try_from(imported_by_name.len())
+        .map_err(|_| anyhow::anyhow!("manifest file count exceeds u64 range"))?;
     for (index, entry) in manifest.entries.iter().enumerate() {
         if entry.kind != ManifestEntryKind::File {
             continue;
@@ -958,15 +1031,20 @@ async fn import_manifest(
         );
         tags.push(imported.temp_tag);
     }
-    let size = sources
+    let size = manifest
+        .entries
         .iter()
-        .filter(|source| source.kind == ManifestEntryKind::File)
-        .map(|source| source.size)
-        .sum();
+        .filter_map(|entry| entry.payload.as_ref().map(|payload| payload.size))
+        .try_fold(0_u64, |total, payload_size| {
+            total
+                .checked_add(payload_size)
+                .ok_or_else(|| anyhow::anyhow!("imported manifest payload size exceeds u64 range"))
+        })?;
     let temp_tag = collection.clone().store(db).await?;
     drop(tags);
     Ok(ImportedCollection {
         temp_tag,
+        file_count,
         size,
         _collection: collection,
     })
@@ -1137,7 +1215,13 @@ async fn build_collection_from_imports(
     mut imported: Vec<ImportedBlob>,
 ) -> anyhow::Result<ImportedCollection> {
     imported.sort_by(|a, b| a.name.cmp(&b.name));
-    let size = imported.iter().map(|item| item.size).sum::<u64>();
+    let file_count = u64::try_from(imported.len())
+        .map_err(|_| anyhow::anyhow!("imported file count exceeds u64 range"))?;
+    let size = imported.iter().try_fold(0_u64, |total, item| {
+        total
+            .checked_add(item.size)
+            .ok_or_else(|| anyhow::anyhow!("imported file size exceeds u64 range"))
+    })?;
     let (collection, tags) = imported
         .into_iter()
         .map(|item| ((item.name, item.temp_tag.hash()), item.temp_tag))
@@ -1146,6 +1230,7 @@ async fn build_collection_from_imports(
     drop(tags);
     Ok(ImportedCollection {
         temp_tag,
+        file_count,
         size,
         _collection: collection,
     })
@@ -1237,15 +1322,22 @@ async fn show_provide_progress_with_provider_tracker(
             }
             iroh_blobs::provider::events::ProviderMessage::GetRequestReceivedNotify(msg) => {
                 let transfer_id = TransferId::new(msg.connection_id, msg.request_id);
+                let Some(permit) = try_acquire_provider_progress_permit(&request_task_limit) else {
+                    // 进度更新属于诊断信息。达到并发上限时丢弃本次更新，不能阻塞
+                    // 主事件循环，否则会延迟连接关闭、限速响应和 sender shutdown。
+                    tracing::debug!(
+                        connection_id = msg.connection_id,
+                        request_id = msg.request_id,
+                        "drop provider progress updates after task limit"
+                    );
+                    continue;
+                };
                 reporter
                     .on_request_received(transfer_id, total_file_size)
                     .await;
 
                 let reporter_clone = reporter.clone();
                 let mut rx = msg.rx;
-                let Ok(permit) = request_task_limit.clone().acquire_owned().await else {
-                    break;
-                };
                 tokio::spawn(async move {
                     let _permit = permit;
                     while let Ok(Some(update)) = rx.recv().await {
@@ -1388,6 +1480,7 @@ mod tests {
         UploadRateLimiter, canonicalized_path_to_string, collect_import_sources, detect_entry_type,
         import_parallelism, prepare_endpoint, provider_event_mask, send, setup_data_sharing,
         show_provide_progress_with_provider_tracker, shutdown_started_sender_setup,
+        try_acquire_provider_progress_permit, validate_imported_share_totals,
         validate_share_limits, validate_share_path,
     };
     use crate::core::events::{
@@ -1405,7 +1498,7 @@ mod tests {
     use std::str::FromStr;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use tokio::sync::watch;
+    use tokio::sync::{Semaphore, watch};
 
     #[derive(Default)]
     struct RecordingEmitter {
@@ -1603,6 +1696,20 @@ mod tests {
             .expect("progress task should stop promptly")
             .expect("progress task should join")
             .expect("progress task should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn provider_progress_permit_does_not_wait_when_limit_is_full() {
+        let request_task_limit = std::sync::Arc::new(Semaphore::new(1));
+        let held = request_task_limit
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("initial permit");
+
+        assert!(try_acquire_provider_progress_permit(&request_task_limit).is_none());
+        drop(held);
+        assert!(try_acquire_provider_progress_permit(&request_task_limit).is_some());
     }
 
     #[tokio::test]
@@ -1851,6 +1958,16 @@ mod tests {
     }
 
     #[test]
+    fn validate_imported_share_totals_rechecks_actual_limits() {
+        let error = validate_imported_share_totals(2, 7, NonZeroU64::new(1), NonZeroU64::new(6))
+            .expect_err("imported totals beyond either limit must fail");
+        assert!(error.to_string().contains("files"));
+
+        validate_imported_share_totals(1, 6, NonZeroU64::new(1), NonZeroU64::new(6))
+            .expect("imported totals at both limits should pass");
+    }
+
+    #[test]
     fn validate_share_path_rejects_empty_directory() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let empty = temp_dir.path().join("empty-share");
@@ -2022,6 +2139,8 @@ mod tests {
             event_emitter: started_sender_emitter(),
             max_upload_rate_bytes_per_sec: None,
             max_receivers: None,
+            max_files: None,
+            max_total_size_bytes: None,
             max_import_memory_bytes: None,
             manifest_mode: false,
         };
@@ -2065,6 +2184,8 @@ mod tests {
                 event_emitter: started_sender_emitter(),
                 max_upload_rate_bytes_per_sec: None,
                 max_receivers: None,
+                max_files: None,
+                max_total_size_bytes: None,
                 max_import_memory_bytes: None,
                 manifest_mode: false,
             },

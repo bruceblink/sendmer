@@ -293,7 +293,8 @@ impl ProviderProgressTracker {
 
         info.last_progress_emit = Instant::now();
 
-        let processed = offset;
+        // provider 的偏移量来自远端请求，统一限制在声明总量内，避免进度倒退或越界。
+        let processed = offset.min(info.total_size);
         let total = info.total_size;
         let elapsed = info.start_time.elapsed().as_secs_f64();
         let speed = if elapsed > 0.0 {
@@ -302,7 +303,7 @@ impl ProviderProgressTracker {
             0.0
         };
 
-        Some((processed, total, speed))
+        Some((processed, total, speed.max(0.0)))
     }
 
     /// Record that a request has completed.
@@ -805,6 +806,22 @@ mod tests {
             tracker.evaluate_completion(),
             CompletionStatus::InProgress
         ));
+    }
+
+    #[test]
+    fn provider_progress_clamps_remote_offset_to_declared_total() {
+        let mut tracker = ProviderProgressTracker::new(EntryType::File);
+        let id = TransferId::new(5, 1);
+        tracker.on_request_started(id, 100);
+        sleep(Duration::from_millis(260));
+
+        let (processed, total, speed) = tracker
+            .on_progress(id, 250)
+            .expect("progress should be emitted after throttle interval");
+        assert_eq!(processed, 100);
+        assert_eq!(total, 100);
+        assert!(speed.is_finite());
+        assert!(speed >= 0.0);
     }
 
     #[tokio::test]

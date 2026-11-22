@@ -154,6 +154,8 @@ impl TransferManifest {
             validate_metadata(&entry.metadata)?;
         }
 
+        self.total_payload_size()?;
+
         if self.root.kind == ManifestEntryKind::File {
             anyhow::ensure!(
                 self.entries.len() == 1
@@ -188,6 +190,18 @@ impl TransferManifest {
             .map_err(|error| anyhow::anyhow!("invalid transfer manifest JSON: {error}"))?;
         manifest.validate()?;
         Ok(manifest)
+    }
+
+    /// 返回清单中所有文件载荷大小的检查后总和。
+    pub(crate) fn total_payload_size(&self) -> anyhow::Result<u64> {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.payload.as_ref())
+            .try_fold(0_u64, |total, payload| {
+                total
+                    .checked_add(payload.size)
+                    .ok_or_else(|| anyhow::anyhow!("manifest payload size exceeds the u64 range"))
+            })
     }
 }
 
@@ -435,24 +449,34 @@ impl ManifestPath {
     }
 }
 
-#[cfg(windows)]
-fn validate_windows_utf8_component(component: &str) -> anyhow::Result<()> {
+/// 按 Windows 路径规则检查一个路径组件。
+///
+/// 该函数不依赖当前平台。旧集合名称在写入文件系统前也使用同一检查。
+pub(crate) fn validate_windows_utf8_component(component: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
-        !component.bytes().any(|byte| matches!(
-            byte,
-            b'<' | b'>' | b':' | b'"' | b'/' | b'\\' | b'|' | b'?' | b'*'
-        )),
+        !component.chars().any(|character| {
+            character <= '\u{001f}'
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+        }),
         "manifest path component contains a Windows-invalid character"
     );
     anyhow::ensure!(
         !component.ends_with('.') && !component.ends_with(' '),
         "manifest path component cannot end with a dot or space"
     );
+    anyhow::ensure!(
+        !is_windows_device_name(component),
+        "manifest path component is a reserved Windows device name"
+    );
     Ok(())
 }
 
+/// 在不执行有损解码的前提下，按 Windows 规则检查 UTF-16 路径组件。
 #[cfg(windows)]
-fn validate_windows_wide_component(component: &[u16]) -> anyhow::Result<()> {
+pub(crate) fn validate_windows_wide_component(component: &[u16]) -> anyhow::Result<()> {
     anyhow::ensure!(
         !component.iter().any(|unit| {
             *unit <= 0x001f
@@ -469,7 +493,57 @@ fn validate_windows_wide_component(component: &[u16]) -> anyhow::Result<()> {
             .is_none_or(|unit| *unit != u16::from(b'.') && *unit != u16::from(b' ')),
         "decoded Windows path component cannot end with a dot or space"
     );
+    anyhow::ensure!(
+        !is_windows_wide_device_name(component),
+        "decoded Windows path component is a reserved Windows device name"
+    );
     Ok(())
+}
+
+/// 识别大小写不敏感且允许带扩展名的 Windows 保留设备名。
+fn is_windows_device_name(component: &str) -> bool {
+    let component = component.trim_end_matches(['.', ' ']);
+    let base = component.split('.').next().unwrap_or(component);
+    let base = base.to_ascii_uppercase();
+    matches!(
+        base.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+    ) || is_numbered_windows_device(&base, "COM")
+        || is_numbered_windows_device(&base, "LPT")
+}
+
+/// 检查基础名称是否为 Windows 保留设备名。
+fn is_numbered_windows_device(base: &str, prefix: &str) -> bool {
+    let Some(number) = base.strip_prefix(prefix) else {
+        return false;
+    };
+    matches!(
+        number,
+        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+    )
+}
+
+/// 从 UTF-16 代码单元中识别保留设备名，扩展名不参与比较。
+#[cfg(windows)]
+fn is_windows_wide_device_name(component: &[u16]) -> bool {
+    let mut ascii = String::with_capacity(component.len());
+    for unit in component
+        .iter()
+        .copied()
+        .take_while(|unit| *unit != u16::from(b'.'))
+    {
+        match unit {
+            0x0061..=0x007a => ascii.push((unit as u8).to_ascii_uppercase() as char),
+            0x0041..=0x005a | 0x0030..=0x0039 => ascii.push(unit as u8 as char),
+            0x00b9 => ascii.push('¹'),
+            0x00b2 => ascii.push('²'),
+            0x00b3 => ascii.push('³'),
+            0x0020 => ascii.push(' '),
+            0x0024 => ascii.push('$'),
+            _ => return false,
+        }
+    }
+    is_windows_device_name(&ascii)
 }
 
 fn has_prefix(path: &[String], prefix: &[String]) -> bool {
@@ -510,6 +584,12 @@ fn validate_metadata(metadata: &ManifestMetadata) -> anyhow::Result<()> {
             permissions.posix_mode.is_some() ^ permissions.windows_read_only.is_some(),
             "manifest permissions must contain exactly one platform representation"
         );
+        if let Some(mode) = permissions.posix_mode {
+            anyhow::ensure!(
+                mode <= 0o7777,
+                "manifest POSIX mode contains unsupported bits"
+            );
+        }
     }
     if let Some(modified) = metadata.modified {
         anyhow::ensure!(
@@ -699,5 +779,99 @@ mod tests {
             .validate()
             .expect_err("long manifest path must be rejected");
         assert!(path_error.to_string().contains("path exceeds"));
+    }
+
+    #[test]
+    fn manifest_validation_rejects_payload_size_overflow() {
+        let mut manifest = empty_manifest();
+        manifest.entries = vec![
+            ManifestEntry {
+                id: "00000000".to_owned(),
+                kind: ManifestEntryKind::Directory,
+                path: utf8_path(&["share", "nested"]),
+                payload: None,
+                metadata: ManifestMetadata::default(),
+            },
+            ManifestEntry {
+                id: "00000001".to_owned(),
+                kind: ManifestEntryKind::File,
+                path: utf8_path(&["share", "nested", "first.bin"]),
+                payload: Some(ManifestPayload {
+                    collection_name: format!("{MANIFEST_ENTRY_PREFIX}00000001"),
+                    size: u64::MAX,
+                }),
+                metadata: ManifestMetadata::default(),
+            },
+            ManifestEntry {
+                id: "00000002".to_owned(),
+                kind: ManifestEntryKind::File,
+                path: utf8_path(&["share", "nested", "second.bin"]),
+                payload: Some(ManifestPayload {
+                    collection_name: format!("{MANIFEST_ENTRY_PREFIX}00000002"),
+                    size: 1,
+                }),
+                metadata: ManifestMetadata::default(),
+            },
+        ];
+
+        let error = manifest
+            .validate()
+            .expect_err("payload sizes that overflow u64 must be rejected");
+        assert!(error.to_string().contains("payload size"));
+    }
+
+    #[test]
+    fn manifest_validation_rejects_unsupported_posix_mode_bits() {
+        let mut manifest = empty_manifest();
+        manifest.entries[0].metadata.permissions = Some(ManifestPermissions {
+            posix_mode: Some(0o10_000),
+            windows_read_only: None,
+        });
+
+        let error = manifest
+            .validate()
+            .expect_err("POSIX mode bits outside 0o7777 must be rejected");
+        assert!(error.to_string().contains("POSIX mode"));
+    }
+
+    #[test]
+    fn windows_utf8_component_rejects_device_names_with_extensions() {
+        for component in [
+            "CON",
+            "con.txt",
+            "PrN.log",
+            "AUX.data",
+            "nul.bin",
+            "COM1.txt",
+            "com9.backup",
+            "LPT1.csv",
+            "CLOCK$.log",
+            "CONIN$.tmp",
+            "CONOUT$.tmp",
+        ] {
+            assert!(
+                validate_windows_utf8_component(component).is_err(),
+                "{component} must be rejected as a Windows device name"
+            );
+        }
+        for component in ["COM10.txt", "LPT0.txt", "console.txt", "report.CON.txt"] {
+            validate_windows_utf8_component(component)
+                .unwrap_or_else(|error| panic!("{component} should be accepted: {error}"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_utf16_component_rejects_device_names_with_extensions() {
+        for component in ["cOm1.txt", "lPt9.backup", "nUl.data"] {
+            let wide = component.encode_utf16().collect::<Vec<_>>();
+            assert!(
+                validate_windows_wide_component(&wide).is_err(),
+                "{component} must be rejected as a Windows device name"
+            );
+        }
+        let allowed = "COM10.txt".encode_utf16().collect::<Vec<_>>();
+        validate_windows_wide_component(&allowed)
+            .expect("COM10 is not a reserved Windows device name");
     }
 }

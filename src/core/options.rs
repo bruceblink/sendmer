@@ -8,6 +8,17 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// legacy Collection 元数据允许的最大条目数。
+///
+/// 该上限同时限制接收端为子 blob 大小创建的数组长度，避免远端声明超大
+/// hash sequence 时触发不受控的元数据分配。
+pub(crate) const MAX_LEGACY_COLLECTION_ITEMS: usize = 100_000;
+/// legacy Collection hash sequence 的最大元数据字节数。
+pub(crate) const MAX_LEGACY_COLLECTION_METADATA_BYTES: u64 =
+    (MAX_LEGACY_COLLECTION_ITEMS as u64 + 1) * 32;
+/// 接收端单次重试等待的最大时间。
+pub(crate) const MAX_RETRY_BACKOFF_MS: u64 = 30_000;
+
 #[derive(Debug, Default)]
 pub struct SendOptions {
     pub relay_mode: RelayModeOption,
@@ -120,6 +131,17 @@ impl ReceiveRetryPolicy {
         Ok(())
     }
 
+    /// 计算带上限的重试等待时间。
+    ///
+    /// 乘法先使用饱和运算，再限制到 30 秒，避免恶意或误配的重试参数
+    /// 溢出并产生极长等待。
+    pub(crate) fn retry_backoff(base_ms: u64, attempt: u32) -> Duration {
+        let delay_ms = base_ms
+            .saturating_mul(u64::from(attempt))
+            .min(MAX_RETRY_BACKOFF_MS);
+        Duration::from_millis(delay_ms)
+    }
+
     /// Convert configured receive limits into durations after validation.
     pub(crate) fn connect_timeout(self) -> Option<Duration> {
         self.connect_timeout_ms.map(Duration::from_millis)
@@ -171,8 +193,8 @@ impl ReceiveCacheOptions {
             "receive cache root must not be empty"
         );
         anyhow::ensure!(
-            !self.ttl.is_zero(),
-            "receive cache TTL must be greater than zero"
+            self.ttl >= Duration::from_secs(1),
+            "receive cache TTL must be at least one second"
         );
 
         match std::fs::symlink_metadata(&self.root_dir) {
@@ -478,6 +500,18 @@ mod tests {
     }
 
     #[test]
+    fn receive_retry_policy_backoff_saturates_and_caps_at_thirty_seconds() {
+        assert_eq!(
+            ReceiveRetryPolicy::retry_backoff(u64::MAX, u32::MAX),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            ReceiveRetryPolicy::retry_backoff(125, 2),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
     fn receive_retry_policy_rejects_zero_configured_timeouts() {
         for policy in [
             ReceiveRetryPolicy {
@@ -508,10 +542,12 @@ mod tests {
     }
 
     #[test]
-    fn receive_cache_options_reject_zero_ttl() {
-        let options = ReceiveCacheOptions::new("cache").with_ttl(Duration::ZERO);
-        let error = options.validate().expect_err("zero TTL must fail");
-        assert!(error.to_string().contains("TTL"));
+    fn receive_cache_options_reject_subsecond_ttl() {
+        for ttl in [Duration::ZERO, Duration::from_millis(999)] {
+            let options = ReceiveCacheOptions::new("cache").with_ttl(ttl);
+            let error = options.validate().expect_err("subsecond TTL must fail");
+            assert!(error.to_string().contains("at least one second"));
+        }
     }
 
     #[test]

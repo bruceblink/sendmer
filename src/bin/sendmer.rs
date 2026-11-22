@@ -20,19 +20,16 @@ use sendmer::{AppHandle, ReceiveCacheOptions, ReceiveLimits, ReceiveOptions, Sen
 #[cfg(feature = "clipboard")]
 use std::io::IsTerminal;
 use std::sync::Arc;
-use std::{future::Future, io};
+use std::{future::Future, io, process::ExitCode};
 
 #[tokio::main]
-async fn main() {
-    let res = run().await;
-
-    if let Err(e) = &res {
-        eprintln!("{e}");
-    }
-
-    match res {
-        Ok(()) => std::process::exit(0),
-        Err(_) => std::process::exit(1),
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
     }
 }
 

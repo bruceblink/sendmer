@@ -7,8 +7,13 @@ use crate::core::events::{
     AppHandle, Role, TransferError, TransferErrorCode, TransferPhase, classified_transfer_error,
     classify_transfer_error, is_transfer_cancelled, transfer_cancelled_error,
 };
-use crate::core::manifest::{MANIFEST_COLLECTION_NAME, ManifestEntryKind, TransferManifest};
-use crate::core::options::{ReceiveLimits, ReceiveOptions, ReceiveRetryPolicy};
+use crate::core::manifest::{
+    MANIFEST_COLLECTION_NAME, ManifestEntryKind, TransferManifest, validate_windows_utf8_component,
+};
+use crate::core::options::{
+    MAX_LEGACY_COLLECTION_ITEMS, MAX_LEGACY_COLLECTION_METADATA_BYTES, ReceiveLimits,
+    ReceiveOptions, ReceiveRetryPolicy,
+};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::receive_cache::ReceiveCacheLease;
 use crate::core::results::ReceiveResult;
@@ -688,6 +693,7 @@ struct ReceiveArtifacts {
     root_item_path: PathBuf,
 }
 
+#[derive(Debug)]
 struct DownloadPlan {
     total_files: u64,
     payload_size: u64,
@@ -761,14 +767,46 @@ impl DownloadPlan {
     /// The first child is collection metadata, so it is excluded from the user-facing
     /// file count and payload size. The root hash sequence itself still travels over
     /// the network and is included in progress accounting.
-    fn from_hash_seq_and_sizes(hash_seq: &iroh_blobs::hashseq::HashSeq, sizes: &[u64]) -> Self {
-        Self {
-            total_files: sizes.len().saturating_sub(1) as u64,
-            payload_size: sizes.iter().skip(1).copied().sum::<u64>(),
-            transfer_total: (hash_seq.len() as u64)
-                .saturating_mul(32)
-                .saturating_add(sizes.iter().copied().sum::<u64>()),
-        }
+    fn from_hash_seq_and_sizes(
+        hash_seq: &iroh_blobs::hashseq::HashSeq,
+        sizes: &[u64],
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !hash_seq.is_empty() && !sizes.is_empty(),
+            "collection metadata must contain at least one child"
+        );
+        anyhow::ensure!(
+            hash_seq.len() == sizes.len(),
+            "collection metadata child count does not match its hash sequence"
+        );
+        anyhow::ensure!(
+            sizes.len() <= MAX_LEGACY_COLLECTION_ITEMS.saturating_add(1),
+            "collection metadata contains too many children (maximum {MAX_LEGACY_COLLECTION_ITEMS})"
+        );
+        let total_files = u64::try_from(sizes.len() - 1)
+            .map_err(|_| anyhow::anyhow!("collection file count exceeds u64 range"))?;
+        let payload_size = sizes.iter().skip(1).try_fold(0_u64, |total, size| {
+            total
+                .checked_add(*size)
+                .ok_or_else(|| anyhow::anyhow!("collection payload size exceeds u64 range"))
+        })?;
+        let children_size = sizes.iter().try_fold(0_u64, |total, size| {
+            total
+                .checked_add(*size)
+                .ok_or_else(|| anyhow::anyhow!("collection metadata size exceeds u64 range"))
+        })?;
+        let hash_sequence_size = u64::try_from(hash_seq.len())
+            .map_err(|_| anyhow::anyhow!("collection hash sequence length exceeds u64 range"))?
+            .checked_mul(32)
+            .ok_or_else(|| anyhow::anyhow!("collection hash sequence size exceeds u64 range"))?;
+        let transfer_total = hash_sequence_size
+            .checked_add(children_size)
+            .ok_or_else(|| anyhow::anyhow!("collection transfer size exceeds u64 range"))?;
+        Ok(Self {
+            total_files,
+            payload_size,
+            transfer_total,
+        })
     }
 }
 
@@ -910,11 +948,15 @@ async fn receive_once(
             .iter()
             .filter(|entry| entry.kind == ManifestEntryKind::File)
             .count() as u64;
-        let payload_size = manifest
-            .entries
-            .iter()
-            .filter_map(|entry| entry.payload.as_ref().map(|payload| payload.size))
-            .sum();
+        let payload_size = manifest.total_payload_size().map_err(|error| {
+            receive_failure(
+                error,
+                TransferErrorCode::RemoteRejected,
+                TransferPhase::Metadata,
+                false,
+                "received transfer manifest payload sizes are invalid",
+            )
+        })?;
         validate_receive_limits(file_count, payload_size, context.limits).map_err(|error| {
             receive_failure(
                 error,
@@ -1236,7 +1278,8 @@ async fn download_missing_data(
             "collection metadata transfer was interrupted",
         )
     })?;
-    let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &sizes);
+    let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &sizes)
+        .context("validate collection metadata totals")?;
     validate_receive_limits(plan.total_files, plan.payload_size, context.limits).map_err(
         |error| {
             receive_failure(
@@ -1412,15 +1455,11 @@ fn resolve_output_dir(output_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 }
 
 fn size_fetch_backoff(attempt: u32, retry_policy: ReceiveRetryPolicy) -> std::time::Duration {
-    std::time::Duration::from_millis(retry_policy.size_fetch_backoff_ms * u64::from(attempt))
+    ReceiveRetryPolicy::retry_backoff(retry_policy.size_fetch_backoff_ms, attempt)
 }
 
 fn download_backoff(attempt: u32, retry_policy: ReceiveRetryPolicy) -> std::time::Duration {
-    std::time::Duration::from_millis(
-        retry_policy
-            .download_retry_backoff_ms
-            .saturating_mul(u64::from(attempt)),
-    )
+    ReceiveRetryPolicy::retry_backoff(retry_policy.download_retry_backoff_ms, attempt)
 }
 
 /// Await one receive phase, applying an optional user-provided timeout.
@@ -1737,10 +1776,17 @@ async fn get_sizes_with_retries(
             TransferPhase::Metadata,
             "fetch collection metadata",
             async {
-                get_hash_seq_and_sizes(&connection, hash, retry_policy.size_fetch_chunk_size, None)
-                    .await
-                    .map_err(show_get_error)
-                    .map_err(anyhow::Error::from)
+                get_hash_seq_and_sizes(
+                    &connection,
+                    hash,
+                    retry_policy
+                        .size_fetch_chunk_size
+                        .min(MAX_LEGACY_COLLECTION_METADATA_BYTES),
+                    None,
+                )
+                .await
+                .map_err(show_get_error)
+                .map_err(anyhow::Error::from)
             },
         )
         .await
@@ -1884,6 +1930,10 @@ fn validate_path_component(component: &str) -> anyhow::Result<()> {
         "absolute path components not allowed"
     );
 
+    validate_windows_utf8_component(component).map_err(|error| {
+        anyhow::anyhow!("legacy collection path component is not portable: {error}")
+    })?;
+
     // Optional: Check for hidden files (starting with '.')
     // Uncomment if you want to restrict hidden files
     // anyhow::ensure!(
@@ -1916,7 +1966,9 @@ mod tests {
         MANIFEST_ENTRY_PREFIX, ManifestEntry, ManifestEntryKind, ManifestMetadata, ManifestPath,
         ManifestPayload, ManifestRoot, TransferManifest,
     };
-    use crate::core::options::{ReceiveLimits, ReceiveOptions, RelayModeOption};
+    use crate::core::options::{
+        MAX_LEGACY_COLLECTION_ITEMS, ReceiveLimits, ReceiveOptions, RelayModeOption,
+    };
     use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
     use iroh_blobs::Hash;
     use iroh_blobs::api::{blobs::ExportProgressItem, remote::GetProgressItem};
@@ -2065,6 +2117,34 @@ mod tests {
     fn validate_path_component_rejects_path_separator() {
         let err = validate_path_component("dir/file").expect_err("separator should fail");
         assert!(err.to_string().contains("must not contain path separators"));
+    }
+
+    #[test]
+    fn validate_path_component_rejects_windows_invalid_characters() {
+        for component in [
+            "bad<name",
+            "bad:name",
+            "bad\"name",
+            "bad|name",
+            "bad?name",
+            "bad*name",
+            "bad\u{0001}name",
+        ] {
+            let err = validate_path_component(component)
+                .expect_err("Windows-invalid characters must be rejected");
+            assert!(err.to_string().contains("not portable"));
+        }
+    }
+
+    #[test]
+    fn validate_path_component_rejects_windows_trailing_dot_space_and_devices() {
+        for component in [
+            "report.", "report ", "CON", "con.txt", "COM1.log", "LPT9.csv",
+        ] {
+            let err = validate_path_component(component)
+                .expect_err("Windows-invalid legacy names must be rejected");
+            assert!(err.to_string().contains("not portable"));
+        }
     }
 
     #[test]
@@ -2392,11 +2472,42 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &[18, 100, 200]);
+        let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &[18, 100, 200])
+            .expect("valid collection metadata");
 
         assert_eq!(plan.total_files, 2);
         assert_eq!(plan.payload_size, 300);
         assert_eq!(plan.transfer_total, 414);
+    }
+
+    #[test]
+    fn download_plan_rejects_metadata_size_overflow() {
+        let hash_seq = [Hash::new(b"metadata"), Hash::new(b"payload")]
+            .into_iter()
+            .collect();
+        let error = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &[u64::MAX, 1])
+            .expect_err("metadata totals must reject u64 overflow");
+        assert!(error.to_string().contains("size exceeds u64 range"));
+    }
+
+    #[test]
+    fn download_plan_rejects_mismatched_metadata_children() {
+        let hash_seq = [Hash::new(b"metadata"), Hash::new(b"payload")]
+            .into_iter()
+            .collect();
+        let error = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &[18])
+            .expect_err("metadata child counts must match");
+        assert!(error.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn download_plan_rejects_excessive_metadata_children() {
+        let child_count = MAX_LEGACY_COLLECTION_ITEMS + 2;
+        let hash_seq = std::iter::repeat_n(Hash::new(b"entry"), child_count).collect();
+        let sizes = vec![0_u64; child_count];
+        let error = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &sizes)
+            .expect_err("metadata child count must be bounded");
+        assert!(error.to_string().contains("too many children"));
     }
 
     #[test]
@@ -2415,7 +2526,8 @@ mod tests {
         let hash_seq = [Hash::new(b"metadata"), Hash::new(b"payload")]
             .into_iter()
             .collect();
-        let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &[18, 100]);
+        let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &[18, 100])
+            .expect("valid collection metadata");
         let limits = ReceiveLimits {
             max_files: None,
             max_total_size_bytes: NonZeroU64::new(50),
@@ -2586,6 +2698,16 @@ mod tests {
             size_fetch_backoff(2, policy),
             std::time::Duration::from_millis(250)
         );
+        assert_eq!(
+            size_fetch_backoff(
+                u32::MAX,
+                ReceiveRetryPolicy {
+                    size_fetch_backoff_ms: u64::MAX,
+                    ..Default::default()
+                }
+            ),
+            std::time::Duration::from_secs(30)
+        );
     }
 
     #[test]
@@ -2599,6 +2721,16 @@ mod tests {
         assert_eq!(
             download_backoff(3, policy),
             std::time::Duration::from_millis(225)
+        );
+        assert_eq!(
+            download_backoff(
+                u32::MAX,
+                ReceiveRetryPolicy {
+                    download_retry_backoff_ms: u64::MAX,
+                    ..Default::default()
+                }
+            ),
+            std::time::Duration::from_secs(30)
         );
     }
 

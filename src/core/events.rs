@@ -262,6 +262,18 @@ fn contains_unsafe_event_file_name(event: &TransferEventData) -> bool {
     )
 }
 
+/// 检查进度事件的数值边界，避免无穷大、负速率和超过总量的偏移进入公共事件流。
+fn contains_invalid_progress(event: &TransferEventData) -> bool {
+    matches!(
+        event,
+        TransferEventData::Progress {
+            processed,
+            total,
+            speed_bytes_per_sec,
+        } if processed > total || !speed_bytes_per_sec.is_finite() || *speed_bytes_per_sec < 0.0
+    )
+}
+
 /// Stable versioned envelope for JSON Lines and external event consumers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransferEventEnvelope {
@@ -315,6 +327,9 @@ impl Serialize for TransferEventEnvelope {
         if contains_unsafe_event_file_name(&self.event) {
             return Err(S::Error::custom("transfer event contains unsafe file name"));
         }
+        if contains_invalid_progress(&self.event) {
+            return Err(S::Error::custom("transfer event contains invalid progress"));
+        }
 
         TransferEventEnvelopeRef {
             schema_version: self.schema_version,
@@ -353,6 +368,9 @@ impl<'de> Deserialize<'de> for TransferEventEnvelope {
         };
         if contains_unsafe_event_file_name(&envelope.event) {
             return Err(D::Error::custom("transfer event contains unsafe file name"));
+        }
+        if contains_invalid_progress(&envelope.event) {
+            return Err(D::Error::custom("transfer event contains invalid progress"));
         }
         Ok(envelope)
     }
@@ -404,6 +422,8 @@ pub enum TransferEventStreamError {
     EventAfterTerminal { sequence: u64 },
     /// A file-name payload contains an absolute, traversing, or otherwise unsafe path.
     UnsafeFileName { sequence: u64 },
+    /// A progress payload exceeds its declared total or contains a non-finite value.
+    InvalidProgress { sequence: u64 },
     /// A non-terminal event cannot advance beyond the representable sequence range.
     SequenceExhausted { sequence: u64 },
 }
@@ -456,6 +476,12 @@ impl std::fmt::Display for TransferEventStreamError {
                 write!(
                     formatter,
                     "transfer event at sequence {sequence} contains unsafe file name"
+                )
+            }
+            Self::InvalidProgress { sequence } => {
+                write!(
+                    formatter,
+                    "transfer event at sequence {sequence} contains invalid progress"
                 )
             }
             Self::SequenceExhausted { sequence } => {
@@ -563,6 +589,11 @@ impl TransferEventStreamValidator {
         }
         if contains_unsafe_event_file_name(&event.event) {
             return self.reject(TransferEventStreamError::UnsafeFileName {
+                sequence: event.sequence,
+            });
+        }
+        if contains_invalid_progress(&event.event) {
+            return self.reject(TransferEventStreamError::InvalidProgress {
                 sequence: event.sequence,
             });
         }
@@ -918,6 +949,35 @@ mod tests {
         assert!(!error.to_string().contains("../secret.txt"));
     }
 
+    #[test]
+    fn versioned_progress_rejects_non_finite_and_overflow_values() {
+        let session = "0123456789abcdef0123456789abcdef";
+        for event in [
+            stream_event(
+                session,
+                2,
+                TransferEventData::Progress {
+                    processed: 2,
+                    total: 1,
+                    speed_bytes_per_sec: 1.0,
+                },
+            ),
+            stream_event(
+                session,
+                2,
+                TransferEventData::Progress {
+                    processed: 1,
+                    total: 1,
+                    speed_bytes_per_sec: f64::NAN,
+                },
+            ),
+        ] {
+            let error =
+                serde_json::to_string(&event).expect_err("invalid progress must not be serialized");
+            assert!(error.to_string().contains("invalid progress"));
+        }
+    }
+
     fn stream_event(
         session_id: &str,
         sequence: u64,
@@ -1235,6 +1295,31 @@ mod tests {
         );
         assert!(!error.to_string().contains("/secret.txt"));
         assert!(validator.is_rejected());
+    }
+
+    #[test]
+    fn event_stream_validator_rejects_progress_beyond_total() {
+        let session = "0123456789abcdef0123456789abcdef";
+        let mut validator = TransferEventStreamValidator::new();
+        validator
+            .accept(&stream_event(session, 1, TransferEventData::Started))
+            .expect("started event");
+
+        let error = validator
+            .accept(&stream_event(
+                session,
+                2,
+                TransferEventData::Progress {
+                    processed: 2,
+                    total: 1,
+                    speed_bytes_per_sec: 1.0,
+                },
+            ))
+            .expect_err("progress beyond total should be rejected");
+        assert_eq!(
+            error,
+            TransferEventStreamError::InvalidProgress { sequence: 2 }
+        );
     }
 
     #[test]
