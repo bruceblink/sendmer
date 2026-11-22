@@ -54,8 +54,8 @@ fn finalize_sender_shutdown(
     shutdown_result: anyhow::Result<()>,
     cleanup_result: anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    if cleanup_result.is_err() {
-        tracing::warn!("failed to clean sender temporary data dir");
+    if let Err(error) = &cleanup_result {
+        tracing::warn!(error = %error, "failed to clean sender temporary data dir");
     }
     shutdown_result
 }

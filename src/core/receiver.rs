@@ -1115,8 +1115,8 @@ fn finalize_failed_receive(
     primary_error: anyhow::Error,
     cleanup_result: anyhow::Result<()>,
 ) -> anyhow::Error {
-    if cleanup_result.is_err() {
-        tracing::warn!("failed to cleanup receive context after error");
+    if let Err(error) = &cleanup_result {
+        tracing::warn!(error = %error, "failed to cleanup receive context after error");
     }
     primary_error
 }
@@ -1178,7 +1178,10 @@ async fn shutdown_receive_store_and_cleanup_staging(
     let staging_cleanup_result = if idle_result.is_ok() && shutdown_result.is_ok() {
         cleanup_active_staging_dir(active_staging_dir).await
     } else {
-        tracing::warn!("skip staging cleanup after receiver store shutdown failure");
+        tracing::warn!(
+            error = ?idle_result.as_ref().err().or_else(|| shutdown_result.as_ref().err()),
+            "skip staging cleanup after receiver store shutdown failure"
+        );
         Ok(())
     };
     finalize_cleanup(
@@ -1504,8 +1507,8 @@ fn finalize_cleanup(
     shutdown_result: anyhow::Result<()>,
     cleanup_result: anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    if cleanup_result.is_err() {
-        tracing::warn!("failed to clean temporary receive dir");
+    if let Err(error) = &cleanup_result {
+        tracing::warn!(error = %error, "failed to clean temporary receive dir");
     }
     shutdown_result
 }
