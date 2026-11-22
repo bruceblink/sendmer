@@ -1126,9 +1126,20 @@ async fn cleanup_failed_receive(context: &mut ReceiveContext) -> anyhow::Result<
     let store_cleanup_result =
         shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
             .await;
+    let preserve_uncached_storage =
+        should_preserve_uncached_storage(context.cache_lease.is_some(), &store_cleanup_result);
     let shutdown_result = combine_cleanup_results(endpoint_cleanup_result, store_cleanup_result);
-    let storage_cleanup_result = finalize_receive_storage(context, false).await;
+    let storage_cleanup_result =
+        finalize_receive_storage_after_store_cleanup(context, false, preserve_uncached_storage)
+            .await;
     finalize_cleanup(shutdown_result, storage_cleanup_result)
+}
+
+const fn should_preserve_uncached_storage(
+    cache_lease_present: bool,
+    store_cleanup_result: &anyhow::Result<()>,
+) -> bool {
+    !cache_lease_present && store_cleanup_result.is_err()
 }
 
 async fn finish_receive(
@@ -1139,8 +1150,15 @@ async fn finish_receive(
     let store_cleanup_result =
         shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
             .await;
+    let preserve_uncached_storage =
+        should_preserve_uncached_storage(context.cache_lease.is_some(), &store_cleanup_result);
     let shutdown_result = combine_cleanup_results(endpoint_cleanup_result, store_cleanup_result);
-    let storage_cleanup_result = finalize_receive_storage(context, shutdown_result.is_ok()).await;
+    let storage_cleanup_result = finalize_receive_storage_after_store_cleanup(
+        context,
+        shutdown_result.is_ok(),
+        preserve_uncached_storage,
+    )
+    .await;
     finalize_cleanup(shutdown_result, storage_cleanup_result)?;
 
     Ok(ReceiveResult {
@@ -1219,6 +1237,20 @@ async fn finalize_receive_storage(
         Some(lease) if receive_succeeded => lease.remove().await,
         Some(lease) => lease.preserve(),
         None => remove_temp_receive_dir(&context.iroh_data_dir).await,
+    }
+}
+
+async fn finalize_receive_storage_after_store_cleanup(
+    context: &mut ReceiveContext,
+    receive_succeeded: bool,
+    preserve_uncached_storage: bool,
+) -> anyhow::Result<()> {
+    if preserve_uncached_storage {
+        // 存储关闭超时时保留无缓存目录，避免仍在运行的后台任务继续访问已删除的文件。
+        tracing::warn!("preserve uncached receive storage after store shutdown failure");
+        Ok(())
+    } else {
+        finalize_receive_storage(context, receive_succeeded).await
     }
 }
 
@@ -1958,8 +1990,9 @@ mod tests {
         finalize_cleanup, finalize_failed_receive, get_export_path,
         move_staged_root_without_replacing, process_export_stream,
         process_get_stream_with_reporter, receive, receive_failed_message, receive_failure,
-        resolve_output_dir, size_fetch_backoff, validate_partial_receive_limits,
-        validate_path_component, validate_receive_limits, wait_for_cancellation,
+        resolve_output_dir, should_preserve_uncached_storage, size_fetch_backoff,
+        validate_partial_receive_limits, validate_path_component, validate_receive_limits,
+        wait_for_cancellation,
     };
     use crate::core::events::{
         EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
@@ -2561,6 +2594,19 @@ mod tests {
             message,
             "error: fetch remote collection sizes: connection refused"
         );
+    }
+
+    #[test]
+    fn failed_store_shutdown_preserves_uncached_receive_storage() {
+        assert!(should_preserve_uncached_storage(
+            false,
+            &Err(anyhow::anyhow!("store shutdown timed out")),
+        ));
+        assert!(!should_preserve_uncached_storage(false, &Ok(()),));
+        assert!(!should_preserve_uncached_storage(
+            true,
+            &Err(anyhow::anyhow!("store shutdown timed out")),
+        ));
     }
 
     #[tokio::test]

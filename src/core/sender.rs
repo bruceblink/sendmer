@@ -1298,6 +1298,7 @@ async fn show_provide_progress_with_provider_tracker(
         .map(UploadRateLimiter::new)
         .map(std::sync::Arc::new);
     let mut receiver_admission = ReceiverAdmission::new(max_receivers);
+    let mut request_tasks = JoinSet::new();
     let mut throttle_tasks = JoinSet::new();
 
     while let Some(item) = select! {
@@ -1305,6 +1306,7 @@ async fn show_provide_progress_with_provider_tracker(
         _ = shutdown_signal_rx.changed() => None,
         item = recv.recv() => item,
     } {
+        while request_tasks.try_join_next().is_some() {}
         while throttle_tasks.try_join_next().is_some() {}
 
         match item {
@@ -1338,10 +1340,20 @@ async fn show_provide_progress_with_provider_tracker(
 
                 let reporter_clone = reporter.clone();
                 let mut rx = msg.rx;
-                tokio::spawn(async move {
+                let mut shutdown_signal_rx = shutdown_signal_rx.clone();
+                request_tasks.spawn(async move {
                     let _permit = permit;
-                    while let Ok(Some(update)) = rx.recv().await {
-                        reporter_clone.on_request_update(transfer_id, update).await;
+                    loop {
+                        tokio::select! {
+                            biased;
+                            _ = shutdown_signal_rx.changed() => break,
+                            update = rx.recv() => match update {
+                                Ok(Some(update)) => {
+                                    reporter_clone.on_request_update(transfer_id, update).await;
+                                }
+                                _ => break,
+                            },
+                        }
                     }
                 });
             }
@@ -1365,6 +1377,11 @@ async fn show_provide_progress_with_provider_tracker(
             }
         }
     }
+
+    // 请求进度回调可能无限等待对端更新。进度任务返回前中止并等待这些任务，
+    // 确保 close/cancel 不会留下晚到的状态更新。
+    request_tasks.abort_all();
+    while request_tasks.join_next().await.is_some() {}
 
     // Outstanding throttle waits can be arbitrarily long at very low rates. Abort them
     // when the provider channel closes so sender shutdown never waits for pacing sleeps.
