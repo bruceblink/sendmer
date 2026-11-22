@@ -218,21 +218,25 @@ impl ReceiveCacheLease {
             }
         }
 
+        let unlock_entry_result =
+            FileExt::unlock(&replacement_lock).context("unlock completed receive cache entry");
+        drop(replacement_lock);
+        if let Err(error) = unlock_entry_result {
+            let _ = FileExt::unlock(&root_lock);
+            return Err(error);
+        }
+
         let remove_result = match tokio::fs::remove_dir_all(&entry_dir).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error).context("remove completed receive cache entry"),
         };
-        let unlock_entry_result =
-            FileExt::unlock(&replacement_lock).context("unlock completed receive cache entry");
-        drop(replacement_lock);
         let unlock_root_result =
             FileExt::unlock(&root_lock).context("unlock receive cache root after remove");
-        match (remove_result, unlock_entry_result, unlock_root_result) {
-            (Err(error), _, _) => Err(error),
-            (Ok(()), Err(error), _) => Err(error),
-            (Ok(()), Ok(()), Err(error)) => Err(error),
-            (Ok(()), Ok(()), Ok(())) => Ok(()),
+        match (remove_result, unlock_root_result) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
         }
     }
 }
