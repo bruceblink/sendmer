@@ -35,6 +35,7 @@ use iroh_blobs::{
 use n0_future::StreamExt;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc as StdArc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -106,12 +107,8 @@ pub async fn receive_with_limits_and_cancellation(
     let cancellation = cancellation;
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
-    let cancelled_before_prepare = cancellation_requested(cancellation.as_ref())
-        || tokio::select! {
-            biased;
-            _ = &mut ctrl_c => true,
-            else => false,
-        };
+    let cancelled_before_prepare =
+        cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await;
     if cancelled_before_prepare {
         event_emitter.emit_cancelled();
         return Err(transfer_cancelled_error());
@@ -166,12 +163,8 @@ pub async fn receive_with_limits_and_cancellation(
     };
 
     // 输入解析可能让取消请求在准备调用前到达，再次检查以避免继续打开资源。
-    let cancelled_before_context = cancellation_requested(cancellation.as_ref())
-        || tokio::select! {
-            biased;
-            _ = &mut ctrl_c => true,
-            else => false,
-        };
+    let cancelled_before_context =
+        cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await;
     if cancelled_before_context {
         event_emitter.emit_cancelled();
         return Err(transfer_cancelled_error());
@@ -185,12 +178,8 @@ pub async fn receive_with_limits_and_cancellation(
     };
 
     // 准备过程不可安全地半途丢弃；准备完成后统一关闭已打开的资源。
-    let cancelled_after_context = cancellation_requested(cancellation.as_ref())
-        || tokio::select! {
-            biased;
-            _ = &mut ctrl_c => true,
-            else => false,
-        };
+    let cancelled_after_context =
+        cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await;
     if cancelled_after_context {
         let error = finalize_failed_receive(
             transfer_cancelled_error(),
@@ -266,6 +255,18 @@ pub async fn receive_with_limits_and_cancellation(
 /// Ctrl+C-only behavior while the GPUI adapter can opt into graceful cancellation.
 fn cancellation_requested(cancellation: Option<&tokio::sync::watch::Receiver<bool>>) -> bool {
     cancellation.is_some_and(|receiver| *receiver.borrow())
+}
+
+/// 非阻塞检查 Ctrl+C，避免准备阶段在信号尚未到达时等待永久 pending future。
+async fn ctrl_c_requested<F>(signal: Pin<&mut F>) -> bool
+where
+    F: Future<Output = std::io::Result<()>> + ?Sized,
+{
+    tokio::select! {
+        biased;
+        _ = signal => true,
+        _ = tokio::task::yield_now() => false,
+    }
 }
 
 async fn wait_for_cancellation(cancellation: Option<tokio::sync::watch::Receiver<bool>>) {
