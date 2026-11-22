@@ -22,10 +22,7 @@ use anyhow::Context;
 use iroh::{Endpoint, address_lookup::PkarrPublisher};
 use iroh_blobs::{
     BlobFormat, BlobsProtocol,
-    api::{
-        Store, TempTag,
-        blobs::{AddPathOptions, ImportMode},
-    },
+    api::{Store, TempTag},
     format::collection::Collection,
     provider::events::{ConnectMode, EventMask, EventSender, RequestMode, ThrottleMode},
     store::fs::FsStore,
@@ -47,6 +44,7 @@ use tokio::{
     task::JoinSet,
     time::Instant,
 };
+use tokio_util::io::ReaderStream;
 use tracing::{info, warn};
 use walkdir::WalkDir;
 
@@ -421,6 +419,55 @@ struct ImportedSource {
     name: String,
     path: PathBuf,
     size: u64,
+    fingerprint: SourceFingerprint,
+}
+
+/// 文件导入前记录的元数据，用于确认打开的句柄仍对应扫描到的文件。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SourceFingerprint {
+    size: u64,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl SourceFingerprint {
+    /// 从文件元数据生成指纹；修改时间缺失时无法安全确认源文件身份。
+    fn from_metadata(metadata: &std::fs::Metadata) -> anyhow::Result<Self> {
+        Ok(Self {
+            size: metadata.len(),
+            modified: metadata
+                .modified()
+                .context("source file has no modification timestamp")?,
+            #[cfg(unix)]
+            device: {
+                use std::os::unix::fs::MetadataExt;
+                metadata.dev()
+            },
+            #[cfg(unix)]
+            inode: {
+                use std::os::unix::fs::MetadataExt;
+                metadata.ino()
+            },
+        })
+    }
+
+    /// 比较打开句柄的元数据，拒绝扫描后被替换的路径。
+    fn verify_open_metadata(
+        &self,
+        path: &Path,
+        metadata: &std::fs::Metadata,
+    ) -> anyhow::Result<()> {
+        let actual = Self::from_metadata(metadata)?;
+        anyhow::ensure!(
+            self == &actual,
+            "source file {} changed between scan and open",
+            path.display()
+        );
+        Ok(())
+    }
 }
 
 struct ImportedBlob {
@@ -435,6 +482,7 @@ struct ManifestSource {
     kind: ManifestEntryKind,
     size: u64,
     metadata: ManifestMetadata,
+    fingerprint: Option<SourceFingerprint>,
 }
 
 fn create_event_sender(
@@ -914,6 +962,11 @@ fn collect_manifest_sources(path: PathBuf) -> anyhow::Result<(ManifestRoot, Vec<
                 kind,
                 size,
                 metadata: manifest_metadata(&metadata),
+                fingerprint: if kind == ManifestEntryKind::File {
+                    Some(SourceFingerprint::from_metadata(&metadata)?)
+                } else {
+                    None
+                },
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -993,12 +1046,19 @@ async fn import_manifest(
     let file_sources = sources
         .iter()
         .filter(|source| source.kind == ManifestEntryKind::File)
-        .map(|source| ImportedSource {
-            name: source.relative.components.join("/"),
-            path: source.path.clone(),
-            size: source.size,
+        .map(|source| {
+            let fingerprint = source
+                .fingerprint
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("manifest file source is missing metadata"))?;
+            Ok(ImportedSource {
+                name: source.relative.components.join("/"),
+                path: source.path.clone(),
+                size: source.size,
+                fingerprint,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let imported = import_sources(
         db,
         file_sources,
@@ -1170,12 +1230,19 @@ fn collect_import_sources(path: PathBuf) -> anyhow::Result<Vec<ImportedSource>> 
                 return Ok(None);
             }
 
-            let size = entry.metadata()?.len();
+            let metadata = entry.metadata()?;
+            let size = metadata.len();
+            let fingerprint = SourceFingerprint::from_metadata(&metadata)?;
             let path = entry.into_path();
             let relative = path.strip_prefix(root)?;
             let name = canonicalized_path_to_string(relative, true)?;
             validate_legacy_collection_name(&name)?;
-            anyhow::Ok(Some(ImportedSource { name, path, size }))
+            anyhow::Ok(Some(ImportedSource {
+                name,
+                path,
+                size,
+                fingerprint,
+            }))
         })
         .filter_map(Result::transpose)
         .collect::<anyhow::Result<Vec<_>>>()
@@ -1221,13 +1288,20 @@ async fn import_sources(
 }
 
 async fn import_source(db: &Store, source: ImportedSource) -> anyhow::Result<ImportedBlob> {
-    let import = db.add_path_with_opts(AddPathOptions {
-        path: source.path,
-        mode: ImportMode::TryReference,
-        format: BlobFormat::Raw,
-    });
+    // 先打开句柄并核对元数据，再把句柄交给 blob store，避免导入期间路径替换。
+    let file = tokio::fs::File::open(&source.path)
+        .await
+        .with_context(|| format!("open source file {}", source.path.display()))?;
+    let metadata = file
+        .metadata()
+        .await
+        .with_context(|| format!("inspect source file {}", source.path.display()))?;
+    source
+        .fingerprint
+        .verify_open_metadata(&source.path, &metadata)?;
+    let import = db.add_stream(ReaderStream::new(file)).await;
     let mut stream = import.stream().await;
-    let mut item_size = 0;
+    // add_stream 的实现可能省略 Size 事件，已核对的源文件大小仍是可靠结果。
     let temp_tag = loop {
         let item = stream
             .next()
@@ -1235,7 +1309,11 @@ async fn import_source(db: &Store, source: ImportedSource) -> anyhow::Result<Imp
             .context("import stream ended without a tag")?;
         match item {
             iroh_blobs::api::blobs::AddProgressItem::Size(size) => {
-                item_size = size;
+                anyhow::ensure!(
+                    size == source.size,
+                    "source file {} changed while importing",
+                    source.path.display()
+                );
             }
             iroh_blobs::api::blobs::AddProgressItem::CopyProgress(_) => {}
             iroh_blobs::api::blobs::AddProgressItem::CopyDone => {}
@@ -1252,7 +1330,7 @@ async fn import_source(db: &Store, source: ImportedSource) -> anyhow::Result<Imp
     Ok(ImportedBlob {
         name: source.name,
         temp_tag,
-        size: item_size,
+        size: source.size,
     })
 }
 
@@ -1944,6 +2022,27 @@ mod tests {
     }
 
     #[test]
+    fn source_fingerprint_rejects_replaced_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let path = temp_dir.path().join("source.txt");
+        std::fs::write(&path, b"original").expect("write original source");
+
+        let source = collect_import_sources(path.clone())
+            .expect("collect source")
+            .into_iter()
+            .next()
+            .expect("source entry");
+        std::fs::write(&path, b"replacement with a different size").expect("replace source");
+
+        let metadata = std::fs::metadata(&path).expect("read replacement metadata");
+        let error = source
+            .fingerprint
+            .verify_open_metadata(&path, &metadata)
+            .expect_err("replacement must fail fingerprint validation");
+        assert!(error.to_string().contains("changed between scan and open"));
+    }
+
+    #[test]
     fn legacy_collection_rejects_manifest_control_name() {
         let error = validate_legacy_collection_name(MANIFEST_COLLECTION_NAME)
             .expect_err("manifest control name must remain reserved");
@@ -2289,6 +2388,54 @@ mod tests {
             !blobs_data_dir.exists(),
             "cancelling a started sender should remove its blob store"
         );
+    }
+
+    #[tokio::test]
+    async fn sender_setup_reports_source_size_after_stream_import() {
+        let source_dir = tempfile::tempdir().expect("source directory");
+        let source_file = source_dir.path().join("source.bin");
+        let payload = b"stream import size";
+        tokio::fs::write(&source_file, payload)
+            .await
+            .expect("write source file");
+        let storage_root = tempfile::tempdir().expect("storage root");
+        let blobs_data_dir = storage_root.path().join("sender-store");
+        let options = SendOptions {
+            relay_mode: RelayModeOption::Disabled,
+            ticket_type: AddrInfoOptions::RelayAndAddresses,
+            ..SendOptions::default()
+        };
+        let endpoint = prepare_endpoint(&options)
+            .await
+            .expect("create sender endpoint");
+        let setup = setup_data_sharing(
+            endpoint,
+            blobs_data_dir,
+            ShareRequest {
+                path: source_file,
+                entry_type: EntryType::File,
+                event_emitter: started_sender_emitter(),
+                max_upload_rate_bytes_per_sec: None,
+                max_receivers: None,
+                max_files: None,
+                max_total_size_bytes: None,
+                max_import_memory_bytes: None,
+                manifest_mode: false,
+            },
+        )
+        .await
+        .expect("start sender setup");
+
+        assert_eq!(setup.imported.size, payload.len() as u64);
+        let error = shutdown_started_sender_setup(
+            setup,
+            EntryType::File,
+            AddrInfoOptions::RelayAndAddresses,
+            started_sender_emitter(),
+            anyhow::anyhow!("size regression test cleanup"),
+        )
+        .await;
+        assert!(error.to_string().contains("size regression test cleanup"));
     }
 
     fn started_sender_emitter() -> TransferEventEmitter {
