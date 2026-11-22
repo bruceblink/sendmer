@@ -163,6 +163,15 @@ impl TransferManifest {
                     && self.entries[0].path == self.root.path,
                 "file manifest must contain exactly one root file entry"
             );
+        } else {
+            anyhow::ensure!(
+                !self
+                    .entries
+                    .iter()
+                    .any(|entry| entry.kind == ManifestEntryKind::File
+                        && entry.path == self.root.path),
+                "directory manifest root cannot also be a file entry"
+            );
         }
 
         validate_tree_shape(self)?;
@@ -370,6 +379,13 @@ impl ManifestPath {
                             && component.len().is_multiple_of(2),
                         "encoded manifest path component is not lowercase hex"
                     );
+                    anyhow::ensure!(
+                        component != "2e"
+                            && component != "2e2e"
+                            && component != "2e00"
+                            && component != "2e002e00",
+                        "encoded manifest path component cannot be traversal"
+                    );
                 }
             }
         }
@@ -405,6 +421,10 @@ impl ManifestPath {
                                 && !bytes.contains(&b'/')
                                 && !bytes.contains(&b'\\'),
                             "decoded Unix path component contains an invalid byte"
+                        );
+                        anyhow::ensure!(
+                            bytes != b"." && bytes != b"..",
+                            "decoded Unix path component cannot be traversal"
                         );
                         path.push(OsString::from_vec(bytes));
                     }
@@ -709,6 +729,25 @@ mod tests {
         assert!(error.to_string().contains("file entry cannot contain"));
     }
 
+    #[test]
+    fn directory_manifest_rejects_file_at_root_path() {
+        let mut manifest = empty_manifest();
+        manifest.entries.push(ManifestEntry {
+            id: "00000001".to_owned(),
+            kind: ManifestEntryKind::File,
+            path: utf8_path(&["share"]),
+            payload: Some(ManifestPayload {
+                collection_name: format!("{MANIFEST_ENTRY_PREFIX}00000001"),
+                size: 1,
+            }),
+            metadata: ManifestMetadata::default(),
+        });
+        let error = manifest
+            .validate()
+            .expect_err("directory root cannot be a file entry");
+        assert!(error.to_string().contains("root cannot also be a file"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn unix_non_utf8_path_uses_lossless_hex_encoding() {
@@ -779,6 +818,17 @@ mod tests {
             .validate()
             .expect_err("long manifest path must be rejected");
         assert!(path_error.to_string().contains("path exceeds"));
+    }
+
+    #[test]
+    fn encoded_manifest_path_rejects_dot_and_parent_components() {
+        for component in ["2e", "2e2e", "2e00", "2e002e00"] {
+            let path = ManifestPath {
+                encoding: PathEncoding::UnixBytesHex,
+                components: vec!["7368617265".to_owned(), component.to_owned()],
+            };
+            assert!(path.validate().is_err(), "encoded traversal {component}");
+        }
     }
 
     #[test]

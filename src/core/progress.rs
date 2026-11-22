@@ -238,6 +238,7 @@ impl TransferId {
 pub struct TransferInfo {
     pub start_time: Instant,
     pub total_size: u64,
+    pub last_processed: u64,
     pub last_progress_emit: Instant,
 }
 
@@ -274,6 +275,7 @@ impl ProviderProgressTracker {
         let info = TransferInfo {
             start_time: Instant::now(),
             total_size,
+            last_processed: 0,
             last_progress_emit: Instant::now(),
         };
         self.transfer_states.insert(id, info);
@@ -294,7 +296,8 @@ impl ProviderProgressTracker {
         info.last_progress_emit = Instant::now();
 
         // provider 的偏移量来自远端请求，统一限制在声明总量内，避免进度倒退或越界。
-        let processed = offset.min(info.total_size);
+        let processed = offset.min(info.total_size).max(info.last_processed);
+        info.last_processed = processed;
         let total = info.total_size;
         let elapsed = info.start_time.elapsed().as_secs_f64();
         let speed = if elapsed > 0.0 {
@@ -822,6 +825,20 @@ mod tests {
         assert_eq!(total, 100);
         assert!(speed.is_finite());
         assert!(speed >= 0.0);
+    }
+
+    #[test]
+    fn provider_progress_never_regresses_after_a_later_remote_offset() {
+        let mut tracker = ProviderProgressTracker::new(EntryType::File);
+        let id = TransferId::new(6, 1);
+        tracker.on_request_started(id, 100);
+        sleep(Duration::from_millis(260));
+        let first = tracker.on_progress(id, 80).expect("first progress");
+        sleep(Duration::from_millis(260));
+        let second = tracker.on_progress(id, 10).expect("second progress");
+
+        assert_eq!(first.0, 80);
+        assert_eq!(second.0, 80);
     }
 
     #[tokio::test]

@@ -283,6 +283,7 @@ async fn export_manifest_atomically(
         "manifest root must be relative"
     );
     ensure_export_root_available_path(output_dir, &root_path)?;
+    validate_manifest_export_targets(manifest)?;
     let staging_dir = create_staging_dir(output_dir)?;
     *active_staging_dir = Some(staging_dir.clone());
     let result = async {
@@ -299,6 +300,12 @@ async fn export_manifest_atomically(
         let mut targets = Vec::new();
         for entry in &manifest.entries {
             let full_path = entry.path.to_path_buf()?;
+            anyhow::ensure!(
+                full_path
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_))),
+                "manifest entry path must contain only normal components"
+            );
             let target = staging_dir.join(&full_path);
             anyhow::ensure!(
                 target.strip_prefix(&staging_dir).is_ok(),
@@ -361,6 +368,15 @@ fn ensure_export_root_available_path(output_dir: &Path, root: &Path) -> anyhow::
         "manifest root must be relative"
     );
     let target = output_dir.join(root);
+    let canonical_output = output_dir.canonicalize()?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("manifest root has no parent"))?;
+    let canonical_parent = canonicalize_existing_parent(parent)?;
+    anyhow::ensure!(
+        canonical_parent.starts_with(&canonical_output),
+        "manifest root escapes the output directory"
+    );
     match std::fs::symlink_metadata(&target) {
         Ok(_) => Err(target_conflict_error(&target)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -374,7 +390,16 @@ fn commit_staged_export_path(
     root: &Path,
 ) -> anyhow::Result<()> {
     let staged = staging_dir.join(root);
-    anyhow::ensure!(staged.exists(), "staged export root is missing");
+    let staged_metadata = std::fs::symlink_metadata(&staged)?;
+    anyhow::ensure!(
+        !staged_metadata.file_type().is_symlink(),
+        "staged export root must not be a symbolic link"
+    );
+    anyhow::ensure!(
+        staged_metadata.is_dir(),
+        "staged export root is not a directory"
+    );
+    ensure_export_root_available_path(output_dir, root)?;
     let target = output_dir.join(root);
     match std::fs::symlink_metadata(&target) {
         Ok(_) => return Err(target_conflict_error(&target)),
@@ -389,6 +414,31 @@ fn commit_staged_export_path(
     }
     cleanup_staging_dir(staging_dir);
     Ok(())
+}
+
+/// 检查 TM1 在当前主机上的目标路径是否发生大小写碰撞。
+fn validate_manifest_export_targets(manifest: &TransferManifest) -> anyhow::Result<()> {
+    let mut targets = std::collections::BTreeSet::new();
+    for entry in &manifest.entries {
+        let path = entry.path.to_path_buf()?;
+        anyhow::ensure!(
+            targets.insert(manifest_target_key(&path)),
+            "manifest contains paths that collide on this filesystem"
+        );
+    }
+    Ok(())
+}
+
+fn manifest_target_key(path: &Path) -> String {
+    let value = path.to_string_lossy().replace('\\', "/");
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        value.to_lowercase()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        value
+    }
 }
 
 fn apply_manifest_metadata(

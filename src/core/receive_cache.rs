@@ -167,18 +167,45 @@ impl ReceiveCacheLease {
 
     /// Keep verified ranges for a later process and release the lease.
     pub(super) fn preserve(mut self) -> anyhow::Result<()> {
+        // 释放 entry 锁后再取得 root shared 锁，统一使用 root -> entry 的顺序。
+        // prune 持有 root exclusive 后会等待 entry 锁，保留路径不能反向等待 root。
+        FileExt::unlock(&self.lock_file).context("unlock receive cache entry before preserve")?;
+        let root_lock = lock_root_shared(&self.cache_root)?;
+        let entry_relocked = match FileExt::try_lock(&self.lock_file) {
+            Ok(()) => true,
+            Err(TryLockError::WouldBlock) => false,
+            Err(TryLockError::Error(error)) => {
+                let _ = FileExt::unlock(&root_lock);
+                return Err(error).context("relock receive cache entry during preserve");
+            }
+        };
+        if !entry_relocked {
+            FileExt::unlock(&root_lock).context("unlock receive cache root after preserve")?;
+            return Ok(());
+        }
+
         let touch_result = touch_lock_file(&mut self.lock_file);
         let capacity_result = if touch_result.is_ok() {
-            let root_lock = lock_root_shared(&self.cache_root)?;
-            let result = ensure_cache_capacity(&self.cache_root);
-            let unlock_result =
-                FileExt::unlock(&root_lock).context("unlock receive cache root after preserve");
-            result.and(unlock_result)
+            ensure_cache_capacity(&self.cache_root)
         } else {
             Ok(())
         };
-        let unlock_result = FileExt::unlock(&self.lock_file).context("unlock receive cache entry");
-        touch_result.and(capacity_result).and(unlock_result)
+        let unlock_entry_result =
+            FileExt::unlock(&self.lock_file).context("unlock receive cache entry after preserve");
+        let unlock_root_result =
+            FileExt::unlock(&root_lock).context("unlock receive cache root after preserve");
+        match (
+            touch_result,
+            capacity_result,
+            unlock_entry_result,
+            unlock_root_result,
+        ) {
+            (Err(error), _, _, _) => Err(error),
+            (Ok(()), Err(error), _, _) => Err(error),
+            (Ok(()), Ok(()), Err(error), _) => Err(error),
+            (Ok(()), Ok(()), Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(()), Ok(()), Ok(())) => Ok(()),
+        }
     }
 
     /// Release the lease before removing a completed cache entry.
@@ -797,6 +824,28 @@ mod tests {
             .expect("reopen cache entry");
         assert_eq!(second.entry_dir(), path);
         second.preserve().expect("release cache entry");
+    }
+
+    #[test]
+    fn preserve_does_not_wait_with_entry_before_busy_root_lock() {
+        let root = tempfile::tempdir().expect("cache root");
+        let options = ReceiveCacheOptions::new(root.path());
+        let lease = ReceiveCacheLease::open(&options, hash_and_format(BlobFormat::HashSeq))
+            .expect("cache lease");
+        let root_lock = open_lock_file(&root.path().join(CACHE_ROOT_LOCK_FILE)).expect("root lock");
+        FileExt::try_lock(&root_lock).expect("hold root maintenance lock");
+
+        let result = lease.preserve();
+
+        assert!(
+            result.is_err(),
+            "busy root lock should fail without waiting"
+        );
+        FileExt::unlock(&root_lock).expect("release root maintenance lock");
+        ReceiveCacheLease::open(&options, hash_and_format(BlobFormat::HashSeq))
+            .expect("entry lock must be released after preserve failure")
+            .preserve()
+            .expect("release reopened cache entry");
     }
 
     #[tokio::test]

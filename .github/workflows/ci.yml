@@ -86,7 +86,7 @@ jobs:
           toolchain: ${{ env.MSRV }}
       - uses: swatinem/rust-cache@v2
       - name: cargo check
-        run: cargo check --locked --workspace --all-features --bins --examples
+        run: cargo check --locked --workspace --all-features --bins --tests --examples
       - name: cargo doc tests
         run: cargo test --locked --doc --all-features
 
@@ -140,3 +140,5 @@ jobs:
       - uses: swatinem/rust-cache@v2
       - name: cargo check
         run: cargo check --locked --workspace --all-features --bins
+      - name: cargo check without default features
+        run: cargo check --locked --workspace --no-default-features --bins --tests --examples

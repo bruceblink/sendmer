@@ -19,6 +19,7 @@ use sendmer::core::{receiver, sender};
 use sendmer::{AppHandle, ReceiveCacheOptions, ReceiveLimits, ReceiveOptions, SendOptions};
 #[cfg(feature = "clipboard")]
 use std::io::IsTerminal;
+use std::io::Write as _;
 use std::sync::Arc;
 use std::{future::Future, io, process::ExitCode};
 
@@ -53,17 +54,37 @@ pub async fn run() -> anyhow::Result<()> {
         )
     });
 
+    let json_events = common_args(&args.command).is_some_and(|common| common.json_events);
     if let Some(common) = common_args(&args.command) {
-        init_tracing(common.verbose)?;
-        maybe_show_secret(common)?;
+        init_tracing(common.verbose).map_err(|error| cli_error(error, json_events))?;
+        maybe_show_secret(common).map_err(|error| cli_error(error, json_events))?;
     } else {
         init_tracing(0)?;
     }
 
-    match args.command {
+    let result = match args.command {
         Commands::Send(args) => send(args).await,
         Commands::Receive(args) => receive(args).await,
         Commands::Cache(args) => cache(args).await,
+    };
+    result.map_err(|error| cli_error(error, json_events))
+}
+
+/// JSON 事件模式下只向 stderr 返回通用错误，避免把本地路径和底层错误链泄露到管道旁路。
+fn cli_error(error: anyhow::Error, json_events: bool) -> anyhow::Error {
+    if json_events {
+        let message = format!("{error}");
+        if message.len() <= 256
+            && message.contains("more than ")
+            && !message.contains('/')
+            && !message.contains('\\')
+        {
+            anyhow::anyhow!(message)
+        } else {
+            anyhow::anyhow!("command failed")
+        }
+    } else {
+        error
     }
 }
 
@@ -97,8 +118,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
 
     let res = sender::send(args.path.clone(), opts, app_handle).await?;
 
-    print_command_output(
-        args.common.json_events,
+    let messages = [
         format!(
             "imported {} {}, {}, hash {}",
             res.entry_type,
@@ -106,13 +126,18 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
             HumanBytes(res.size),
             print_hash(&res.hash, args.common.format)
         ),
-    );
-
-    print_command_output(args.common.json_events, "to get this data, use");
-    print_command_output(
-        args.common.json_events,
+        "to get this data, use".to_owned(),
         format!("sendmer receive {}", res.ticket),
-    );
+    ];
+    for message in messages {
+        if let Err(error) = print_command_output(args.common.json_events, message) {
+            let _ = res.cancel().await;
+            if error.kind() == io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(error.into());
+        }
+    }
     #[cfg(feature = "clipboard")]
     if !args.common.json_events {
         maybe_handle_key_press(args.clipboard, res.ticket.to_string());
@@ -143,16 +168,20 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
     print_command_output(
         args.common.json_events,
         format!("{} in {:?}", res.message, res.file_path),
-    );
+    )?;
     Ok(())
 }
 
 /// Keep machine-readable JSONL on stdout while routing human text to stderr.
-fn print_command_output(json_events: bool, message: impl std::fmt::Display) {
+fn print_command_output(json_events: bool, message: impl std::fmt::Display) -> io::Result<()> {
     if json_events {
-        eprintln!("{message}");
+        let stderr = io::stderr();
+        let mut stderr = stderr.lock();
+        writeln!(stderr, "{message}").and_then(|()| stderr.flush())
     } else {
-        println!("{message}");
+        let stdout = io::stdout();
+        let mut stdout = stdout.lock();
+        writeln!(stdout, "{message}").and_then(|()| stdout.flush())
     }
 }
 
@@ -232,6 +261,10 @@ where
     S: Future<Output = io::Result<()>>,
 {
     tokio::pin!(signal);
+
+    if *status_rx.borrow() == SenderTransferStatus::Expired {
+        return Ok(());
+    }
 
     loop {
         tokio::select! {
@@ -559,5 +592,27 @@ mod tests {
         .await
         .expect("expired sessions should stop the CLI wait")
         .expect("expired session wait should be clean");
+    }
+
+    #[tokio::test]
+    async fn sender_wait_stops_when_expiration_precedes_subscription() {
+        let (status_tx, status_rx) = tokio::sync::watch::channel(SenderTransferStatus::Idle);
+        status_tx
+            .send(SenderTransferStatus::Expired)
+            .expect("status receiver should be present");
+        drop(status_rx);
+        let status_rx = status_tx.subscribe();
+        let mut status_rx = status_rx;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            wait_for_send_shutdown_with_signal(
+                std::future::pending::<std::io::Result<()>>(),
+                &mut status_rx,
+            ),
+        )
+        .await
+        .expect("expired subscription should stop the CLI wait")
+        .expect("expired subscription wait should be clean");
     }
 }

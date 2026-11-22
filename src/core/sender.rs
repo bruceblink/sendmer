@@ -1138,10 +1138,20 @@ fn collect_import_sources(path: PathBuf) -> anyhow::Result<Vec<ImportedSource>> 
             let path = entry.into_path();
             let relative = path.strip_prefix(root)?;
             let name = canonicalized_path_to_string(relative, true)?;
+            validate_legacy_collection_name(&name)?;
             anyhow::Ok(Some(ImportedSource { name, path, size }))
         })
         .filter_map(Result::transpose)
         .collect::<anyhow::Result<Vec<_>>>()
+}
+
+/// 拒绝旧 Collection 会被接收端识别为 TM1 控制条目的用户文件名。
+fn validate_legacy_collection_name(name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        name != MANIFEST_COLLECTION_NAME,
+        "legacy collection name is reserved for the transfer manifest"
+    );
+    Ok(())
 }
 
 async fn import_sources(
@@ -1493,12 +1503,13 @@ fn upload_delay(bytes: u64, bytes_per_second: NonZeroU64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{
-        ImportMemoryBudget, ProviderProgressControl, ReceiverAdmission, ShareRequest,
-        UploadRateLimiter, canonicalized_path_to_string, collect_import_sources, detect_entry_type,
-        import_parallelism, prepare_endpoint, provider_event_mask, send, setup_data_sharing,
-        show_provide_progress_with_provider_tracker, shutdown_started_sender_setup,
-        try_acquire_provider_progress_permit, validate_imported_share_totals,
-        validate_share_limits, validate_share_path,
+        ImportMemoryBudget, MANIFEST_COLLECTION_NAME, ProviderProgressControl, ReceiverAdmission,
+        ShareRequest, UploadRateLimiter, canonicalized_path_to_string, collect_import_sources,
+        detect_entry_type, import_parallelism, prepare_endpoint, provider_event_mask, send,
+        setup_data_sharing, show_provide_progress_with_provider_tracker,
+        shutdown_started_sender_setup, try_acquire_provider_progress_permit,
+        validate_imported_share_totals, validate_legacy_collection_name, validate_share_limits,
+        validate_share_path,
     };
     use crate::core::events::{
         EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
@@ -1883,6 +1894,13 @@ mod tests {
         names.sort();
 
         assert_eq!(names, vec!["data/alpha.txt", "data/nested/beta.txt"]);
+    }
+
+    #[test]
+    fn legacy_collection_rejects_manifest_control_name() {
+        let error = validate_legacy_collection_name(MANIFEST_COLLECTION_NAME)
+            .expect_err("manifest control name must remain reserved");
+        assert!(error.to_string().contains("reserved"));
     }
 
     #[test]

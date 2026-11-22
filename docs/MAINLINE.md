@@ -372,6 +372,13 @@ callsite 缓存，仍要求日志包含安全事件类别且不包含失败载�
 276–1354 ms，组合故障完成约 16.5–18.0 s，主动重试用例记录 4 次应用层重试，并确认恢复后
 请求读取的 payload 少于完整载荷。relay smoke 仍需要外部可达 relay，因此继续保持 ignored。
 
+同日再次审查后补充以下修复。接收缓存的 preserve、prune 和成功删除统一按 root 到 entry 的
+锁顺序执行，避免反向等待。接收端在存储关闭超时后保留无缓存临时目录。sender 进度回调纳入
+可回收任务集合，关闭后不再更新已结束会话。TM1 解码拒绝编码后的 `.`、`..` 和非普通路径
+组件，并检查输出父目录、符号链接和大小写碰撞。CLI JSON emitter 支持多个会话，Broken pipe
+只处理一次，普通 stdout 管道关闭时会先取消 sender。MSRV CI 增加 integration tests，另加无默认
+feature 的编译检查。
+
 截至 2026-09-02，`tests/cli.rs` 已补充公开 `receive_with_cancellation` 的真实 sender/receiver
 回归：等待 payload 已落盘的进度后发出取消，确认返回错误、事件只包含一个 `cancelled` 终态、
 持久缓存保留已验证数据、输出目录没有半导出，并通过缓存 prune 证明 entry 锁已释放。该切片
