@@ -160,13 +160,15 @@ Common options are available on both `send` and `receive`:
 Receive-specific options:
 
 - `--output-dir <path>`: set where received files are written (default: current working directory)
+- `--max-files <count>`: reject transfers that contain more regular files than this receiver limit
+- `--max-total-size <bytes>`: reject transfers whose regular-file payload total exceeds this receiver limit
 - `--retry-limit <count>`: maximum attempts for the blob download phase (default: `3`)
 - `--retry-backoff-ms <milliseconds>`: delay between blob download attempts (default: `250`)
 - `--connect-timeout-ms <milliseconds>`: optional timeout for each sender connection attempt
 - `--metadata-timeout-ms <milliseconds>`: optional timeout for a collection metadata request
 - `--download-idle-timeout-ms <milliseconds>`: optional timeout while the download stream produces no updates
 - `--cache-dir <path>`: opt into a persistent, content-addressed receive cache for cross-process resume
-- `--cache-ttl-seconds <seconds>`: record the cache entry lifetime for pruning (default: `604800`; requires `--cache-dir` to take effect)
+- `--cache-ttl-seconds <seconds>`: record the cache entry lifetime for pruning (default: `604800`, minimum `1`; requires `--cache-dir` to take effect)
 
 ### Receive Safety
 
@@ -181,6 +183,8 @@ sendmer cache prune --cache-dir <path>
 ```
 
 Pruning uses each entry's recorded TTL, skips active entries, and preserves malformed or future-schema data instead of guessing. The cache format, privacy boundary, and interruption/restart E2E are defined in the [mainline design and development plan](docs/MAINLINE.md).
+
+The persistent cache has a 64 GiB hard capacity and requires at least 512 MiB of free space when it is opened. If either check fails, the receive stops before creating the store and keeps existing cache entries.
 
 The same ticket can serve multiple downloads while the sender is running. Receiving a copy
 leaves the share open. Press Ctrl+C to stop sharing, or set `--session-lifetime-seconds` to
@@ -217,7 +221,9 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 The legacy `send` function and `SendResult::shutdown` remain available for compatibility. A receiver
-can use `receive` or `receive_with_cancellation` with `ReceiveOptions`.
+can use `receive` or `receive_with_cancellation` with `ReceiveOptions`. Use `receive_with_limits` or
+`receive_with_limits_and_cancellation` when the receiver must enforce file-count and payload-size
+quotas without changing the existing `ReceiveOptions` struct.
 
 Set `SendOptions::session_lifetime` when an embedding needs a bounded sender lifetime. On expiry,
 the router closes, the sender emits one non-retryable timeout event, and
@@ -235,8 +241,8 @@ capability while its sender router is alive; it is not an account, persistent AC
 one random `session_id`, strictly increasing `sequence` values, an explicit phase, and at most one of
 completed, failed, or cancelled. Failed events contain `TransferErrorCode`, failure phase,
 retryability, and a safe message. Consumers should match `event.event` and must not parse error text.
-Use `TransferEventStreamValidator` to reject role changes, duplicate, missing, cross-session, or late
-terminal events before updating UI or history. The first event fixes the session's sender/receiver
+Use `TransferEventStreamValidator` to reject role changes, duplicate, missing, cross-session, late
+terminal events, and invalid progress values before updating UI or history. The first event fixes the session's sender/receiver
 role. The validator is stateful for one session stream and should be
 reset when a new transfer starts.
 Failure and cleanup diagnostics in core tracing keep stable error categories, phases, retryability, and
@@ -248,7 +254,8 @@ The library re-exports:
 
 - argument and option types
 - transfer event types, `EventEmitter`, and `TransferEventStreamValidator`
-- `send`, `send_handle`, `receive`, and `receive_with_cancellation`
+- `send`, `send_handle`, `receive`, `receive_with_cancellation`, `receive_with_limits`, and
+  `receive_with_limits_and_cancellation`
 - preferred `SendHandle`, plus legacy `SendResult` and `ReceiveResult`
 
 ## Development

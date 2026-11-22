@@ -157,13 +157,15 @@ sendmer receive <ticket>
 仅 `receive` 支持：
 
 - `--output-dir <path>`：指定接收文件的输出目录（默认：当前工作目录）
+- `--max-files <count>`：当普通文件数量超过接收端上限时拒绝传输
+- `--max-total-size <bytes>`：当普通文件 payload 总大小超过接收端上限时拒绝传输
 - `--retry-limit <count>`：blob 下载阶段的最大尝试次数（默认：`3`）
 - `--retry-backoff-ms <milliseconds>`：两次 blob 下载尝试之间的等待时间（默认：`250`）
 - `--connect-timeout-ms <milliseconds>`：每次连接发送端的可选超时
 - `--metadata-timeout-ms <milliseconds>`：获取 collection 元数据的可选超时
 - `--download-idle-timeout-ms <milliseconds>`：下载流长期没有更新时的可选超时
 - `--cache-dir <path>`：显式启用按内容寻址的持久接收缓存，用于跨进程续传
-- `--cache-ttl-seconds <seconds>`：记录供后续清理使用的缓存 TTL（默认：`604800`；仅与 `--cache-dir` 一起生效）
+- `--cache-ttl-seconds <seconds>`：记录供后续清理使用的缓存 TTL（默认：`604800`，最小 `1` 秒；仅与 `--cache-dir` 一起生效）
 
 ### 接收安全语义
 
@@ -178,6 +180,8 @@ sendmer cache prune --cache-dir <path>
 ```
 
 清理使用每个条目记录的 TTL，跳过活跃条目，并保留损坏或未来 schema 数据而不进行猜测。缓存格式、隐私边界以及中断/重启 E2E 统一定义在[主线设计与开发计划](docs/MAINLINE.md)中。
+
+持久缓存的硬上限为 64 GiB，打开缓存时还必须保留至少 512 MiB 可用空间。检查失败时会在创建接收 store 前停止，并保留已有缓存条目。
 
 仅 `send` 支持：
 
@@ -210,7 +214,9 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 旧的 `send` 函数和 `SendResult::shutdown` 仍保留用于兼容。接收端可以使用 `receive`，
-或使用带取消能力的 `receive_with_cancellation` 与 `ReceiveOptions`。
+或使用带取消能力的 `receive_with_cancellation` 与 `ReceiveOptions`。需要限制普通文件数量或
+payload 总大小时，使用 `receive_with_limits` 或 `receive_with_limits_and_cancellation`，不需要
+修改现有的 `ReceiveOptions` 结构体。
 
 嵌入式调用方可设置 `SendOptions::session_lifetime`。生命周期到期后 router 会关闭，sender
 发出一次不可重试的超时事件，并发布 `SenderTransferStatus::Expired`，调用方随后复用正常清理路径。
@@ -226,7 +232,7 @@ ticket 不能再建立新的接收连接。ticket 只在发送方 router 存活�
 具有一个随机 `session_id`、严格递增的 `sequence`、显式阶段，并且 completed、failed、
 cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode`、失败阶段、可重试属性和
 安全消息。消费者应匹配 `event.event`，不得解析错误文本。使用
-`TransferEventStreamValidator` 可在更新 UI 或历史前拒绝重复序号、序号缺口、会话切换和终态后
+`TransferEventStreamValidator` 可在更新 UI 或历史前拒绝重复序号、序号缺口、会话切换、进度越界和终态后
 的迟到事件；首事件确定本会话的 sender/receiver 角色，后续角色变化也会拒绝。校验器针对一条
 会话流保存状态，新传输开始时应创建新的校验器。参见
 [v0.8.0 迁移指南](docs/V0_8_MIGRATION.md)和可编译的
@@ -238,7 +244,8 @@ cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode
 
 - 参数和选项类型
 - 传输事件类型、`EventEmitter` 与 `TransferEventStreamValidator`
-- `send`、`send_handle`、`receive` 和 `receive_with_cancellation`
+- `send`、`send_handle`、`receive`、`receive_with_cancellation`、`receive_with_limits` 和
+  `receive_with_limits_and_cancellation`
 - 推荐使用的 `SendHandle`，以及兼容用的 `SendResult` 与 `ReceiveResult`
 
 ## 开发

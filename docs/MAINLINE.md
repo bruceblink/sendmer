@@ -355,6 +355,23 @@ callsite 缓存，仍要求日志包含安全事件类别且不包含失败载�
 出口条件：正常、失败、取消和过期路径均有日志或测试证据；staging、sender 临时目录和文件
 句柄在失败后清理；无可复现问题时只提交测试/文档改进，不为了凑版本引入语义变化。
 
+2026-11-22 P1/P2 核心可靠性收尾：
+
+- sender provider 事件循环在进度跟踪任务达到并发上限时丢弃诊断更新，不再等待信号量，连接关闭、限速响应和 sender shutdown 保持可处理。
+- 接收端限制 legacy Collection 元数据条目数和字节数，所有 payload 总量使用 checked sum；发送端导入完成后再次核对文件数和 payload 大小，覆盖源文件变化造成的限额 TOCTOU。
+- retry backoff 使用饱和乘法并限制为 30 秒；manifest 增加 payload 总量检查、Windows 设备名检查、POSIX mode 边界和旧 Collection 的 Windows 路径兼容检查。
+- 持久缓存拒绝小于 1 秒的 TTL，增加 64 GiB 硬上限和 512 MiB 可用空间检查，并用 root 排他锁协调 prune、成功清理和新 receive，避免删除新会话条目。
+- 进度事件拒绝非有限速率和超过总量的偏移，CLI 返回 `ExitCode` 以保证终端 raw mode 任务可以正常析构。
+
+本批本机验证通过 191 个核心库测试、5 个二进制测试、29 个 CLI 测试和 3 个帮助测试。relay
+及弱网 smoke 仍按环境变量保持 ignored，不把未执行的外部网络验收写成通过。
+
+同日使用 `SENDMER_WEAK_NETWORK_SMOKE=1` 执行本地 UDP 的 `local_udp_weak_network_baseline`
+和 `local_udp_latency_and_combined` ignored 用例。两项均通过，单文件和 TM1 目录的最终 BLAKE3
+均为 `696629d7b9e50215bf202da7e15c1558ba7b890aef43137eefa21312db681b71`。断网恢复首包约
+276–1354 ms，组合故障完成约 16.5–18.0 s，主动重试用例记录 4 次应用层重试，并确认恢复后
+请求读取的 payload 少于完整载荷。relay smoke 仍需要外部可达 relay，因此继续保持 ignored。
+
 截至 2026-09-02，`tests/cli.rs` 已补充公开 `receive_with_cancellation` 的真实 sender/receiver
 回归：等待 payload 已落盘的进度后发出取消，确认返回错误、事件只包含一个 `cancelled` 终态、
 持久缓存保留已验证数据、输出目录没有半导出，并通过缓存 prune 证明 entry 锁已释放。该切片
