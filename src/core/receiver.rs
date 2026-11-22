@@ -1131,7 +1131,14 @@ async fn shutdown_receive_store_and_cleanup_staging(
         db.shutdown().await.map_err(anyhow::Error::from)
     })
     .await;
-    let staging_cleanup_result = cleanup_active_staging_dir(active_staging_dir).await;
+    // 任一存储关闭步骤超时后，后台导出任务的所有权仍不确定。保留 staging
+    // 目录，避免在任务仍访问文件时删除目录，后续由缓存清理流程处理残留。
+    let staging_cleanup_result = if idle_result.is_ok() && shutdown_result.is_ok() {
+        cleanup_active_staging_dir(active_staging_dir).await
+    } else {
+        tracing::warn!("skip staging cleanup after receiver store shutdown failure");
+        Ok(())
+    };
     finalize_cleanup(
         combine_cleanup_results(idle_result, shutdown_result),
         staging_cleanup_result,
