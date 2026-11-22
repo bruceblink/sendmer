@@ -165,6 +165,15 @@ impl ReceiveCacheLease {
         &self.entry_dir
     }
 
+    /// 在传输进行中检查缓存容量和磁盘余量，防止预检查通过后继续无限增长。
+    pub(super) fn check_capacity(&self) -> anyhow::Result<()> {
+        let root_lock = lock_root_shared(&self.cache_root)?;
+        let result = ensure_cache_capacity(&self.cache_root);
+        let unlock_result =
+            FileExt::unlock(&root_lock).context("unlock receive cache root after capacity check");
+        result.and(unlock_result)
+    }
+
     /// Keep verified ranges for a later process and release the lease.
     pub(super) fn preserve(mut self) -> anyhow::Result<()> {
         // 释放 entry 锁后再取得 root shared 锁，统一使用 root -> entry 的顺序。

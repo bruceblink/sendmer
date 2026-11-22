@@ -1552,6 +1552,7 @@ async fn execute_download_attempt(
         reporter,
         context.retry_policy.download_idle_timeout(),
         max_transfer_limit(plan, context.limits),
+        context.cache_lease.as_ref(),
     )
     .await
     .context("download blob stream")
@@ -1970,7 +1971,15 @@ async fn process_get_stream_with_reporter<S>(
 where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
 {
-    process_get_stream_with_limit(stream, already_downloaded, reporter, idle_timeout, None).await
+    process_get_stream_with_limit(
+        stream,
+        already_downloaded,
+        reporter,
+        idle_timeout,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Consume one get stream and reject progress beyond the configured byte ceiling.
@@ -1980,6 +1989,7 @@ async fn process_get_stream_with_limit<S>(
     reporter: &mut ReceiverProgressReporter,
     idle_timeout: Option<Duration>,
     max_transfer_bytes: Option<u64>,
+    cache_lease: Option<&ReceiveCacheLease>,
 ) -> anyhow::Result<()>
 where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
@@ -1996,10 +2006,16 @@ where
                         "received transfer exceeds the configured byte limit"
                     );
                 }
+                if let Some(cache_lease) = cache_lease {
+                    cache_lease.check_capacity()?;
+                }
                 reporter.on_progress(downloaded);
             }
             GetProgressItem::Done(value) => {
                 let _stats = value;
+                if let Some(cache_lease) = cache_lease {
+                    cache_lease.check_capacity()?;
+                }
                 reporter.emit_completed_progress();
                 seen_done = true;
                 break;

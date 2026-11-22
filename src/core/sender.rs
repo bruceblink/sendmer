@@ -59,7 +59,7 @@ where
     tokio::select! {
         biased;
         _ = signal => true,
-        else => false,
+        _ = tokio::task::yield_now() => false,
     }
 }
 
