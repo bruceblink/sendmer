@@ -13,5 +13,6 @@ pub mod receive_cache;
 pub mod receiver;
 pub mod results;
 pub mod sender;
+mod shutdown;
 mod storage;
 pub mod types;

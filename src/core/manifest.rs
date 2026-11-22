@@ -18,6 +18,17 @@ pub const MANIFEST_COLLECTION_NAME: &str = ".sendmer/manifest-v1";
 /// Prefix for deterministic payload names in a manifest-mode collection.
 pub const MANIFEST_ENTRY_PREFIX: &str = ".sendmer/entry/";
 
+/// 接收端允许解析的 manifest JSON 最大字节数。
+pub const MAX_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
+/// 接收端允许解析的 manifest 条目数量上限。
+pub const MAX_MANIFEST_ENTRIES: usize = 100_000;
+/// 单个路径允许的最大组件数量。
+pub const MAX_MANIFEST_PATH_DEPTH: usize = 256;
+/// 单个路径组件在传输编码后的最大字节数。
+pub const MAX_MANIFEST_COMPONENT_BYTES: usize = 4096;
+/// 路径组件和分隔符的最大总字节数。
+pub const MAX_MANIFEST_PATH_BYTES: usize = 32 * 1024;
+
 /// A versioned logical tree carried alongside payload blobs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferManifest {
@@ -112,6 +123,10 @@ impl TransferManifest {
             !self.root.path.components.is_empty(),
             "transfer manifest root path must not be empty"
         );
+        anyhow::ensure!(
+            self.entries.len() <= MAX_MANIFEST_ENTRIES,
+            "transfer manifest contains too many entries (maximum {MAX_MANIFEST_ENTRIES})"
+        );
 
         let mut paths = BTreeSet::new();
         let mut ids = BTreeSet::new();
@@ -155,11 +170,20 @@ impl TransferManifest {
     /// Serialize a validated manifest as deterministic, human-inspectable JSON bytes.
     pub fn to_json_bytes(&self) -> anyhow::Result<Vec<u8>> {
         self.validate()?;
-        serde_json::to_vec(self).map_err(Into::into)
+        let bytes = serde_json::to_vec(self)?;
+        anyhow::ensure!(
+            bytes.len() <= MAX_MANIFEST_BYTES,
+            "transfer manifest exceeds the {MAX_MANIFEST_BYTES}-byte limit"
+        );
+        Ok(bytes)
     }
 
     /// Parse and validate a manifest received from an untrusted peer.
     pub fn from_json_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            bytes.len() <= MAX_MANIFEST_BYTES,
+            "transfer manifest exceeds the {MAX_MANIFEST_BYTES}-byte limit"
+        );
         let manifest: Self = serde_json::from_slice(bytes)
             .map_err(|error| anyhow::anyhow!("invalid transfer manifest JSON: {error}"))?;
         manifest.validate()?;
@@ -298,8 +322,21 @@ impl ManifestPath {
             !self.components.is_empty(),
             "manifest path must not be empty"
         );
+        anyhow::ensure!(
+            self.components.len() <= MAX_MANIFEST_PATH_DEPTH,
+            "manifest path exceeds the {MAX_MANIFEST_PATH_DEPTH}-component depth limit"
+        );
+        let mut total_bytes = 0_usize;
         for component in &self.components {
             anyhow::ensure!(!component.is_empty(), "manifest path component is empty");
+            anyhow::ensure!(
+                component.len() <= MAX_MANIFEST_COMPONENT_BYTES,
+                "manifest path component exceeds the {MAX_MANIFEST_COMPONENT_BYTES}-byte limit"
+            );
+            total_bytes = total_bytes
+                .checked_add(component.len())
+                .and_then(|size| size.checked_add(1))
+                .ok_or_else(|| anyhow::anyhow!("manifest path length exceeds usize range"))?;
             anyhow::ensure!(
                 !component.contains('/') && !component.contains('\\'),
                 "manifest path component contains a separator"
@@ -322,6 +359,10 @@ impl ManifestPath {
                 }
             }
         }
+        anyhow::ensure!(
+            total_bytes.saturating_sub(1) <= MAX_MANIFEST_PATH_BYTES,
+            "manifest path exceeds the {MAX_MANIFEST_PATH_BYTES}-byte limit"
+        );
         Ok(())
     }
 
@@ -610,5 +651,53 @@ mod tests {
             components: vec!["share/file".to_owned()],
         };
         assert!(separator.validate().is_err());
+    }
+
+    #[test]
+    fn manifest_parser_rejects_oversized_json_before_deserialization() {
+        let bytes = vec![b' '; MAX_MANIFEST_BYTES + 1];
+        let error = TransferManifest::from_json_bytes(&bytes)
+            .expect_err("oversized manifest must be rejected before parsing");
+        assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn manifest_validation_rejects_entry_count_over_limit() {
+        let mut manifest = empty_manifest();
+        manifest.entries = vec![manifest.entries[0].clone(); MAX_MANIFEST_ENTRIES + 1];
+        let error = manifest
+            .validate()
+            .expect_err("oversized manifest entry list must be rejected");
+        assert!(error.to_string().contains("too many entries"));
+    }
+
+    #[test]
+    fn manifest_path_validation_rejects_depth_and_component_size_over_limit() {
+        let deep_path = ManifestPath {
+            encoding: PathEncoding::Utf8,
+            components: vec!["part".to_owned(); MAX_MANIFEST_PATH_DEPTH + 1],
+        };
+        let deep_error = deep_path
+            .validate()
+            .expect_err("deep manifest path must be rejected");
+        assert!(deep_error.to_string().contains("depth limit"));
+
+        let long_component = ManifestPath {
+            encoding: PathEncoding::Utf8,
+            components: vec!["x".repeat(MAX_MANIFEST_COMPONENT_BYTES + 1)],
+        };
+        let component_error = long_component
+            .validate()
+            .expect_err("long manifest component must be rejected");
+        assert!(component_error.to_string().contains("component exceeds"));
+
+        let long_path = ManifestPath {
+            encoding: PathEncoding::Utf8,
+            components: vec!["x".repeat(MAX_MANIFEST_COMPONENT_BYTES); 9],
+        };
+        let path_error = long_path
+            .validate()
+            .expect_err("long manifest path must be rejected");
+        assert!(path_error.to_string().contains("path exceeds"));
     }
 }

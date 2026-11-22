@@ -16,7 +16,7 @@ use sendmer::core::args::{
 use sendmer::core::cli_helper::CliEventEmitter;
 use sendmer::core::results::SenderTransferStatus;
 use sendmer::core::{receiver, sender};
-use sendmer::{AppHandle, ReceiveCacheOptions, ReceiveOptions, SendOptions};
+use sendmer::{AppHandle, ReceiveCacheOptions, ReceiveLimits, ReceiveOptions, SendOptions};
 #[cfg(feature = "clipboard")]
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -138,9 +138,11 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
 /// 调用 `download` 并将结果消息输出到 stdout。
 async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
     let opts = receive_options(&args);
+    let limits = receive_limits(&args);
     let app_handle = cli_app_handle("[recv]", args.common.no_progress, args.common.json_events);
 
-    let res = receiver::receive(args.ticket.to_string(), opts, app_handle).await?;
+    let res =
+        receiver::receive_with_limits(args.ticket.to_string(), opts, limits, app_handle).await?;
     print_command_output(
         args.common.json_events,
         format!("{} in {:?}", res.message, res.file_path),
@@ -193,6 +195,14 @@ fn receive_options(args: &ReceiveArgs) -> ReceiveOptions {
             ReceiveCacheOptions::new(root_dir)
                 .with_ttl(std::time::Duration::from_secs(args.cache_ttl_seconds))
         }),
+    }
+}
+
+/// 将 CLI 传入的接收配额转换为库级配置。
+fn receive_limits(args: &ReceiveArgs) -> ReceiveLimits {
+    ReceiveLimits {
+        max_files: args.max_files,
+        max_total_size_bytes: args.max_total_size,
     }
 }
 
@@ -376,7 +386,9 @@ fn add_to_clipboard(ticket: &String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{receive_options, send_options, wait_for_send_shutdown_with_signal};
+    use super::{
+        receive_limits, receive_options, send_options, wait_for_send_shutdown_with_signal,
+    };
     use clap::Parser;
     use iroh::EndpointAddr;
     use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
@@ -407,6 +419,8 @@ mod tests {
                 BlobFormat::HashSeq,
             ),
             output_dir: None,
+            max_files: None,
+            max_total_size: None,
             retry_limit: 3,
             retry_backoff_ms: 250,
             connect_timeout_ms: None,
@@ -430,6 +444,8 @@ mod tests {
         args.download_idle_timeout_ms = Some(3_000);
         args.cache_dir = Some(PathBuf::from("receive-cache"));
         args.cache_ttl_seconds = 86_400;
+        args.max_files = std::num::NonZeroU64::new(4);
+        args.max_total_size = std::num::NonZeroU64::new(4_096);
 
         let options = receive_options(&args);
 
@@ -442,6 +458,12 @@ mod tests {
         let cache = options.receive_cache.expect("persistent receive cache");
         assert_eq!(cache.root_dir, PathBuf::from("receive-cache"));
         assert_eq!(cache.ttl, std::time::Duration::from_secs(86_400));
+        let limits = receive_limits(&args);
+        assert_eq!(limits.max_files.map(std::num::NonZeroU64::get), Some(4));
+        assert_eq!(
+            limits.max_total_size_bytes.map(std::num::NonZeroU64::get),
+            Some(4_096)
+        );
     }
 
     #[test]

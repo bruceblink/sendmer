@@ -17,11 +17,14 @@ pub use core::{
         emit_event,
     },
     options::{
-        AddrInfoOptions, ReceiveCacheOptions, ReceiveOptions, RelayModeOption, SendOptions,
-        apply_options,
+        AddrInfoOptions, ReceiveCacheOptions, ReceiveLimits, ReceiveOptions, RelayModeOption,
+        SendOptions, apply_options,
     },
     receive_cache::{ReceiveCachePruneReport, prune_receive_cache},
-    receiver::{receive, receive_with_cancellation},
+    receiver::{
+        receive, receive_with_cancellation, receive_with_limits,
+        receive_with_limits_and_cancellation,
+    },
     results::{ReceiveResult, SendHandle, SendResult, SenderTransferStatus},
     sender::{send, send_handle},
 };

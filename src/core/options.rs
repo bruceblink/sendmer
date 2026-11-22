@@ -200,6 +200,34 @@ pub struct ReceiveOptions {
     pub receive_cache: Option<ReceiveCacheOptions>,
 }
 
+/// 接收端资源配额。
+///
+/// 配额独立于 `ReceiveOptions`，这样现有使用公开结构体字面量的调用方不需要
+/// 添加新字段即可继续编译。未配置配额时保持原有的无限制行为。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReceiveLimits {
+    /// 允许接收的普通文件数量上限。
+    pub max_files: Option<NonZeroU64>,
+    /// 允许接收的普通文件总字节数上限。
+    pub max_total_size_bytes: Option<NonZeroU64>,
+}
+
+impl ReceiveLimits {
+    /// 在建立网络连接和本地存储前检查配额配置。
+    pub fn validate(self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.max_files.is_none_or(|limit| limit.get() > 0),
+            "receive max files must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.max_total_size_bytes
+                .is_none_or(|limit| limit.get() > 0),
+            "receive max total size must be greater than zero"
+        );
+        Ok(())
+    }
+}
+
 pub trait EndpointOptions: BindAddressOptions {
     fn relay_mode(&self) -> RelayModeOption;
 }
@@ -343,7 +371,8 @@ pub fn apply_options(addr: &mut iroh::EndpointAddr, opts: AddrInfoOptions) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReceiveCacheOptions, ReceiveRetryPolicy, SendOptions};
+    use super::{ReceiveCacheOptions, ReceiveLimits, ReceiveRetryPolicy, SendOptions};
+    use std::num::NonZeroU64;
     use std::time::Duration;
 
     #[test]
@@ -368,6 +397,20 @@ mod tests {
         assert!(options.max_import_memory_bytes.is_none());
         assert!(options.session_lifetime.is_none());
         options.validate().expect("default sender options");
+    }
+
+    #[test]
+    fn receive_limits_default_to_unlimited_and_validate() {
+        let limits = ReceiveLimits::default();
+        assert_eq!(limits.max_files, None);
+        assert_eq!(limits.max_total_size_bytes, None);
+        limits.validate().expect("unlimited receive limits");
+
+        let bounded = ReceiveLimits {
+            max_files: NonZeroU64::new(3),
+            max_total_size_bytes: NonZeroU64::new(1024),
+        };
+        bounded.validate().expect("positive receive limits");
     }
 
     #[test]

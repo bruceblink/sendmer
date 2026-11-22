@@ -218,6 +218,14 @@ pub struct ReceiveArgs {
     #[clap(long)]
     pub output_dir: Option<PathBuf>,
 
+    /// 接收端允许的普通文件数量上限。
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
+    pub max_files: Option<NonZeroU64>,
+
+    /// 接收端允许的普通文件总 payload 字节数上限。
+    #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
+    pub max_total_size: Option<NonZeroU64>,
+
     /// Maximum number of attempts for the blob download phase.
     #[clap(
         long,
@@ -364,6 +372,8 @@ mod tests {
             };
             assert_eq!(receive.ticket.to_string(), ticket);
             assert_eq!(receive.output_dir, None);
+            assert_eq!(receive.max_files, None);
+            assert_eq!(receive.max_total_size, None);
             assert_eq!(receive.retry_limit, 3);
             assert_eq!(receive.retry_backoff_ms, 250);
             assert_eq!(receive.connect_timeout_ms, None);
@@ -400,6 +410,10 @@ mod tests {
             "receive-cache",
             "--cache-ttl-seconds",
             "86400",
+            "--max-files",
+            "4",
+            "--max-total-size",
+            "4096",
             ticket.as_str(),
         ])
         .expect("valid receive arguments");
@@ -414,6 +428,18 @@ mod tests {
         assert_eq!(receive.download_idle_timeout_ms, Some(3000));
         assert_eq!(receive.cache_dir, Some(PathBuf::from("receive-cache")));
         assert_eq!(receive.cache_ttl_seconds, 86_400);
+        assert_eq!(receive.max_files.map(NonZeroU64::get), Some(4));
+        assert_eq!(receive.max_total_size.map(NonZeroU64::get), Some(4_096));
+    }
+
+    #[test]
+    fn receive_args_reject_zero_resource_limits() {
+        for option in ["--max-files", "--max-total-size"] {
+            let error =
+                Args::try_parse_from(["sendmer", "receive", option, "0", sample_ticket().as_str()])
+                    .expect_err("zero receive limit must be rejected");
+            assert!(error.to_string().contains("invalid value"));
+        }
     }
 
     #[test]

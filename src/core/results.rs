@@ -4,6 +4,7 @@
 
 use crate::core::events::{TransferError, TransferErrorCode, TransferPhase};
 use crate::core::progress::TransferEventEmitter;
+use crate::core::shutdown::with_shutdown_deadline;
 use crate::core::types::EntryType;
 use iroh_blobs::{Hash, ticket::BlobTicket};
 use std::path::PathBuf;
@@ -100,7 +101,11 @@ impl SendResult {
                 }
 
                 let _ = shutdown_signal_tx.send(true);
-                match router.shutdown().await {
+                match with_shutdown_deadline("expired sender router shutdown", async {
+                    router.shutdown().await.map_err(anyhow::Error::from)
+                })
+                .await
+                {
                     Ok(()) => event_emitter.emit_failed(TransferError::new(
                         TransferErrorCode::Timeout,
                         TransferPhase::Finalizing,
@@ -165,7 +170,10 @@ impl SendResult {
         // cancellation does not inherit the configured upload delay.
         let _ = shutdown_signal_tx.send(true);
         drop(temp_tag);
-        let shutdown_result = router.shutdown().await.map_err(anyhow::Error::from);
+        let shutdown_result = with_shutdown_deadline("sender router shutdown", async {
+            router.shutdown().await.map_err(anyhow::Error::from)
+        })
+        .await;
 
         // Windows cannot remove the blob directory while router/store handles still own files.
         drop(router);

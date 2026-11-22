@@ -8,10 +8,11 @@ use crate::core::events::{
     classify_transfer_error, is_transfer_cancelled, transfer_cancelled_error,
 };
 use crate::core::manifest::{MANIFEST_COLLECTION_NAME, ManifestEntryKind, TransferManifest};
-use crate::core::options::{ReceiveOptions, ReceiveRetryPolicy};
+use crate::core::options::{ReceiveLimits, ReceiveOptions, ReceiveRetryPolicy};
 use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
 use crate::core::receive_cache::ReceiveCacheLease;
 use crate::core::results::ReceiveResult;
+use crate::core::shutdown::with_shutdown_deadline;
 use crate::core::storage::{load_fs_store, unique_temp_dir};
 use anyhow::Context;
 use iroh::{Endpoint, address_lookup::DnsAddressLookup};
@@ -19,6 +20,7 @@ use iroh_blobs::{
     api::{
         Store,
         blobs::{ExportMode, ExportOptions, ExportProgressItem},
+        proto::BlobStatus,
         remote::GetProgressItem,
     },
     format::collection::Collection,
@@ -48,7 +50,20 @@ pub async fn receive(
     options: ReceiveOptions,
     app_handle: AppHandle,
 ) -> anyhow::Result<ReceiveResult> {
-    receive_with_cancellation(ticket_str, options, app_handle, None).await
+    receive_with_limits(ticket_str, options, ReceiveLimits::default(), app_handle).await
+}
+
+/// 使用资源配额接收票据。
+///
+/// `ReceiveOptions` 保持原有字段不变，配额通过独立参数传入，避免破坏已有的
+/// 公开结构体字面量调用。未设置配额时请传入 `ReceiveLimits::default()`。
+pub async fn receive_with_limits(
+    ticket_str: String,
+    options: ReceiveOptions,
+    limits: ReceiveLimits,
+    app_handle: AppHandle,
+) -> anyhow::Result<ReceiveResult> {
+    receive_with_limits_and_cancellation(ticket_str, options, limits, app_handle, None).await
 }
 
 /// Download a ticket while allowing the caller to request graceful cleanup.
@@ -62,8 +77,38 @@ pub async fn receive_with_cancellation(
     app_handle: AppHandle,
     cancellation: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> anyhow::Result<ReceiveResult> {
+    receive_with_limits_and_cancellation(
+        ticket_str,
+        options,
+        ReceiveLimits::default(),
+        app_handle,
+        cancellation,
+    )
+    .await
+}
+
+/// 使用资源配额接收票据，并允许调用方请求有序取消。
+pub async fn receive_with_limits_and_cancellation(
+    ticket_str: String,
+    options: ReceiveOptions,
+    limits: ReceiveLimits,
+    app_handle: AppHandle,
+    cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+) -> anyhow::Result<ReceiveResult> {
     let event_emitter = TransferEventEmitter::new(app_handle, Role::Receiver);
     event_emitter.emit_started(TransferPhase::Preparing);
+    if let Err(error) = limits.validate().map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::InvalidInput,
+            TransferPhase::Preparing,
+            false,
+            "invalid receive resource limits",
+        )
+    }) {
+        emit_receive_failed(&event_emitter, &error);
+        return Err(error);
+    }
     let ticket = match BlobTicket::from_str(&ticket_str).map_err(|error| {
         receive_failure(
             error.into(),
@@ -100,7 +145,7 @@ pub async fn receive_with_cancellation(
             return Err(error);
         }
     };
-    let mut context = match ReceiveContext::prepare(ticket, &options).await {
+    let mut context = match ReceiveContext::prepare(ticket, &options, limits).await {
         Ok(context) => context,
         Err(error) => {
             emit_receive_failed(&event_emitter, &error);
@@ -632,6 +677,7 @@ struct ReceiveContext {
     iroh_data_dir: PathBuf,
     db: Store,
     retry_policy: ReceiveRetryPolicy,
+    limits: ReceiveLimits,
     cache_lease: Option<ReceiveCacheLease>,
     active_staging_dir: Option<PathBuf>,
 }
@@ -642,11 +688,6 @@ struct ReceiveArtifacts {
     root_item_path: PathBuf,
 }
 
-struct DownloadOutcome {
-    total_files: u64,
-    payload_size: u64,
-}
-
 struct DownloadPlan {
     total_files: u64,
     payload_size: u64,
@@ -654,7 +695,11 @@ struct DownloadPlan {
 }
 
 impl ReceiveContext {
-    async fn prepare(ticket: BlobTicket, options: &ReceiveOptions) -> anyhow::Result<Self> {
+    async fn prepare(
+        ticket: BlobTicket,
+        options: &ReceiveOptions,
+        limits: ReceiveLimits,
+    ) -> anyhow::Result<Self> {
         options.retry_policy.validate().map_err(|error| {
             receive_failure(
                 error,
@@ -684,6 +729,7 @@ impl ReceiveContext {
             iroh_data_dir,
             db,
             retry_policy: options.retry_policy,
+            limits,
             cache_lease,
             active_staging_dir: None,
         })
@@ -726,6 +772,95 @@ impl DownloadPlan {
     }
 }
 
+/// 检查远端声明的文件数量和 payload 总字节数是否符合本地配额。
+fn validate_receive_limits(
+    total_files: u64,
+    payload_size: u64,
+    limits: ReceiveLimits,
+) -> anyhow::Result<()> {
+    if let Some(max_files) = limits.max_files {
+        anyhow::ensure!(
+            total_files <= max_files.get(),
+            "received transfer contains {total_files} files, exceeding the local limit of {}",
+            max_files
+        );
+    }
+    if let Some(max_total_size_bytes) = limits.max_total_size_bytes {
+        anyhow::ensure!(
+            payload_size <= max_total_size_bytes.get(),
+            "received transfer contains {payload_size} bytes, exceeding the local limit of {}",
+            max_total_size_bytes
+        );
+    }
+    Ok(())
+}
+
+/// 在每次重连前检查已保存的数据，防止恢复过程越过接收端配额。
+fn validate_partial_receive_limits(
+    local_bytes: u64,
+    local_children: Option<u64>,
+    plan: &DownloadPlan,
+    limits: ReceiveLimits,
+) -> anyhow::Result<()> {
+    if let Some(max_files) = limits.max_files
+        && let Some(children) = local_children
+    {
+        let files = completed_local_total_files(children);
+        anyhow::ensure!(
+            files <= max_files.get(),
+            "received transfer already contains {files} files, exceeding the local limit of {}",
+            max_files
+        );
+    }
+    if let Some(max_total_size_bytes) = limits.max_total_size_bytes {
+        let protocol_overhead = plan.transfer_total.saturating_sub(plan.payload_size);
+        let max_transfer_bytes = max_total_size_bytes.get().saturating_add(protocol_overhead);
+        anyhow::ensure!(
+            local_bytes <= max_transfer_bytes,
+            "received transfer already contains more than the local byte limit of {}",
+            max_total_size_bytes
+        );
+    }
+    Ok(())
+}
+
+/// 读取本地 collection 中每个 payload 的已验证大小。
+async fn collection_payload_totals(
+    db: &Store,
+    collection: &Collection,
+    limits: ReceiveLimits,
+) -> anyhow::Result<(u64, u64)> {
+    if let Some(max_files) = limits.max_files {
+        anyhow::ensure!(
+            collection.len() as u64 <= max_files.get(),
+            "received collection contains more than the local file limit of {}",
+            max_files
+        );
+    }
+    let mut total_size = 0_u64;
+    for (_name, hash) in collection.iter() {
+        let status = db.status(*hash).await.map_err(anyhow::Error::from)?;
+        let size = match status {
+            BlobStatus::Complete { size } => size,
+            BlobStatus::Partial { .. } => {
+                anyhow::bail!("received collection payload {hash} is incomplete")
+            }
+            BlobStatus::NotFound => anyhow::bail!("received collection payload {hash} is missing"),
+        };
+        total_size = total_size
+            .checked_add(size)
+            .ok_or_else(|| anyhow::anyhow!("received collection payload size exceeds u64 range"))?;
+        if let Some(max_total_size_bytes) = limits.max_total_size_bytes {
+            anyhow::ensure!(
+                total_size <= max_total_size_bytes.get(),
+                "received collection exceeds the local byte limit of {}",
+                max_total_size_bytes
+            );
+        }
+    }
+    Ok((collection.len() as u64, total_size))
+}
+
 async fn receive_once(
     context: &mut ReceiveContext,
     output_dir: &Path,
@@ -733,7 +868,7 @@ async fn receive_once(
 ) -> anyhow::Result<ReceiveArtifacts> {
     tracing::trace!("load done!");
 
-    let download = download_missing_data(context, event_emitter.clone()).await?;
+    download_missing_data(context, event_emitter.clone()).await?;
     let collection = context
         .load_collection()
         .await
@@ -780,6 +915,15 @@ async fn receive_once(
             .iter()
             .filter_map(|entry| entry.payload.as_ref().map(|payload| payload.size))
             .sum();
+        validate_receive_limits(file_count, payload_size, context.limits).map_err(|error| {
+            receive_failure(
+                error,
+                TransferErrorCode::RemoteRejected,
+                TransferPhase::Metadata,
+                false,
+                "received transfer exceeds local resource limits",
+            )
+        })?;
         export_manifest_atomically(
             &context.db,
             &collection,
@@ -816,6 +960,28 @@ async fn receive_once(
                 "received collection contains unsupported paths",
             )
         })?;
+    let (total_files, payload_size) =
+        collection_payload_totals(&context.db, &collection, context.limits)
+            .await
+            .context("inspect received collection payloads")
+            .map_err(|error| {
+                receive_failure(
+                    error,
+                    TransferErrorCode::Filesystem,
+                    TransferPhase::Metadata,
+                    false,
+                    "unable to inspect received file sizes",
+                )
+            })?;
+    validate_receive_limits(total_files, payload_size, context.limits).map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::RemoteRejected,
+            TransferPhase::Metadata,
+            false,
+            "received transfer exceeds local resource limits",
+        )
+    })?;
     export_atomically(
         &context.db,
         collection,
@@ -835,8 +1001,8 @@ async fn receive_once(
     })?;
 
     Ok(ReceiveArtifacts {
-        total_files: download.total_files,
-        payload_size: download.payload_size,
+        total_files,
+        payload_size,
         root_item_path,
     })
 }
@@ -914,25 +1080,26 @@ fn finalize_failed_receive(
 }
 
 async fn cleanup_failed_receive(context: &mut ReceiveContext) -> anyhow::Result<()> {
-    close_receive_endpoint(&context.endpoint).await;
+    let endpoint_cleanup_result = close_receive_endpoint(&context.endpoint).await;
     let store_cleanup_result =
         shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
             .await;
+    let shutdown_result = combine_cleanup_results(endpoint_cleanup_result, store_cleanup_result);
     let storage_cleanup_result = finalize_receive_storage(context, false).await;
-    finalize_cleanup(store_cleanup_result, storage_cleanup_result)
+    finalize_cleanup(shutdown_result, storage_cleanup_result)
 }
 
 async fn finish_receive(
     context: &mut ReceiveContext,
     artifacts: ReceiveArtifacts,
 ) -> anyhow::Result<ReceiveResult> {
-    close_receive_endpoint(&context.endpoint).await;
+    let endpoint_cleanup_result = close_receive_endpoint(&context.endpoint).await;
     let store_cleanup_result =
         shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
             .await;
-    let storage_cleanup_result =
-        finalize_receive_storage(context, store_cleanup_result.is_ok()).await;
-    finalize_cleanup(store_cleanup_result, storage_cleanup_result)?;
+    let shutdown_result = combine_cleanup_results(endpoint_cleanup_result, store_cleanup_result);
+    let storage_cleanup_result = finalize_receive_storage(context, shutdown_result.is_ok()).await;
+    finalize_cleanup(shutdown_result, storage_cleanup_result)?;
 
     Ok(ReceiveResult {
         message: format!(
@@ -953,13 +1120,22 @@ async fn shutdown_receive_store_and_cleanup_staging(
     active_staging_dir: &mut Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let idle_result = if active_staging_dir.is_some() {
-        db.wait_idle().await.map_err(anyhow::Error::from)
+        with_shutdown_deadline("receiver store wait_idle", async {
+            db.wait_idle().await.map_err(anyhow::Error::from)
+        })
+        .await
     } else {
         Ok(())
     };
-    let shutdown_result = db.shutdown().await.map_err(anyhow::Error::from);
+    let shutdown_result = with_shutdown_deadline("receiver store shutdown", async {
+        db.shutdown().await.map_err(anyhow::Error::from)
+    })
+    .await;
     let staging_cleanup_result = cleanup_active_staging_dir(active_staging_dir).await;
-    finalize_cleanup(idle_result.and(shutdown_result), staging_cleanup_result)
+    finalize_cleanup(
+        combine_cleanup_results(idle_result, shutdown_result),
+        staging_cleanup_result,
+    )
 }
 
 /// Remove the active export staging directory after the blob store has stopped its export tasks.
@@ -995,17 +1171,15 @@ async fn finalize_receive_storage(
 }
 
 /// Close the receive endpoint before its temporary store is finalized.
-async fn close_receive_endpoint(endpoint: &Endpoint) {
+async fn close_receive_endpoint(endpoint: &Endpoint) -> anyhow::Result<()> {
     if endpoint.is_closed() {
-        return;
+        return Ok(());
     }
-
-    if tokio::time::timeout(std::time::Duration::from_secs(2), endpoint.close())
-        .await
-        .is_err()
-    {
-        tracing::warn!("timed out while closing receive endpoint");
-    }
+    with_shutdown_deadline("receive endpoint shutdown", async {
+        endpoint.close().await;
+        Ok(())
+    })
+    .await
 }
 
 async fn remove_temp_receive_dir(path: &Path) -> anyhow::Result<()> {
@@ -1019,7 +1193,7 @@ async fn remove_temp_receive_dir(path: &Path) -> anyhow::Result<()> {
 async fn download_missing_data(
     context: &ReceiveContext,
     emitter: TransferEventEmitter,
-) -> anyhow::Result<DownloadOutcome> {
+) -> anyhow::Result<()> {
     let hash_and_format = context.hash_and_format();
     let local = context
         .db
@@ -1036,11 +1210,8 @@ async fn download_missing_data(
             )
         })?;
     if local.is_complete() {
-        let total_files = completed_local_total_files_from_children(local.children())?;
-        return Ok(DownloadOutcome {
-            total_files,
-            payload_size: 0,
-        });
+        completed_local_total_files_from_children(local.children())?;
+        return Ok(());
     }
 
     let (hash_seq, sizes) = get_sizes_with_retries(
@@ -1059,12 +1230,20 @@ async fn download_missing_data(
         )
     })?;
     let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &sizes);
+    validate_receive_limits(plan.total_files, plan.payload_size, context.limits).map_err(
+        |error| {
+            receive_failure(
+                error,
+                TransferErrorCode::RemoteRejected,
+                TransferPhase::Metadata,
+                false,
+                "received transfer exceeds local resource limits",
+            )
+        },
+    )?;
     execute_download_with_retries(context, &plan, &emitter).await?;
 
-    Ok(DownloadOutcome {
-        total_files: plan.total_files,
-        payload_size: plan.payload_size,
-    })
+    Ok(())
 }
 
 const fn completed_local_total_files(children: u64) -> u64 {
@@ -1106,10 +1285,30 @@ async fn execute_download_with_retries(
             reporter.emit_completed_progress();
             return Ok(());
         }
+        validate_partial_receive_limits(
+            local.local_bytes(),
+            local.children(),
+            plan,
+            context.limits,
+        )
+        .map_err(|error| {
+            receive_failure(
+                error,
+                TransferErrorCode::RemoteRejected,
+                TransferPhase::Transferring,
+                false,
+                "received transfer exceeds local resource limits",
+            )
+        })?;
 
-        let result =
-            execute_download_attempt(context, local.missing(), local.local_bytes(), &mut reporter)
-                .await;
+        let result = execute_download_attempt(
+            context,
+            local.missing(),
+            local.local_bytes(),
+            &mut reporter,
+            plan,
+        )
+        .await;
         match result {
             Ok(()) => return Ok(()),
             Err(error) => {
@@ -1139,6 +1338,7 @@ async fn execute_download_attempt(
     missing: iroh_blobs::protocol::GetRequest,
     already_downloaded: u64,
     reporter: &mut ReceiverProgressReporter,
+    plan: &DownloadPlan,
 ) -> anyhow::Result<()> {
     let connection = await_receive_phase(
         context.retry_policy.connect_timeout(),
@@ -1164,11 +1364,12 @@ async fn execute_download_attempt(
     })?;
     let get = context.db.remote().execute_get(connection, missing);
     let mut stream = get.stream();
-    process_get_stream_with_reporter(
+    process_get_stream_with_limit(
         &mut stream,
         already_downloaded,
         reporter,
         context.retry_policy.download_idle_timeout(),
+        max_transfer_limit(plan, context.limits),
     )
     .await
     .context("download blob stream")
@@ -1261,6 +1462,20 @@ fn finalize_cleanup(
         tracing::warn!("failed to clean temporary receive dir");
     }
     shutdown_result
+}
+
+/// 合并有序关闭步骤的结果，保留第一个失败步骤及其错误链。
+fn combine_cleanup_results(
+    first: anyhow::Result<()>,
+    second: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    match (first, second) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(first_error), Err(second_error)) => Err(first_error.context(format!(
+            "subsequent cleanup step also failed: {second_error:#}"
+        ))),
+    }
 }
 
 /// 记录 `GetError` 的稳定类别并原样返回，便于上层保留结构化失败语义。
@@ -1430,7 +1645,9 @@ async fn prepare_env(
     let (iroh_data_dir, cache_lease) = match storage_result {
         Ok(storage) => storage,
         Err(error) => {
-            close_receive_endpoint(&endpoint).await;
+            if let Err(close_error) = close_receive_endpoint(&endpoint).await {
+                tracing::warn!(error = %close_error, "failed to close receiver endpoint after storage setup error");
+            }
             return Err(receive_failure(
                 error,
                 TransferErrorCode::Filesystem,
@@ -1443,7 +1660,9 @@ async fn prepare_env(
     let db = match load_fs_store(&iroh_data_dir).await {
         Ok(db) => db,
         Err(error) => {
-            close_receive_endpoint(&endpoint).await;
+            if let Err(close_error) = close_receive_endpoint(&endpoint).await {
+                tracing::warn!(error = %close_error, "failed to close receiver endpoint after store setup error");
+            }
             let cleanup_result = match cache_lease {
                 Some(lease) => lease.preserve(),
                 None => remove_temp_receive_dir(&iroh_data_dir).await,
@@ -1546,7 +1765,17 @@ async fn get_sizes_with_retries(
     }))
 }
 
-/// Consume one get stream, retaining one reporter across retries and leaving failure reporting to the caller.
+/// Calculate the transfer-byte ceiling that includes collection protocol overhead.
+fn max_transfer_limit(plan: &DownloadPlan, limits: ReceiveLimits) -> Option<u64> {
+    limits.max_total_size_bytes.map(|limit| {
+        limit
+            .get()
+            .saturating_add(plan.transfer_total.saturating_sub(plan.payload_size))
+    })
+}
+
+/// Consume one get stream without an additional byte ceiling.
+#[cfg(test)]
 async fn process_get_stream_with_reporter<S>(
     stream: &mut S,
     already_downloaded: u64,
@@ -1556,12 +1785,33 @@ async fn process_get_stream_with_reporter<S>(
 where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
 {
+    process_get_stream_with_limit(stream, already_downloaded, reporter, idle_timeout, None).await
+}
+
+/// Consume one get stream and reject progress beyond the configured byte ceiling.
+async fn process_get_stream_with_limit<S>(
+    stream: &mut S,
+    already_downloaded: u64,
+    reporter: &mut ReceiverProgressReporter,
+    idle_timeout: Option<Duration>,
+    max_transfer_bytes: Option<u64>,
+) -> anyhow::Result<()>
+where
+    S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
+{
     let mut seen_done = false;
     while let Some(item) = next_get_progress_item(stream, idle_timeout).await? {
         match item {
             GetProgressItem::Progress(offset) => {
                 tracing::trace!(offset, "received download progress");
-                reporter.on_progress(already_downloaded.saturating_add(offset));
+                let downloaded = already_downloaded.saturating_add(offset);
+                if let Some(max_transfer_bytes) = max_transfer_bytes {
+                    anyhow::ensure!(
+                        downloaded <= max_transfer_bytes,
+                        "received transfer exceeds the configured byte limit"
+                    );
+                }
+                reporter.on_progress(downloaded);
             }
             GetProgressItem::Done(value) => {
                 let _stats = value;
@@ -1648,7 +1898,8 @@ mod tests {
         finalize_cleanup, finalize_failed_receive, get_export_path,
         move_staged_root_without_replacing, process_export_stream,
         process_get_stream_with_reporter, receive, receive_failed_message, receive_failure,
-        resolve_output_dir, size_fetch_backoff, validate_path_component, wait_for_cancellation,
+        resolve_output_dir, size_fetch_backoff, validate_partial_receive_limits,
+        validate_path_component, validate_receive_limits, wait_for_cancellation,
     };
     use crate::core::events::{
         EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
@@ -1658,13 +1909,14 @@ mod tests {
         MANIFEST_ENTRY_PREFIX, ManifestEntry, ManifestEntryKind, ManifestMetadata, ManifestPath,
         ManifestPayload, ManifestRoot, TransferManifest,
     };
-    use crate::core::options::{ReceiveOptions, RelayModeOption};
+    use crate::core::options::{ReceiveLimits, ReceiveOptions, RelayModeOption};
     use crate::core::progress::{ReceiverProgressReporter, TransferEventEmitter};
     use iroh_blobs::Hash;
     use iroh_blobs::api::{blobs::ExportProgressItem, remote::GetProgressItem};
     use iroh_blobs::format::collection::Collection;
     use n0_future::stream;
     use std::future::Future;
+    use std::num::NonZeroU64;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex as StdMutex};
     use std::task::{Context, Poll, Waker};
@@ -2141,6 +2393,32 @@ mod tests {
     }
 
     #[test]
+    fn receive_limits_reject_remote_file_and_byte_totals() {
+        let limits = ReceiveLimits {
+            max_files: NonZeroU64::new(1),
+            max_total_size_bytes: NonZeroU64::new(99),
+        };
+        assert!(validate_receive_limits(2, 10, limits).is_err());
+        assert!(validate_receive_limits(1, 100, limits).is_err());
+        validate_receive_limits(1, 99, limits).expect("limits should include boundary values");
+    }
+
+    #[test]
+    fn receive_limits_reject_partial_state_before_retry() {
+        let hash_seq = [Hash::new(b"metadata"), Hash::new(b"payload")]
+            .into_iter()
+            .collect();
+        let plan = DownloadPlan::from_hash_seq_and_sizes(&hash_seq, &[18, 100]);
+        let limits = ReceiveLimits {
+            max_files: None,
+            max_total_size_bytes: NonZeroU64::new(50),
+        };
+        let error = validate_partial_receive_limits(140, Some(2), &plan, limits)
+            .expect_err("partial transfer beyond quota should be rejected");
+        assert!(error.to_string().contains("byte limit"));
+    }
+
+    #[test]
     fn completed_local_total_files_from_children_rejects_missing_children() {
         let err = completed_local_total_files_from_children(None)
             .expect_err("missing children should be rejected");
@@ -2329,7 +2607,9 @@ mod tests {
             .await
             .expect("endpoint should bind");
 
-        close_receive_endpoint(&endpoint).await;
+        close_receive_endpoint(&endpoint)
+            .await
+            .expect("endpoint shutdown should complete");
 
         assert!(endpoint.is_closed());
     }
