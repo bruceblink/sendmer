@@ -35,8 +35,10 @@ use n0_future::StreamExt;
 use n0_future::{BufferedStreamExt, task::AbortOnDropHandle};
 use std::{
     collections::{BTreeSet, HashSet},
+    future::Future,
     num::NonZeroU64,
     path::{Component, Path, PathBuf},
+    pin::Pin,
     time::Duration,
 };
 use tokio::{
@@ -50,6 +52,18 @@ use walkdir::WalkDir;
 
 const PROVIDER_PROGRESS_TASK_LIMIT: usize = 32;
 const ENDPOINT_ONLINE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 只检查一次 Ctrl+C future，避免准备步骤在取消后继续打开资源。
+async fn ctrl_c_requested<F>(signal: Pin<&mut F>) -> bool
+where
+    F: Future<Output = std::io::Result<()>> + ?Sized,
+{
+    tokio::select! {
+        biased;
+        _ = signal => true,
+        else => false,
+    }
+}
 
 /// Prepare endpoint with the given options
 async fn prepare_endpoint(options: &SendOptions) -> anyhow::Result<Endpoint> {
@@ -656,6 +670,11 @@ async fn send_started(
     options: SendOptions,
     event_emitter: TransferEventEmitter,
 ) -> anyhow::Result<SendResult> {
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    if ctrl_c_requested(ctrl_c.as_mut()).await {
+        return Err(transfer_cancelled_error());
+    }
     info!(
         relay_mode = ?options.relay_mode,
         ticket_type = ?options.ticket_type,
@@ -677,6 +696,9 @@ async fn send_started(
             "invalid sender session settings",
         )
     })?;
+    if ctrl_c_requested(ctrl_c.as_mut()).await {
+        return Err(transfer_cancelled_error());
+    }
     validate_share_path(&path, options.manifest_mode).map_err(|error| {
         sender_failure(
             error,
@@ -686,6 +708,9 @@ async fn send_started(
             "invalid share path",
         )
     })?;
+    if ctrl_c_requested(ctrl_c.as_mut()).await {
+        return Err(transfer_cancelled_error());
+    }
     if options.max_files.is_some() || options.max_total_size_bytes.is_some() {
         validate_share_limits(&path, options.max_files, options.max_total_size_bytes).map_err(
             |error| {
@@ -699,6 +724,9 @@ async fn send_started(
             },
         )?;
     }
+    if ctrl_c_requested(ctrl_c.as_mut()).await {
+        return Err(transfer_cancelled_error());
+    }
 
     let plan = SharePlan::new(&path, &options).map_err(|error| {
         sender_failure(
@@ -709,6 +737,9 @@ async fn send_started(
             "unable to prepare sender storage",
         )
     })?;
+    if ctrl_c_requested(ctrl_c.as_mut()).await {
+        return Err(transfer_cancelled_error());
+    }
     let endpoint = prepare_endpoint(&options).await.map_err(|error| {
         sender_failure(
             error,
@@ -718,9 +749,11 @@ async fn send_started(
             "unable to initialize sender networking",
         )
     })?;
+    if ctrl_c_requested(ctrl_c.as_mut()).await {
+        endpoint.close().await;
+        return Err(transfer_cancelled_error());
+    }
     let share_request = plan.build_request(path, event_emitter.clone());
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
 
     // If setup and Ctrl+C become ready together, retain the completed setup so it can
     // be shut down gracefully below instead of dropping a live router.
@@ -738,10 +771,13 @@ async fn send_started(
     let setup = match setup_result {
         Ok(setup) => setup,
         Err(error) => {
-            return Err(finalize_failed_sender_setup(
-                error,
-                remove_temp_sender_dir(&plan.blobs_data_dir).await,
-            ));
+            let cleanup_result = if is_transfer_cancelled(&error) {
+                // 取消时 setup future 可能仍持有存储资源，先保留目录避免并发删除。
+                Ok(())
+            } else {
+                remove_temp_sender_dir(&plan.blobs_data_dir).await
+            };
+            return Err(finalize_failed_sender_setup(error, cleanup_result));
         }
     };
 
@@ -1505,8 +1541,8 @@ mod tests {
     use super::{
         ImportMemoryBudget, MANIFEST_COLLECTION_NAME, ProviderProgressControl, ReceiverAdmission,
         ShareRequest, UploadRateLimiter, canonicalized_path_to_string, collect_import_sources,
-        detect_entry_type, import_parallelism, prepare_endpoint, provider_event_mask, send,
-        setup_data_sharing, show_provide_progress_with_provider_tracker,
+        ctrl_c_requested, detect_entry_type, import_parallelism, prepare_endpoint,
+        provider_event_mask, send, setup_data_sharing, show_provide_progress_with_provider_tracker,
         shutdown_started_sender_setup, try_acquire_provider_progress_permit,
         validate_imported_share_totals, validate_legacy_collection_name, validate_share_limits,
         validate_share_path,
@@ -1543,6 +1579,17 @@ mod tests {
         fn emit(&self, event: &TransferEvent) {
             self.events.lock().expect("events lock").push(event.clone());
         }
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_requested_checks_without_waiting() {
+        let ready = async { Ok(()) };
+        tokio::pin!(ready);
+        assert!(ctrl_c_requested(ready.as_mut()).await);
+
+        let pending = std::future::pending::<std::io::Result<()>>();
+        tokio::pin!(pending);
+        assert!(!ctrl_c_requested(pending.as_mut()).await);
     }
 
     #[test]

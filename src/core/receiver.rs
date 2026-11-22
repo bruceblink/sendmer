@@ -102,6 +102,20 @@ pub async fn receive_with_limits_and_cancellation(
 ) -> anyhow::Result<ReceiveResult> {
     let event_emitter = TransferEventEmitter::new(app_handle, Role::Receiver);
     event_emitter.emit_started(TransferPhase::Preparing);
+    // 在解析输入和打开网络/存储资源前检查已到达的取消请求。
+    let cancellation = cancellation;
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    let cancelled_before_prepare = cancellation_requested(cancellation.as_ref())
+        || tokio::select! {
+            biased;
+            _ = &mut ctrl_c => true,
+            else => false,
+        };
+    if cancelled_before_prepare {
+        event_emitter.emit_cancelled();
+        return Err(transfer_cancelled_error());
+    }
     if let Err(error) = limits.validate().map_err(|error| {
         receive_failure(
             error,
@@ -150,6 +164,18 @@ pub async fn receive_with_limits_and_cancellation(
             return Err(error);
         }
     };
+
+    // 输入解析可能让取消请求在准备调用前到达，再次检查以避免继续打开资源。
+    let cancelled_before_context = cancellation_requested(cancellation.as_ref())
+        || tokio::select! {
+            biased;
+            _ = &mut ctrl_c => true,
+            else => false,
+        };
+    if cancelled_before_context {
+        event_emitter.emit_cancelled();
+        return Err(transfer_cancelled_error());
+    }
     let mut context = match ReceiveContext::prepare(ticket, &options, limits).await {
         Ok(context) => context,
         Err(error) => {
@@ -158,16 +184,33 @@ pub async fn receive_with_limits_and_cancellation(
         }
     };
 
+    // 准备过程不可安全地半途丢弃；准备完成后统一关闭已打开的资源。
+    let cancelled_after_context = cancellation_requested(cancellation.as_ref())
+        || tokio::select! {
+            biased;
+            _ = &mut ctrl_c => true,
+            else => false,
+        };
+    if cancelled_after_context {
+        let error = finalize_failed_receive(
+            transfer_cancelled_error(),
+            cleanup_failed_receive(&mut context).await,
+        );
+        event_emitter.emit_cancelled();
+        return Err(error);
+    }
+
     let receive_result = select! {
-        result = receive_once(&mut context, &output_dir, event_emitter.clone()) => result,
+        biased;
         _ = wait_for_cancellation(cancellation) => {
             tracing::warn!("operation cancelled by caller");
             Err(transfer_cancelled_error())
         }
-        _ = tokio::signal::ctrl_c() => {
+        _ = &mut ctrl_c => {
             tracing::warn!("operation cancelled by user");
             Err(transfer_cancelled_error())
         }
+        result = receive_once(&mut context, &output_dir, event_emitter.clone()) => result,
     };
     let artifacts = match receive_result {
         Ok(artifacts) => artifacts,
@@ -221,6 +264,10 @@ pub async fn receive_with_limits_and_cancellation(
 ///
 /// A missing receiver becomes a pending future, so the normal `receive` API keeps its existing
 /// Ctrl+C-only behavior while the GPUI adapter can opt into graceful cancellation.
+fn cancellation_requested(cancellation: Option<&tokio::sync::watch::Receiver<bool>>) -> bool {
+    cancellation.is_some_and(|receiver| *receiver.borrow())
+}
+
 async fn wait_for_cancellation(cancellation: Option<tokio::sync::watch::Receiver<bool>>) {
     let Some(mut cancellation) = cancellation else {
         std::future::pending::<()>().await;
@@ -2034,15 +2081,15 @@ mod tests {
     use super::shutdown_receive_store_and_cleanup_staging;
     use super::{
         DownloadPlan, ReceiveRetryPolicy, await_receive_phase, base_endpoint_builder,
-        close_receive_endpoint, collection_root_name, commit_staged_export,
+        cancellation_requested, close_receive_endpoint, collection_root_name, commit_staged_export,
         completed_local_total_files, completed_local_total_files_from_children, create_staging_dir,
         download_backoff, emit_receive_failed, export_atomically, export_manifest_atomically,
         finalize_cleanup, finalize_failed_receive, get_export_path,
         move_staged_root_without_replacing, process_export_stream,
         process_get_stream_with_reporter, receive, receive_failed_message, receive_failure,
-        resolve_output_dir, should_preserve_uncached_storage, size_fetch_backoff,
-        validate_partial_receive_limits, validate_path_component, validate_receive_limits,
-        wait_for_cancellation,
+        receive_with_limits_and_cancellation, resolve_output_dir, should_preserve_uncached_storage,
+        size_fetch_backoff, validate_partial_receive_limits, validate_path_component,
+        validate_receive_limits, wait_for_cancellation,
     };
     use crate::core::events::{
         EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
@@ -2668,6 +2715,30 @@ mod tests {
             .await
             .expect("cancellation should wake the receive task")
             .expect("cancellation wait task should finish");
+    }
+
+    #[test]
+    fn cancellation_requested_reads_watch_state() {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        assert!(!cancellation_requested(Some(&receiver)));
+        sender.send(true).expect("send cancellation state");
+        assert!(cancellation_requested(Some(&receiver)));
+    }
+
+    #[tokio::test]
+    async fn receive_cancellation_before_prepare_skips_ticket_parsing() {
+        let (_sender, receiver) = tokio::sync::watch::channel(true);
+        let error = receive_with_limits_and_cancellation(
+            "not-a-blob-ticket".to_owned(),
+            ReceiveOptions::default(),
+            ReceiveLimits::default(),
+            None,
+            Some(receiver),
+        )
+        .await
+        .expect_err("pre-cancelled receive should return cancellation");
+
+        assert!(crate::core::events::is_transfer_cancelled(&error));
     }
 
     #[test]
