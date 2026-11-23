@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
-/// Current JSON schema version for [`TransferEventEnvelope`].
+/// Current JSON schema version for the public transfer event envelope.
 pub const TRANSFER_EVENT_SCHEMA_VERSION: u16 = 1;
 
 /// Random application-level identifier shared by every event in one transfer session.

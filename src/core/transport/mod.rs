@@ -4,4 +4,4 @@
 
 mod endpoint;
 
-pub(crate) use endpoint::base_endpoint_builder;
+pub use endpoint::base_endpoint_builder;
