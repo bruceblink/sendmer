@@ -185,7 +185,7 @@ fn round_trip_manifest(source_root: &Path, source_cwd: &Path, output_dir: &Path)
         receive_cache: None,
     };
     let result = runtime
-        .block_on(sendmer::receive(ticket.to_string(), options, None))
+        .block_on(sendmer::receive(ticket.to_string(), options))
         .expect("manifest receive should succeed");
     send.cleanup();
     result.file_path
@@ -361,7 +361,7 @@ fn send_recv_file() {
         receive_cache: None,
     };
     let res = rt
-        .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
+        .block_on(async { sendmer::receive_with_events(ticket.to_string(), opts, None).await })
         .unwrap();
     send.cleanup();
     assert!(res.message.contains("Downloaded"));
@@ -401,7 +401,7 @@ fn cancellable_receive_preserves_cache_and_emits_one_cancelled_terminal() {
         receive_cache: Some(sendmer::ReceiveCacheOptions::new(cache_root.path())),
         ..Default::default()
     };
-    let mut receiver = runtime.spawn(sendmer::receive_with_cancellation(
+    let mut receiver = runtime.spawn(sendmer::receive_with_events_and_cancellation(
         ticket.to_string(),
         options,
         Some(emitter.clone()),
@@ -563,7 +563,6 @@ fn send_handle_cancel_stops_active_cli_receive_without_export() {
                 max_upload_rate_bytes_per_sec: std::num::NonZeroU64::new(128 * 1024),
                 ..Default::default()
             },
-            None,
         ))
         .expect("library sender should start");
     let ticket = sender.ticket().to_string();
@@ -893,7 +892,11 @@ fn send_upload_rate_caps_local_payload_transfer() {
 
     let started = Instant::now();
     runtime
-        .block_on(sendmer::receive(ticket.to_string(), options, None))
+        .block_on(sendmer::receive_with_events(
+            ticket.to_string(),
+            options,
+            None,
+        ))
         .expect("rate-limited receive should succeed");
     let elapsed = started.elapsed();
     send.cleanup();
@@ -931,12 +934,12 @@ fn send_upload_rate_is_shared_by_parallel_receivers() {
     let started = Instant::now();
     let (first, second) = runtime.block_on(async {
         tokio::join!(
-            sendmer::receive(
+            sendmer::receive_with_events(
                 ticket.to_string(),
                 receive_options(first_target.path()),
                 None,
             ),
-            sendmer::receive(
+            sendmer::receive_with_events(
                 ticket.to_string(),
                 receive_options(second_target.path()),
                 None,
@@ -999,7 +1002,7 @@ fn send_recv_dir() {
         receive_cache: None,
     };
     let res = rt
-        .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
+        .block_on(async { sendmer::receive_with_events(ticket.to_string(), opts, None).await })
         .unwrap();
     send.cleanup();
     assert!(res.message.contains("Downloaded"));
@@ -1041,7 +1044,11 @@ fn send_recv_manifest_preserves_empty_directory_and_metadata() {
         receive_cache: None,
     };
     let result = runtime
-        .block_on(sendmer::receive(ticket.to_string(), options, None))
+        .block_on(sendmer::receive_with_events(
+            ticket.to_string(),
+            options,
+            None,
+        ))
         .expect("manifest receive should succeed");
     send.cleanup();
 
@@ -1083,7 +1090,11 @@ fn send_recv_manifest_preserves_empty_root_directory() {
         receive_cache: None,
     };
     let result = runtime
-        .block_on(sendmer::receive(ticket.to_string(), options, None))
+        .block_on(sendmer::receive_with_events(
+            ticket.to_string(),
+            options,
+            None,
+        ))
         .expect("empty root manifest receive should succeed");
     send.cleanup();
 
@@ -1199,7 +1210,7 @@ fn receive_fails_on_existing_target_and_cleans_temp_dir() {
         receive_cache: None,
     };
     let err = rt
-        .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
+        .block_on(async { sendmer::receive_with_events(ticket.to_string(), opts, None).await })
         .expect_err("receive should fail when target file already exists");
     send.cleanup();
 
@@ -1249,7 +1260,11 @@ fn persistent_receive_cache_survives_failure_then_reopens_and_cleans_on_success(
         receive_cache: Some(sendmer::ReceiveCacheOptions::new(cache_root.path())),
     };
     runtime
-        .block_on(sendmer::receive(ticket.to_string(), failed_options, None))
+        .block_on(sendmer::receive_with_events(
+            ticket.to_string(),
+            failed_options,
+            None,
+        ))
         .expect_err("target collision should preserve the receive cache");
 
     assert!(cache_entry.join("manifest.json").is_file());
@@ -1268,7 +1283,11 @@ fn persistent_receive_cache_survives_failure_then_reopens_and_cleans_on_success(
         receive_cache: Some(sendmer::ReceiveCacheOptions::new(cache_root.path())),
     };
     runtime
-        .block_on(sendmer::receive(ticket.to_string(), resumed_options, None))
+        .block_on(sendmer::receive_with_events(
+            ticket.to_string(),
+            resumed_options,
+            None,
+        ))
         .expect("a later receive should reopen the persisted iroh store");
     send.cleanup();
 
@@ -1603,7 +1622,7 @@ fn receive_fails_on_existing_directory_and_preserves_contents() {
         receive_cache: None,
     };
     let error = rt
-        .block_on(async { sendmer::receive(ticket.to_string(), opts, None).await })
+        .block_on(async { sendmer::receive_with_events(ticket.to_string(), opts, None).await })
         .expect_err("receive should fail when target directory already exists");
     send.cleanup();
 
@@ -1862,7 +1881,7 @@ fn receive_connection_failure_cleans_temp_dir_after_retries() {
             },
             receive_cache: None,
         };
-        sendmer::receive(ticket.to_string(), opts, None).await
+        sendmer::receive_with_events(ticket.to_string(), opts, None).await
     });
     let error = result.expect_err("self connection should fail immediately");
     assert!(!error.to_string().is_empty());
@@ -1906,7 +1925,11 @@ fn invalid_receive_cache_ttl_fails_before_creating_cache_root() {
     };
 
     let error = runtime
-        .block_on(sendmer::receive(ticket.to_string(), options, None))
+        .block_on(sendmer::receive_with_events(
+            ticket.to_string(),
+            options,
+            None,
+        ))
         .expect_err("zero cache TTL must fail");
 
     assert!(error.to_string().contains("TTL"));

@@ -1,9 +1,18 @@
-/// 下载并导出由 `ticket_str` 指定的数据到本地目录。
+/// 下载并导出由 `ticket_str` 指定的数据到本地目录，不发射事件。
+pub async fn receive(
+    ticket_str: String,
+    options: ReceiveOptions,
+) -> anyhow::Result<ReceiveResult> {
+    receive_with_limits_and_cancellation(ticket_str, options, ReceiveLimits::default(), None, None)
+        .await
+}
+
+/// 下载并导出由 `ticket_str` 指定的数据，并向事件消费者发送生命周期事件。
 ///
 /// - `ticket_str`：连接票据字符串。
 /// - `options`：接收选项（输出目录、转发模式等）。
 /// - `app_handle`：可选的事件发射器句柄，用于 UI/CLI 上报进度与文件名等信息。
-pub async fn receive(
+pub async fn receive_with_events(
     ticket_str: String,
     options: ReceiveOptions,
     app_handle: AppHandle,
@@ -30,6 +39,16 @@ pub async fn receive_with_limits(
 /// callers keep compiling. Cancellation follows the same cleanup path as Ctrl+C: the receive
 /// endpoint, store, and temporary directory are closed before the future returns.
 pub async fn receive_with_cancellation(
+    ticket_str: String,
+    options: ReceiveOptions,
+    app_handle: AppHandle,
+    cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+) -> anyhow::Result<ReceiveResult> {
+    receive_with_events_and_cancellation(ticket_str, options, app_handle, cancellation).await
+}
+
+/// Receive with events and caller-requested cancellation using default resource limits.
+pub async fn receive_with_events_and_cancellation(
     ticket_str: String,
     options: ReceiveOptions,
     app_handle: AppHandle,

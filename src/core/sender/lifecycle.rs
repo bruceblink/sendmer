@@ -193,11 +193,16 @@ where
     Ok(plan)
 }
 
-/// Start a share and return the opaque v0.7 lifecycle handle.
-///
-/// This is the preferred embedding API for GUI and service callers. The
-/// legacy `send` function remains available for source compatibility.
+/// Start a share with no event consumer and return the opaque lifecycle handle.
 pub async fn send_handle(
+    path: PathBuf,
+    options: SendOptions,
+) -> anyhow::Result<SendHandle> {
+    send_handle_with_events(path, options, None).await
+}
+
+/// Start a share and send lifecycle events to the supplied consumer.
+pub async fn send_handle_with_events(
     path: PathBuf,
     options: SendOptions,
     app_handle: AppHandle,

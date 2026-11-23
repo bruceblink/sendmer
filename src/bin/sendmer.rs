@@ -116,18 +116,18 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     let opts = send_options(&args);
     let app_handle = cli_app_handle("[send]", args.common.no_progress, args.common.json_events);
 
-    let res = sender::send(args.path.clone(), opts, app_handle).await?;
+    let res = sender::send_handle_with_events(args.path.clone(), opts, app_handle).await?;
 
     let messages = [
         format!(
             "imported {} {}, {}, hash {}",
-            res.entry_type,
+            res.entry_type(),
             args.path.display(),
-            HumanBytes(res.size),
-            print_hash(&res.hash, args.common.format)
+            HumanBytes(res.size()),
+            print_hash(&res.hash(), args.common.format)
         ),
         "to get this data, use".to_owned(),
-        format!("sendmer receive {}", res.ticket),
+        format!("sendmer receive {}", res.ticket()),
     ];
     for message in messages {
         if let Err(error) = print_command_output(args.common.json_events, message) {
@@ -140,7 +140,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     }
     #[cfg(feature = "clipboard")]
     if !args.common.json_events {
-        maybe_handle_key_press(args.clipboard, res.ticket.to_string());
+        maybe_handle_key_press(args.clipboard, res.ticket().to_string());
     }
     let wait_result = wait_for_send_shutdown(&res).await;
     let shutdown_result = res.cancel().await;
@@ -242,7 +242,7 @@ fn cli_app_handle(prefix: &'static str, no_progress: bool, json_events: bool) ->
     }
 }
 
-async fn wait_for_send_shutdown(res: &sendmer::core::results::SendResult) -> anyhow::Result<()> {
+async fn wait_for_send_shutdown(res: &sendmer::SendHandle) -> anyhow::Result<()> {
     let mut status_rx = res.subscribe_transfer_status();
 
     wait_for_send_shutdown_with_signal(tokio::signal::ctrl_c(), &mut status_rx).await

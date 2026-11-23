@@ -6,7 +6,7 @@ use super::{
     download_backoff, emit_receive_failed, export_atomically, export_manifest_atomically,
     finalize_cleanup, finalize_failed_receive, get_export_path,
     move_staged_root_without_replacing, process_export_stream,
-    process_get_stream_with_reporter, receive, receive_failed_message, receive_failure,
+    process_get_stream_with_reporter, receive_failed_message, receive_failure, receive_with_events,
     receive_with_limits_and_cancellation, resolve_output_dir, should_preserve_uncached_storage,
     size_fetch_backoff, validate_partial_receive_limits, validate_path_component,
     validate_receive_limits, wait_for_cancellation,
@@ -119,7 +119,7 @@ impl EventEmitter for RecordingEmitter {
 #[tokio::test]
 async fn invalid_ticket_emits_structured_invalid_input_failure() {
     let emitter = Arc::new(RecordingEmitter::default());
-    let error = receive(
+    let error = receive_with_events(
         "not-a-ticket".to_owned(),
         ReceiveOptions::default(),
         Some(emitter.clone()),

@@ -447,7 +447,7 @@ mod tests {
         };
         let receive = tokio::time::timeout(
             Duration::from_secs(2),
-            receiver::receive(ticket, receive_options, None),
+            receiver::receive_with_events(ticket, receive_options, None),
         )
         .await
         .expect("revoked ticket should fail promptly")

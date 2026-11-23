@@ -1,5 +1,6 @@
 use sendmer::{
-    AppHandle, EventEmitter, SendOptions, TransferEvent, TransferEventStreamValidator, send_handle,
+    AppHandle, EventEmitter, SendOptions, TransferEvent, TransferEventStreamValidator,
+    send_handle_with_events,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -34,7 +35,8 @@ async fn main() -> anyhow::Result<()> {
     let events: AppHandle = Some(Arc::new(JsonEventLog {
         validator: Mutex::new(TransferEventStreamValidator::new()),
     }));
-    let handle = send_handle(PathBuf::from(path), SendOptions::default(), events).await?;
+    let handle =
+        send_handle_with_events(PathBuf::from(path), SendOptions::default(), events).await?;
 
     println!("sendmer receive {}", handle.ticket());
     tokio::signal::ctrl_c().await?;
