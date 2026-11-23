@@ -93,91 +93,109 @@ async fn receive_once(
     event_emitter: TransferEventEmitter,
 ) -> anyhow::Result<ReceiveArtifacts> {
     tracing::trace!("load done!");
-
     download_missing_data(context, event_emitter.clone()).await?;
     let collection = context
         .load_collection()
         .await
         .context("load received collection")?;
-    if let Some(manifest_hash) = collection
+    let manifest_hash = collection
         .iter()
-        .find_map(|(name, hash)| (name == MANIFEST_COLLECTION_NAME).then_some(*hash))
-    {
-        let manifest_bytes = context.db.get_bytes(manifest_hash).await.map_err(|error| {
-            receive_failure(
-                error.into(),
-                TransferErrorCode::TransferInterrupted,
-                TransferPhase::Metadata,
-                false,
-                "received transfer manifest is unavailable",
-            )
-        })?;
-        let manifest = TransferManifest::from_json_bytes(&manifest_bytes).map_err(|error| {
-            receive_failure(
-                error,
-                TransferErrorCode::RemoteRejected,
-                TransferPhase::Metadata,
-                false,
-                "received transfer manifest is invalid",
-            )
-        })?;
-        let file_names = manifest
-            .entries
-            .iter()
-            .filter(|entry| entry.kind == ManifestEntryKind::File)
-            .map(|entry| entry.path.components.join("/"))
-            .collect::<Vec<_>>();
-        if !file_names.is_empty() {
-            event_emitter.emit_file_names(file_names);
-        }
-        let root_item_path = output_dir.join(manifest.root.path.to_path_buf()?);
-        let file_count = manifest
-            .entries
-            .iter()
-            .filter(|entry| entry.kind == ManifestEntryKind::File)
-            .count() as u64;
-        let payload_size = manifest.total_payload_size().map_err(|error| {
-            receive_failure(
-                error,
-                TransferErrorCode::RemoteRejected,
-                TransferPhase::Metadata,
-                false,
-                "received transfer manifest payload sizes are invalid",
-            )
-        })?;
-        validate_receive_limits(file_count, payload_size, context.limits).map_err(|error| {
-            receive_failure(
-                error,
-                TransferErrorCode::RemoteRejected,
-                TransferPhase::Metadata,
-                false,
-                "received transfer exceeds local resource limits",
-            )
-        })?;
-        export_manifest_atomically(
-            &context.db,
-            &collection,
-            &manifest,
-            output_dir,
-            &mut context.active_staging_dir,
-        )
-        .await
-        .context("export transfer manifest")
-        .map_err(|error| {
-            receive_failure(
-                error,
-                TransferErrorCode::Filesystem,
-                TransferPhase::Exporting,
-                false,
-                "unable to export transfer manifest",
-            )
-        })?;
-        return Ok(ReceiveArtifacts {
-            total_files: file_count,
-            payload_size,
-            root_item_path,
-        });
+        .find_map(|(name, hash)| (name == MANIFEST_COLLECTION_NAME).then_some(*hash));
+    match manifest_hash {
+        Some(hash) => receive_manifest(context, output_dir, event_emitter, collection, hash).await,
+        None => receive_legacy_collection(context, output_dir, event_emitter, collection).await,
     }
+}
+
+async fn receive_manifest(
+    context: &mut ReceiveContext,
+    output_dir: &Path,
+    event_emitter: TransferEventEmitter,
+    collection: Collection,
+    manifest_hash: iroh_blobs::Hash,
+) -> anyhow::Result<ReceiveArtifacts> {
+    let manifest_bytes = context.db.get_bytes(manifest_hash).await.map_err(|error| {
+        receive_failure(
+            error.into(),
+            TransferErrorCode::TransferInterrupted,
+            TransferPhase::Metadata,
+            false,
+            "received transfer manifest is unavailable",
+        )
+    })?;
+    let manifest = TransferManifest::from_json_bytes(&manifest_bytes).map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::RemoteRejected,
+            TransferPhase::Metadata,
+            false,
+            "received transfer manifest is invalid",
+        )
+    })?;
+    let file_names = manifest
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == ManifestEntryKind::File)
+        .map(|entry| entry.path.components.join("/"))
+        .collect::<Vec<_>>();
+    if !file_names.is_empty() {
+        event_emitter.emit_file_names(file_names);
+    }
+    let root_item_path = output_dir.join(manifest.root.path.to_path_buf()?);
+    let file_count = manifest
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == ManifestEntryKind::File)
+        .count() as u64;
+    let payload_size = manifest.total_payload_size().map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::RemoteRejected,
+            TransferPhase::Metadata,
+            false,
+            "received transfer manifest payload sizes are invalid",
+        )
+    })?;
+    validate_receive_limits(file_count, payload_size, context.limits).map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::RemoteRejected,
+            TransferPhase::Metadata,
+            false,
+            "received transfer exceeds local resource limits",
+        )
+    })?;
+    export_manifest_atomically(
+        &context.db,
+        &collection,
+        &manifest,
+        output_dir,
+        &mut context.active_staging_dir,
+    )
+    .await
+    .context("export transfer manifest")
+    .map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::Filesystem,
+            TransferPhase::Exporting,
+            false,
+            "unable to export transfer manifest",
+        )
+    })?;
+    Ok(ReceiveArtifacts {
+        total_files: file_count,
+        payload_size,
+        root_item_path,
+    })
+}
+
+async fn receive_legacy_collection(
+    context: &mut ReceiveContext,
+    output_dir: &Path,
+    event_emitter: TransferEventEmitter,
+    collection: Collection,
+) -> anyhow::Result<ReceiveArtifacts> {
     emit_collection_file_names(&event_emitter, &collection);
     let root_item_path = resolve_root_item_path(output_dir, &collection)
         .context("resolve received output path")
@@ -190,19 +208,22 @@ async fn receive_once(
                 "received collection contains unsupported paths",
             )
         })?;
-    let (total_files, payload_size) =
-        collection_payload_totals(&context.db, &collection, context.limits)
-            .await
-            .context("inspect received collection payloads")
-            .map_err(|error| {
-                receive_failure(
-                    error,
-                    TransferErrorCode::Filesystem,
-                    TransferPhase::Metadata,
-                    false,
-                    "unable to inspect received file sizes",
-                )
-            })?;
+    let (total_files, payload_size) = collection_payload_totals(
+        &context.db,
+        &collection,
+        context.limits,
+    )
+    .await
+    .context("inspect received collection payloads")
+    .map_err(|error| {
+        receive_failure(
+            error,
+            TransferErrorCode::Filesystem,
+            TransferPhase::Metadata,
+            false,
+            "unable to inspect received file sizes",
+        )
+    })?;
     validate_receive_limits(total_files, payload_size, context.limits).map_err(|error| {
         receive_failure(
             error,
@@ -229,7 +250,6 @@ async fn receive_once(
             "unable to export received files",
         )
     })?;
-
     Ok(ReceiveArtifacts {
         total_files,
         payload_size,

@@ -55,13 +55,47 @@ pub async fn receive_with_limits_and_cancellation(
 ) -> anyhow::Result<ReceiveResult> {
     let event_emitter = TransferEventEmitter::new(app_handle, Role::Receiver);
     event_emitter.emit_started(TransferPhase::Preparing);
-    // 在解析输入和打开网络/存储资源前检查已到达的取消请求。
-    let cancellation = cancellation;
+    let mut cancellation = cancellation;
+    let (mut context, output_dir) = prepare_receive_context(
+        &ticket_str,
+        &options,
+        limits,
+        &cancellation,
+        &event_emitter,
+    )
+    .await?;
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
-    let cancelled_before_prepare =
-        cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await;
-    if cancelled_before_prepare {
+    if cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await {
+        let error = finalize_failed_receive(
+            transfer_cancelled_error(),
+            cleanup_failed_receive(&mut context).await,
+        );
+        event_emitter.emit_cancelled();
+        return Err(error);
+    }
+    let result = run_receive_transfer(
+        &mut context,
+        &output_dir,
+        &event_emitter,
+        cancellation.take(),
+        ctrl_c,
+    )
+    .await?;
+    info!("receive completed");
+    Ok(result)
+}
+
+async fn prepare_receive_context(
+    ticket_str: &str,
+    options: &ReceiveOptions,
+    limits: ReceiveLimits,
+    cancellation: &Option<tokio::sync::watch::Receiver<bool>>,
+    event_emitter: &TransferEventEmitter,
+) -> anyhow::Result<(ReceiveContext, PathBuf)> {
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    if cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await {
         event_emitter.emit_cancelled();
         return Err(transfer_cancelled_error());
     }
@@ -74,10 +108,10 @@ pub async fn receive_with_limits_and_cancellation(
             "invalid receive resource limits",
         )
     }) {
-        emit_receive_failed(&event_emitter, &error);
+        emit_receive_failed(event_emitter, &error);
         return Err(error);
     }
-    let ticket = match BlobTicket::from_str(&ticket_str).map_err(|error| {
+    let ticket = match BlobTicket::from_str(ticket_str).map_err(|error| {
         receive_failure(
             error.into(),
             TransferErrorCode::InvalidInput,
@@ -88,7 +122,7 @@ pub async fn receive_with_limits_and_cancellation(
     }) {
         Ok(ticket) => ticket,
         Err(error) => {
-            emit_receive_failed(&event_emitter, &error);
+            emit_receive_failed(event_emitter, &error);
             return Err(error);
         }
     };
@@ -109,30 +143,22 @@ pub async fn receive_with_limits_and_cancellation(
     }) {
         Ok(output_dir) => output_dir,
         Err(error) => {
-            emit_receive_failed(&event_emitter, &error);
+            emit_receive_failed(event_emitter, &error);
             return Err(error);
         }
     };
-
-    // 输入解析可能让取消请求在准备调用前到达，再次检查以避免继续打开资源。
-    let cancelled_before_context =
-        cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await;
-    if cancelled_before_context {
+    if cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await {
         event_emitter.emit_cancelled();
         return Err(transfer_cancelled_error());
     }
-    let mut context = match ReceiveContext::prepare(ticket, &options, limits).await {
+    let mut context = match ReceiveContext::prepare(ticket, options, limits).await {
         Ok(context) => context,
         Err(error) => {
-            emit_receive_failed(&event_emitter, &error);
+            emit_receive_failed(event_emitter, &error);
             return Err(error);
         }
     };
-
-    // 准备过程不可安全地半途丢弃；准备完成后统一关闭已打开的资源。
-    let cancelled_after_context =
-        cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await;
-    if cancelled_after_context {
+    if cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await {
         let error = finalize_failed_receive(
             transfer_cancelled_error(),
             cleanup_failed_receive(&mut context).await,
@@ -140,18 +166,30 @@ pub async fn receive_with_limits_and_cancellation(
         event_emitter.emit_cancelled();
         return Err(error);
     }
+    Ok((context, output_dir))
+}
 
+async fn run_receive_transfer<F>(
+    context: &mut ReceiveContext,
+    output_dir: &Path,
+    event_emitter: &TransferEventEmitter,
+    cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+    mut ctrl_c: Pin<&mut F>,
+) -> anyhow::Result<ReceiveResult>
+where
+    F: Future<Output = std::io::Result<()>> + ?Sized,
+{
     let receive_result = select! {
         biased;
         _ = wait_for_cancellation(cancellation) => {
             tracing::warn!("operation cancelled by caller");
             Err(transfer_cancelled_error())
         }
-        _ = &mut ctrl_c => {
+        _ = ctrl_c.as_mut() => {
             tracing::warn!("operation cancelled by user");
             Err(transfer_cancelled_error())
         }
-        result = receive_once(&mut context, &output_dir, event_emitter.clone()) => result,
+        result = receive_once(context, output_dir, event_emitter.clone()) => result,
     };
     let artifacts = match receive_result {
         Ok(artifacts) => artifacts,
@@ -168,19 +206,18 @@ pub async fn receive_with_limits_and_cancellation(
             } else {
                 tracing::error!(cancelled, "download operation failed");
             }
-            let error = finalize_failed_receive(error, cleanup_failed_receive(&mut context).await);
+            let error = finalize_failed_receive(error, cleanup_failed_receive(context).await);
             if cancelled {
                 event_emitter.emit_cancelled();
                 return Err(error);
             }
             let message = receive_failed_message(&error);
             let error = error.context(message);
-            emit_receive_failed(&event_emitter, &error);
+            emit_receive_failed(event_emitter, &error);
             return Err(error);
         }
     };
-
-    let result = match finish_receive(&mut context, artifacts).await {
+    let result = match finish_receive(context, artifacts).await {
         Ok(result) => result,
         Err(error) => {
             let error = receive_failure(
@@ -192,12 +229,11 @@ pub async fn receive_with_limits_and_cancellation(
             );
             let message = receive_failed_message(&error);
             let error = error.context(message);
-            emit_receive_failed(&event_emitter, &error);
+            emit_receive_failed(event_emitter, &error);
             return Err(error);
         }
     };
     event_emitter.emit_completed();
-    info!("receive completed");
     Ok(result)
 }
 
