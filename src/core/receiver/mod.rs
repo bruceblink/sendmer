@@ -2,7 +2,6 @@
 //!
 //! 主要导出 `download`，它负责建立连接、跟踪进度并将文件导出到目标目录。
 
-use crate::core::endpoint::base_endpoint_builder;
 use crate::core::events::{
     AppHandle, Role, TransferError, TransferErrorCode, TransferPhase, classified_transfer_error,
     classify_transfer_error, is_transfer_cancelled, transfer_cancelled_error,
@@ -18,6 +17,7 @@ use crate::core::receive_cache::ReceiveCacheLease;
 use crate::core::results::ReceiveResult;
 use crate::core::shutdown::with_shutdown_deadline;
 use crate::core::storage::{load_fs_store, unique_temp_dir};
+use crate::core::transport::base_endpoint_builder;
 use anyhow::Context;
 use iroh::{Endpoint, address_lookup::DnsAddressLookup};
 use iroh_blobs::{

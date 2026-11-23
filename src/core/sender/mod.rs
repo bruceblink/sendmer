@@ -2,7 +2,6 @@
 //!
 //! 主要导出 `start_share`，它会导入数据、启动路由器并返回用于后续管理的 `SendResult`。
 
-use crate::core::endpoint::base_endpoint_builder;
 use crate::core::events::{
     AppHandle, Role, TransferError, TransferErrorCode, TransferPhase, classified_transfer_error,
     classify_transfer_error, is_transfer_cancelled, transfer_cancelled_error,
@@ -18,6 +17,7 @@ use crate::core::progress::{
 };
 use crate::core::results::{SendHandle, SendResult};
 use crate::core::storage::{load_fs_store, unique_temp_dir};
+use crate::core::transport::base_endpoint_builder;
 use anyhow::Context;
 use iroh::{Endpoint, address_lookup::PkarrPublisher};
 use iroh_blobs::{
