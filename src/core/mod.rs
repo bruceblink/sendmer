@@ -11,6 +11,7 @@ pub mod options;
 mod progress;
 pub mod receive_cache;
 pub mod receiver;
+pub mod recovery;
 pub mod results;
 pub mod sender;
 mod shutdown;

@@ -22,6 +22,7 @@ pub use core::{
     },
     receive_cache::{ReceiveCachePruneReport, prune_receive_cache},
     receiver::{receive, receive_with_events, receive_with_events_and_cancellation},
+    recovery::{RECOVERY_SNAPSHOT_SCHEMA_VERSION, RecoverySnapshot, RecoveryTerminalState},
     results::{ReceiveResult, SendHandle, SenderTransferStatus},
     sender::{send_handle, send_handle_with_events},
 };
