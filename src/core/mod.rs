@@ -6,6 +6,7 @@ pub mod args;
 pub mod cli_helper;
 mod endpoint;
 pub mod events;
+pub(crate) mod filesystem;
 pub mod manifest;
 pub mod options;
 mod progress;

@@ -5,7 +5,7 @@
 ///
 /// Final paths are untouched until every blob reports `Done`; a failed export only
 /// removes the staging directory and therefore cannot leave a partial user file.
-async fn export_atomically(
+pub async fn export_atomically(
     db: &Store,
     collection: Collection,
     output_dir: &Path,
@@ -30,7 +30,7 @@ async fn export_atomically(
 }
 
 /// Export a TM1 directory tree after validating all logical paths and payload mappings.
-async fn export_manifest_atomically(
+pub async fn export_manifest_atomically(
     db: &Store,
     collection: &Collection,
     manifest: &TransferManifest,
@@ -121,7 +121,10 @@ async fn export_manifest_atomically(
     result
 }
 
-fn ensure_export_root_available_path(output_dir: &Path, root: &Path) -> anyhow::Result<()> {
+pub fn ensure_export_root_available_path(
+    output_dir: &Path,
+    root: &Path,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(output_dir)?;
     anyhow::ensure!(output_dir.is_dir(), "output root is not a directory");
     anyhow::ensure!(
@@ -146,7 +149,7 @@ fn ensure_export_root_available_path(output_dir: &Path, root: &Path) -> anyhow::
     }
 }
 
-fn commit_staged_export_path(
+pub fn commit_staged_export_path(
     staging_dir: &Path,
     output_dir: &Path,
     root: &Path,
@@ -179,7 +182,7 @@ fn commit_staged_export_path(
 }
 
 /// 检查 TM1 在当前主机上的目标路径是否发生大小写碰撞。
-fn validate_manifest_export_targets(manifest: &TransferManifest) -> anyhow::Result<()> {
+pub fn validate_manifest_export_targets(manifest: &TransferManifest) -> anyhow::Result<()> {
     let mut targets = std::collections::BTreeSet::new();
     for entry in &manifest.entries {
         let path = entry.path.to_path_buf()?;
@@ -191,7 +194,7 @@ fn validate_manifest_export_targets(manifest: &TransferManifest) -> anyhow::Resu
     Ok(())
 }
 
-fn manifest_target_key(path: &Path) -> String {
+pub fn manifest_target_key(path: &Path) -> String {
     let value = path.to_string_lossy().replace('\\', "/");
     #[cfg(any(windows, target_os = "macos"))]
     {
@@ -203,7 +206,7 @@ fn manifest_target_key(path: &Path) -> String {
     }
 }
 
-fn apply_manifest_metadata(
+pub fn apply_manifest_metadata(
     target: &Path,
     metadata: &crate::core::manifest::ManifestMetadata,
 ) -> anyhow::Result<()> {
@@ -233,14 +236,14 @@ fn apply_manifest_metadata(
 }
 
 /// Export every collection entry below the staging root without touching final paths.
-async fn export_to_staging(
+pub async fn export_to_staging(
     db: &Store,
     collection: &Collection,
     staging_dir: &Path,
 ) -> anyhow::Result<()> {
     for (name, hash) in collection.iter() {
         let target = get_export_path(staging_dir, name).map_err(|error| {
-            receive_failure(
+            filesystem_failure(
                 error,
                 TransferErrorCode::RemoteRejected,
                 TransferPhase::Exporting,
@@ -265,7 +268,7 @@ async fn export_to_staging(
 ///
 /// sendmer creates one-root collections for both files and directories.  External
 /// multi-root collections are rejected instead of risking a partial commit.
-fn collection_root_name(collection: &Collection) -> anyhow::Result<String> {
+pub fn collection_root_name(collection: &Collection) -> anyhow::Result<String> {
     let mut roots = std::collections::BTreeSet::new();
     for (name, _) in collection.iter() {
         let root = name
@@ -287,7 +290,7 @@ fn collection_root_name(collection: &Collection) -> anyhow::Result<String> {
     Ok(root)
 }
 
-fn ensure_export_root_available(output_dir: &Path, root: &str) -> anyhow::Result<()> {
+pub fn ensure_export_root_available(output_dir: &Path, root: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all(output_dir)?;
     anyhow::ensure!(
         output_dir.is_dir(),
@@ -307,7 +310,7 @@ fn ensure_export_root_available(output_dir: &Path, root: &str) -> anyhow::Result
 }
 
 /// Create a unique staging directory under the destination so final commit uses rename.
-fn create_staging_dir(output_dir: &Path) -> anyhow::Result<PathBuf> {
+pub fn create_staging_dir(output_dir: &Path) -> anyhow::Result<PathBuf> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -324,7 +327,7 @@ fn create_staging_dir(output_dir: &Path) -> anyhow::Result<PathBuf> {
     anyhow::bail!("could not create a unique export staging directory")
 }
 
-fn cleanup_staging_dir(path: &Path) {
+pub fn cleanup_staging_dir(path: &Path) {
     if let Err(error) = std::fs::remove_dir_all(path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
@@ -333,7 +336,11 @@ fn cleanup_staging_dir(path: &Path) {
 }
 
 /// Commit the complete staging root without replacing a target created concurrently.
-fn commit_staged_export(staging_dir: &Path, output_dir: &Path, root: &str) -> anyhow::Result<()> {
+pub fn commit_staged_export(
+    staging_dir: &Path,
+    output_dir: &Path,
+    root: &str,
+) -> anyhow::Result<()> {
     validate_path_component(root)?;
     let staged = staging_dir.join(root);
     anyhow::ensure!(staged.exists(), "staged export root {root} is missing");
@@ -346,7 +353,7 @@ fn commit_staged_export(staging_dir: &Path, output_dir: &Path, root: &str) -> an
 
     if let Err(error) = move_staged_root_without_replacing(&staged, &target) {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
-            return Err(receive_failure(
+            return Err(filesystem_failure(
                 error.into(),
                 TransferErrorCode::TargetConflict,
                 TransferPhase::Exporting,
@@ -364,8 +371,8 @@ fn commit_staged_export(staging_dir: &Path, output_dir: &Path, root: &str) -> an
     Ok(())
 }
 
-fn target_conflict_error(target: &Path) -> anyhow::Error {
-    receive_failure(
+pub fn target_conflict_error(target: &Path) -> anyhow::Error {
+    filesystem_failure(
         anyhow::anyhow!("target {} already exists", target.display()),
         TransferErrorCode::TargetConflict,
         TransferPhase::Exporting,
@@ -379,7 +386,10 @@ fn target_conflict_error(target: &Path) -> anyhow::Error {
 /// All release targets have a native no-replace rename primitive.  The fallback
 /// retains the preflight check for unsupported platforms, but is not used by releases.
 #[cfg(target_os = "linux")]
-fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::Result<()> {
+pub fn move_staged_root_without_replacing(
+    source: &Path,
+    target: &Path,
+) -> std::io::Result<()> {
     let source = path_to_c_string(source)?;
     let target = path_to_c_string(target)?;
     // SAFETY: the paths are valid NUL-terminated strings and AT_FDCWD makes them absolute.
@@ -401,7 +411,10 @@ fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::
 }
 
 #[cfg(target_os = "macos")]
-fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::Result<()> {
+pub fn move_staged_root_without_replacing(
+    source: &Path,
+    target: &Path,
+) -> std::io::Result<()> {
     let source = path_to_c_string(source)?;
     let target = path_to_c_string(target)?;
     // SAFETY: the paths are valid NUL-terminated strings for renamex_np.
@@ -414,7 +427,7 @@ fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn path_to_c_string(path: &Path) -> std::io::Result<std::ffi::CString> {
+pub fn path_to_c_string(path: &Path) -> std::io::Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
 
     std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
@@ -426,7 +439,10 @@ fn path_to_c_string(path: &Path) -> std::io::Result<std::ffi::CString> {
 }
 
 #[cfg(windows)]
-fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::Result<()> {
+pub fn move_staged_root_without_replacing(
+    source: &Path,
+    target: &Path,
+) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
@@ -449,7 +465,10 @@ fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::Result<()> {
+pub fn move_staged_root_without_replacing(
+    source: &Path,
+    target: &Path,
+) -> std::io::Result<()> {
     if std::fs::symlink_metadata(target).is_ok() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
@@ -463,7 +482,7 @@ fn move_staged_root_without_replacing(source: &Path, target: &Path) -> std::io::
 ///
 /// 底层通道提前关闭时，可能已经留下不完整的目标文件；调用方会把该错误纳入
 /// 接收失败清理流程，而不会把半导出误报为成功。
-async fn process_export_stream<S>(stream: &mut S, name: &str) -> anyhow::Result<()>
+pub async fn process_export_stream<S>(stream: &mut S, name: &str) -> anyhow::Result<()>
 where
     S: n0_future::Stream<Item = ExportProgressItem> + Unpin + Send,
 {

@@ -204,16 +204,6 @@ fn resolve_root_item_path(output_dir: &Path, collection: &Collection) -> anyhow:
     Ok(output_dir.join(root))
 }
 
-fn resolve_output_dir(output_dir: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    match output_dir {
-        Some(path) if path.is_absolute() => Ok(path),
-        // FsStore requires absolute export targets. Resolve before receiving without
-        // requiring the destination to exist or changing its symlink semantics.
-        Some(path) => Ok(std::path::absolute(path)?),
-        None => Ok(std::env::current_dir()?),
-    }
-}
-
 fn size_fetch_backoff(attempt: u32, retry_policy: ReceiveRetryPolicy) -> std::time::Duration {
     ReceiveRetryPolicy::retry_backoff(retry_policy.size_fetch_backoff_ms, attempt)
 }
@@ -331,77 +321,6 @@ fn log_get_error_misc(e: &GetError) {
         GetError::BadRequest { .. } => tracing::error!("bad request"),
         GetError::LocalFailure { .. } => tracing::error!("local failure"),
         _ => {}
-    }
-}
-
-/// 根据集合内的名称生成导出路径，同时验证每个路径组件的合法性。
-fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
-    if root.exists() {
-        anyhow::ensure!(
-            root.is_dir(),
-            "output root {} is not a directory",
-            root.display()
-        );
-    }
-    std::fs::create_dir_all(root)?;
-    let canonical_root = root.canonicalize()?;
-    let parts = name.split('/');
-    let mut path = root.to_path_buf();
-    for part in parts {
-        validate_path_component(part)?;
-        path.push(part);
-    }
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("invalid export target"))?;
-    let canonical_existing_parent = canonicalize_existing_parent(parent)?;
-    anyhow::ensure!(
-        canonical_existing_parent.starts_with(&canonical_root),
-        "final path must be within the root directory"
-    );
-    std::fs::create_dir_all(parent)?;
-
-    let canonical_parent = parent.canonicalize()?;
-    anyhow::ensure!(
-        canonical_parent.starts_with(&canonical_root),
-        "final path must be within the root directory"
-    );
-
-    ensure_export_target_is_absent(&path)?;
-
-    Ok(path)
-}
-
-/// Refuse an existing staging target before the blob store writes to it.
-///
-/// `symlink_metadata` sees dangling symlinks and, on case-insensitive file systems,
-/// also catches differently cased names that would otherwise overwrite an earlier entry.
-fn ensure_export_target_is_absent(path: &Path) -> anyhow::Result<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            anyhow::bail!("export target must not be a symbolic link")
-        }
-        Ok(_) => anyhow::bail!("export target {} already exists", path.display()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// Resolve the nearest existing ancestor so symlink escapes are rejected before
-/// creating any missing export directories outside the configured root.
-fn canonicalize_existing_parent(path: &Path) -> anyhow::Result<PathBuf> {
-    let mut current = path;
-    loop {
-        match std::fs::symlink_metadata(current) {
-            Ok(_) => return Ok(current.canonicalize()?),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                current = current
-                    .parent()
-                    .ok_or_else(|| anyhow::anyhow!("invalid export target"))?;
-            }
-            Err(error) => return Err(error.into()),
-        }
     }
 }
 

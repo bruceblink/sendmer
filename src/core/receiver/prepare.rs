@@ -275,38 +275,3 @@ where
         None => Ok(stream.next().await),
     }
 }
-
-/// 验证单个路径组件是否合法（不应包含分隔符 `/`）。
-fn validate_path_component(component: &str) -> anyhow::Result<()> {
-    // Check for empty components
-    anyhow::ensure!(!component.is_empty(), "path component cannot be empty");
-
-    // Check for path separators
-    anyhow::ensure!(
-        !component.contains('/') && !component.contains('\\'),
-        "path components must not contain path separators"
-    );
-
-    // Check for path traversal attempts
-    anyhow::ensure!(component != "..", "path traversal not allowed: '..'");
-    anyhow::ensure!(component != ".", "relative path not allowed: '.'");
-
-    // Check for absolute paths
-    anyhow::ensure!(
-        !component.starts_with('/'),
-        "absolute path components not allowed"
-    );
-
-    validate_windows_utf8_component(component).map_err(|error| {
-        anyhow::anyhow!("legacy collection path component is not portable: {error}")
-    })?;
-
-    // Optional: Check for hidden files (starting with '.')
-    // Uncomment if you want to restrict hidden files
-    // anyhow::ensure!(
-    //     !component.starts_with('.') || component.len() == 1,
-    //     "hidden files not allowed"
-    // );
-
-    Ok(())
-}
