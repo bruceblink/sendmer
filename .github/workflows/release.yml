@@ -489,10 +489,13 @@ jobs:
 
           upload_or_verify() {
             local file="$1"
-            local name="$(basename "$file")"
-            local existing_digest="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .digest // empty' <<<"$ASSETS_JSON" | head -n 1)"
+            local name
+            name="$(basename "$file")"
+            local existing_digest
+            existing_digest="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .digest // empty' <<<"$ASSETS_JSON" | head -n 1)"
             if [ -n "$existing_digest" ]; then
-              local local_digest="sha256:$(sha256_for_file "$file")"
+              local local_digest
+              local_digest="sha256:$(sha256_for_file "$file")"
               if [ "$local_digest" != "$existing_digest" ]; then
                 echo "Existing release asset has a different digest: ${name}" >&2
                 exit 1
