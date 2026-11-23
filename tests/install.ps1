@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 
 $installerPath = Join-Path $PSScriptRoot "..\install.ps1"
 $originalVersion = $env:SENDMER_VERSION
+$originalCosignBin = $env:SENDMER_COSIGN_BIN
 
 try {
     $env:SENDMER_VERSION = "v0.5.0-preview+build.7"
@@ -57,6 +58,7 @@ try {
     }
 
     $env:SENDMER_VERSION = "v0.5.0"
+    $env:SENDMER_COSIGN_BIN = "cosign"
     $signatureResult = & {
         param([string]$Path)
 
@@ -146,4 +148,5 @@ try {
 }
 finally {
     $env:SENDMER_VERSION = $originalVersion
+    $env:SENDMER_COSIGN_BIN = $originalCosignBin
 }

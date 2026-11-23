@@ -7,6 +7,7 @@ trap 'rm -rf -- "$TEST_ROOT"' EXIT
 
 export HOME="$TEST_ROOT/home"
 export SENDMER_VERSION="v0.5.0"
+export SENDMER_COSIGN_BIN="cosign"
 export ARCHIVE_RECORD
 UPPERCASE_HASH='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 LOWERCASE_HASH="${UPPERCASE_HASH,,}"
@@ -46,7 +47,7 @@ sha256sum() {
 }
 
 cosign() {
-  [[ "$1" == "verify-blob" ]]
+  [[ "$1" == "verify-blob" || "$1" == "verify-blob-attestation" ]]
   [[ -s "$2" ]]
   [[ "$3" == "--bundle" ]]
   [[ -s "$4" ]]
@@ -62,6 +63,7 @@ unzip() {
   printf '%s\n' "$(basename "$archive")" > "$ARCHIVE_RECORD"
   mkdir -p "$destination"
   : > "$destination/sendmer.exe"
+  printf 'sendmer_version=%s\nrust_target=x86_64-pc-windows-msvc\nsource_commit=test\n' "$SENDMER_VERSION" > "$destination/BUILD-METADATA.txt"
 }
 
 # Source the installer so shell functions above replace platform and network commands.
@@ -70,12 +72,25 @@ source ./install.sh
 expected_archive='sendmer-v0.5.0-x86_64-pc-windows-msvc.zip'
 [[ "$(<"$ARCHIVE_RECORD")" == "$expected_archive" ]]
 [[ -f "$HOME/.sendmer/bin/sendmer.exe" ]]
+[[ -f "$HOME/.sendmer/bin/BUILD-METADATA.txt" ]]
+
+if missing_version_output=$( (
+  unset SENDMER_VERSION SENDMER_ALLOW_LATEST
+  source ./install.sh
+) 2>&1); then
+  echo "installer should require an explicit release version" >&2
+  exit 1
+fi
+[[ "$missing_version_output" == *"SENDMER_VERSION is required"* ]]
 
 FAIL_HOME="$TEST_ROOT/failing-home"
 if failure_output=$( (
   export HOME="$FAIL_HOME"
+  export SENDMER_COSIGN_BIN="cosign"
   cosign() {
-    echo 'simulated signature verification failure' >&2
+    if [[ "$1" == "verify-blob" || "$1" == "verify-blob-attestation" ]]; then
+      echo 'simulated signature verification failure' >&2
+    fi
     return 1
   }
   source ./install.sh

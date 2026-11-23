@@ -33,6 +33,12 @@ grep -Fq 'gh attestation verify' .github/workflows/release.yml
 grep -Fq '.attestation.json' .github/workflows/release.yml
 grep -Fq '.attestation.json' install.sh
 grep -Fq '.attestation.json' install.ps1
+grep -Fq 'verify-blob-attestation' install.sh
+grep -Fq 'verify-blob-attestation' install.ps1
+grep -Fq 'https://slsa.dev/provenance/v1' install.sh
+grep -Fq 'https://slsa.dev/provenance/v1' install.ps1
+grep -Fq 'SENDMER_COSIGN_BIN' install.sh
+grep -Fq 'SENDMER_COSIGN_BIN' install.ps1
 grep -Fq 'RELEASE_ASSET_SIGNATURE' .github/workflows/release.yml
 grep -Fq 'RELEASE_SBOM_SIGNATURE' .github/workflows/release.yml
 grep -Fq 'RELEASE_PROVENANCE' .github/workflows/release.yml
@@ -40,3 +46,11 @@ grep -Fq 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' .github/workflows/release.yml
 grep -Fq 'echo "sbom=${ASSET}.spdx.json"' .github/workflows/release.yml
 grep -Fq 'SBOM="${ASSET}.spdx.json"' .github/workflows/release.yml
 grep -Fq 'Manual releases must be dispatched from the matching release tag' .github/workflows/release.yml
+grep -Fq 'Require repository immutable releases' .github/workflows/release.yml
+grep -Fq 'Publish immutable GitHub Release' .github/workflows/release.yml
+grep -Fq 'SYFT_FILE_METADATA_SELECTION: all' .github/workflows/release.yml
+grep -Fq 'SYFT_FILE_METADATA_DIGESTS: sha256,sha1' .github/workflows/release.yml
+if grep -Fq -- '--clobber' .github/workflows/release.yml; then
+  echo 'release workflow must not overwrite existing assets' >&2
+  exit 1
+fi

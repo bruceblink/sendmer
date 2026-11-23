@@ -130,6 +130,19 @@ jobs:
       - uses: swatinem/rust-cache@v2
       - name: cargo test
         run: cargo test --locked --workspace --all-features --bins --tests --examples
+      - name: native release binary version smoke
+        if: matrix.channel == 'stable'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "${{ matrix.target.toolchain }}" --bin sendmer
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            BINARY="target/${{ matrix.target.toolchain }}/release/sendmer.exe"
+          else
+            BINARY="target/${{ matrix.target.toolchain }}/release/sendmer"
+          fi
+          test -x "$BINARY" || [[ "${{ runner.os }}" == "Windows" ]]
+          "$BINARY" --version
 
   # Checks correct runtime deps and features are requested by not including dev-dependencies.
   check-deps:
