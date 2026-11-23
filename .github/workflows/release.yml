@@ -23,6 +23,12 @@ on:
 
 permissions: {}
 
+# A tag can have only one release workflow in flight. Queue retries instead
+# of allowing two runs to race while creating or uploading assets.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   BIN_NAME: sendmer
   IROH_FORCE_STAGING_RELAYS: "1"
@@ -140,6 +146,7 @@ jobs:
           python3 .github/scripts/generate_release_notes.py \
             --tag "$RELEASE_VERSION" \
             --output release-notes.md
+          printf '\n<!-- sendmer-release-commit: %s -->\n' "$(git rev-parse HEAD)" >> release-notes.md
 
       - name: Verify release version matches Cargo package
         env:
@@ -161,20 +168,56 @@ jobs:
 
           echo "Release version verified: ${RELEASE_VERSION}"
 
+      - name: Require repository immutable releases
+        if: github.event_name == 'push' || github.event.inputs.create_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_TOKEN="${RELEASE_ADMIN_TOKEN:-$GITHUB_TOKEN}"
+          if ! SETTINGS="$(GH_TOKEN="$API_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/immutable-releases" 2>/dev/null)"; then
+            echo "Cannot verify repository immutable releases. Configure RELEASE_ADMIN_TOKEN with administration:read access." >&2
+            exit 1
+          fi
+          if [ "$(jq -r '.enabled' <<<"$SETTINGS")" != "true" ]; then
+            echo "Repository immutable releases are disabled. Enable them before creating a release." >&2
+            exit 1
+          fi
+          echo "Repository immutable releases are enabled."
+
       - name: Ensure GitHub release exists
         if: github.event_name == 'push' || github.event.inputs.create_release == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
         run: |
+          set -euo pipefail
           VERSION="$RELEASE_VERSION"
+          RELEASE_COMMIT="$(git rev-parse HEAD)"
           if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release edit "$VERSION" \
-              --title "$VERSION" \
-              --notes-file release-notes.md
+            RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}")"
+            DRAFT="$(jq -r '.draft' <<<"$RELEASE_JSON")"
+            IMMUTABLE="$(jq -r '.immutable // false' <<<"$RELEASE_JSON")"
+            EXISTING_COMMIT="$(jq -r '.body // ""' <<<"$RELEASE_JSON" | sed -n 's/.*<!-- sendmer-release-commit: \([0-9a-f]\{40,64\}\) -->.*/\1/p' | head -n 1)"
+            if [ "$DRAFT" != "true" ]; then
+              echo "Release ${VERSION} already exists and is published; refusing to mutate or overwrite it." >&2
+              exit 1
+            fi
+            if [ "$IMMUTABLE" = "true" ]; then
+              echo "Release ${VERSION} is already immutable; refusing to add or replace assets." >&2
+              exit 1
+            fi
+            if [ "$EXISTING_COMMIT" != "$RELEASE_COMMIT" ]; then
+              echo "Existing draft ${VERSION} belongs to ${EXISTING_COMMIT:-unknown}, expected ${RELEASE_COMMIT}." >&2
+              exit 1
+            fi
+            echo "Reusing matching draft release ${VERSION}."
           else
             gh release create "$VERSION" \
               --verify-tag \
+              --draft \
               --title "$VERSION" \
               --notes-file release-notes.md
           fi
@@ -182,6 +225,7 @@ jobs:
   build-release:
     name: Build Release Binaries
     needs: create-release
+    if: github.event_name == 'push' || (github.event.inputs.create_release == 'true' && github.event.inputs.upload_artifacts == 'true')
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -213,6 +257,11 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.create-release.outputs.release_version }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -273,6 +322,12 @@ jobs:
 
       - name: Generate target SBOM
         uses: anchore/sbom-action@v0
+        env:
+          # Include every file shipped in the archive and request real file
+          # digests. Syft's default owned-by-package selection omits
+          # BUILD-METADATA.txt and may emit zero SHA-1 placeholders.
+          SYFT_FILE_METADATA_SELECTION: all
+          SYFT_FILE_METADATA_DIGESTS: sha256,sha1
         with:
           path: ${{ steps.package.outputs.directory }}
           format: spdx-json
@@ -320,6 +375,23 @@ jobs:
             echo "asset=$ASSET"
             echo "checksum=$CHECKSUM"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Enrich and validate target SBOM
+        env:
+          RELEASE_VERSION: ${{ needs.create-release.outputs.release_version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_ASSET: ${{ steps.archive.outputs.asset }}
+          RELEASE_CHECKSUM: ${{ steps.archive.outputs.checksum }}
+          RELEASE_SBOM: ${{ steps.package.outputs.sbom }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/validate-release-sbom.py \
+            "$RELEASE_ASSET" \
+            "$RELEASE_CHECKSUM" \
+            "$RELEASE_SBOM" \
+            --repository "$RELEASE_REPOSITORY" \
+            --version "$RELEASE_VERSION"
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v4.1.2
@@ -397,18 +469,123 @@ jobs:
           RELEASE_PROVENANCE: ${{ steps.provenance-file.outputs.provenance }}
         shell: bash
         run: |
-          gh release upload "$RELEASE_VERSION" \
-            "$RELEASE_ASSET" \
-            "$RELEASE_CHECKSUM" \
-            "$RELEASE_SBOM" \
-            "$RELEASE_ASSET_SIGNATURE" \
-            "$RELEASE_SBOM_SIGNATURE" \
-            "$RELEASE_PROVENANCE" \
-            --clobber
+          set -euo pipefail
+          RELEASE_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_VERSION}" --jq '.id')"
+          ASSETS_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100")"
+
+          sha256_for_file() {
+            local file="$1"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$file" | awk '{ print $1 }'
+            elif command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 "$file" | awk '{ print $1 }'
+            elif command -v powershell >/dev/null 2>&1; then
+              powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath '$file').Hash.ToLowerInvariant()"
+            else
+              echo "No SHA-256 utility is available" >&2
+              return 1
+            fi
+          }
+
+          upload_or_verify() {
+            local file="$1"
+            local name
+            name="$(basename "$file")"
+            local existing_digest
+            existing_digest="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .digest // empty' <<<"$ASSETS_JSON" | head -n 1)"
+            if [ -n "$existing_digest" ]; then
+              local local_digest
+              local_digest="sha256:$(sha256_for_file "$file")"
+              if [ "$local_digest" != "$existing_digest" ]; then
+                echo "Existing release asset has a different digest: ${name}" >&2
+                exit 1
+              fi
+              echo "Keeping existing release asset with matching digest: ${name}"
+            else
+              gh release upload "$RELEASE_VERSION" "$file"
+            fi
+          }
+
+          upload_or_verify "$RELEASE_ASSET"
+          upload_or_verify "$RELEASE_CHECKSUM"
+          upload_or_verify "$RELEASE_SBOM"
+          upload_or_verify "$RELEASE_ASSET_SIGNATURE"
+          upload_or_verify "$RELEASE_SBOM_SIGNATURE"
+          upload_or_verify "$RELEASE_PROVENANCE"
+
+  publish-release:
+    name: Publish immutable GitHub Release
+    if: github.event_name == 'push' || (github.event.inputs.create_release == 'true' && github.event.inputs.upload_artifacts == 'true')
+    needs: [release-context, build-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Verify all release assets before publication
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_VERSION}")"
+          if [ "$(jq -r '.draft' <<<"$RELEASE_JSON")" != "true" ]; then
+            echo "Release ${RELEASE_VERSION} is not a draft; refusing to publish it." >&2
+            exit 1
+          fi
+          RELEASE_ID="$(jq -r '.id' <<<"$RELEASE_JSON")"
+          ASSETS_JSON="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100")"
+          for target in \
+            x86_64-unknown-linux-musl \
+            aarch64-unknown-linux-musl \
+            x86_64-apple-darwin \
+            aarch64-apple-darwin \
+            x86_64-pc-windows-msvc \
+            x86_64-pc-windows-gnu; do
+            if [[ "$target" == *windows* ]]; then
+              archive="sendmer-${RELEASE_VERSION}-${target}.zip"
+            else
+              archive="sendmer-${RELEASE_VERSION}-${target}.tar.gz"
+            fi
+            for suffix in "" ".sha256" ".spdx.json" ".sigstore.json" ".spdx.json.sigstore.json" ".attestation.json"; do
+              asset="${archive}${suffix}"
+              count="$(jq --arg name "$asset" '[.[] | select(.name == $name and .state == "uploaded")] | length' <<<"$ASSETS_JSON")"
+              if [ "$count" != "1" ]; then
+                echo "Missing or incomplete release asset: ${asset}" >&2
+                exit 1
+              fi
+            done
+          done
+          echo "All six target groups and trust assets are present."
+
+      - name: Publish draft release and require immutability
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+          RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_TOKEN="${RELEASE_ADMIN_TOKEN:-$GITHUB_TOKEN}"
+          SETTINGS="$(GH_TOKEN="$API_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/immutable-releases")"
+          if [ "$(jq -r '.enabled' <<<"$SETTINGS")" != "true" ]; then
+            echo "Repository immutable releases are disabled; refusing to publish ${RELEASE_VERSION}." >&2
+            exit 1
+          fi
+          gh release edit "$RELEASE_VERSION" --draft=false
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_VERSION}")"
+          if [ "$(jq -r '.draft' <<<"$RELEASE_JSON")" != "false" ]; then
+            echo "Release ${RELEASE_VERSION} was not published" >&2
+            exit 1
+          fi
+          if [ "$(jq -r '.immutable' <<<"$RELEASE_JSON")" != "true" ]; then
+            echo "Release ${RELEASE_VERSION} is mutable. Enable repository immutable releases before publishing." >&2
+            exit 1
+          fi
 
   publish-crate:
     name: Publish crate to crates.io
-    needs: [quality-gate, create-release, build-release]
+    needs: [quality-gate, create-release, build-release, publish-release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -447,7 +624,7 @@ jobs:
   release-summary:
     name: Release Run Summary
     if: ${{ !cancelled() }}
-    needs: [release-context, quality-gate, create-release, build-release, publish-crate]
+    needs: [release-context, quality-gate, create-release, build-release, publish-release, publish-crate]
     runs-on: ubuntu-latest
     steps:
       - name: Write job results to summary
@@ -457,6 +634,7 @@ jobs:
           QUALITY_RESULT: ${{ needs.quality-gate.result }}
           CREATE_RESULT: ${{ needs.create-release.result }}
           BUILD_RESULT: ${{ needs.build-release.result }}
+          PUBLISH_RELEASE_RESULT: ${{ needs.publish-release.result }}
           PUBLISH_RESULT: ${{ needs.publish-crate.result }}
         shell: bash
         run: |
@@ -471,5 +649,6 @@ jobs:
             echo "| quality-gate | ${QUALITY_RESULT} |"
             echo "| create-release | ${CREATE_RESULT} |"
             echo "| build-release | ${BUILD_RESULT} |"
+            echo "| publish-release | ${PUBLISH_RELEASE_RESULT} |"
             echo "| publish-crate | ${PUBLISH_RESULT} |"
           } >> "$GITHUB_STEP_SUMMARY"

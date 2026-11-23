@@ -32,8 +32,17 @@ corresponding SPDX JSON. The `.attestation.json` file is the serialized GitHub
 provenance bundle emitted for the archive subject.
 
 No upload step may publish only part of a target group. The package step must
-create and validate every file before the release upload step runs, and the
-upload step uses `--clobber` so rerunning a tag is idempotent.
+create and validate every file before the release upload step runs. Release
+creation uses a draft release, and the upload step does not use `--clobber`.
+An existing published release or an existing asset is a hard failure. This
+prevents a rerun from silently replacing a public asset. The final publish
+step requires repository-level immutable releases to be enabled.
+
+Before a future release, enable immutable releases in the repository settings.
+The workflow checks this setting before creating a draft. If the default
+`GITHUB_TOKEN` cannot read the repository administration endpoint, configure a
+`RELEASE_ADMIN_TOKEN` repository secret with administration read access. The
+workflow does not enable this setting automatically.
 
 ## Trust and Permissions
 
@@ -41,7 +50,9 @@ The build matrix uses GitHub OIDC for keyless Sigstore signing and Artifact
 Attestations. Required job permissions are limited to `contents: write` for the
 release, `id-token: write` for the OIDC identity, `attestations: write` for the
 provenance record, and `artifact-metadata: write` for the attestation subject
-record. No private signing key or long-lived release credential is introduced.
+record. No private signing key is introduced. The optional
+`RELEASE_ADMIN_TOKEN` is read only and is used only to check the immutable
+release setting before a release starts.
 
 The workflow must fail closed when any of these conditions is false:
 
@@ -60,10 +71,13 @@ workflow runs `gh attestation verify` against the copied bundle before upload.
 ## SBOM Scope and Reproducibility
 
 Syft scans the unpacked target directory after the release binary and
-`BUILD-METADATA.txt` are created but before the archive is compressed. This keeps
-the SBOM tied to the bytes shipped inside the archive while avoiding archive
-format-specific scanner behavior. The SBOM document itself is uploaded and
-signed as a release asset.
+`BUILD-METADATA.txt` are created but before the archive is compressed. The
+workflow requests `all` file metadata and both SHA-256 and SHA-1 file digests.
+After the archive is created, a validation step compares every archive member
+with the SBOM file list and compares every SBOM SHA-256 with the extracted
+member. The root SPDX package also receives the final archive SHA-256 and its
+Release download location. The enriched SBOM document is then signed and
+uploaded as a release asset.
 
 The release tag remains the source of truth for version, and `source_commit` in
 the archive must equal the commit resolved from that tag. A rerun may refresh

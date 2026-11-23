@@ -23,22 +23,22 @@ sendmer 使用 256 位节点 ID，因此 ticket 在 IP 地址变化后仍可继�
 ### Windows（PowerShell）
 
 ```powershell
-# 安装最新版本
-iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
-
-# 或安装指定版本
+# 固定安装器和发布版本
 $env:SENDMER_VERSION="v0.11.2"
-iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.11.2/install.ps1 -useb | iex
 ```
 
 Git Bash、MSYS2 或 Cygwin 请改用 shell 安装器，并确保已安装 `unzip`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+export SENDMER_VERSION=v0.11.2
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.11.2/install.sh | bash
 ```
 
-发布安装器会在解压前使用 Sigstore 校验归档和 SBOM；请先安装
-`cosign` 并确保它位于 `PATH` 中。
+安装器会在解压前使用 Sigstore 校验归档、SBOM 和 SLSA provenance。
+安装器会下载固定版本的 Cosign，并校验 Cosign 的 SHA-256。
+必须设置 `SENDMER_VERSION`。只有在明确需要跟随最新版本时，才设置
+`SENDMER_ALLOW_LATEST=1`。
 
 默认安装路径：
 
@@ -55,15 +55,14 @@ C:\Users\<用户名>\.sendmer\bin\sendmer.exe
 ### Linux / macOS
 
 ```bash
-# 安装最新版本
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
-
-# 或安装指定版本
-SENDMER_VERSION=v0.11.2 \
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+export SENDMER_VERSION=v0.11.2
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.11.2/install.sh | bash
 ```
 
-安装器要求 `PATH` 中存在 `cosign`，以便在安装前验证已签名的发布资产。
+安装器会在安装前校验归档、SBOM 和 SLSA provenance。
+安装器会下载固定版本的 Cosign，并校验 Cosign 的 SHA-256。
+必须设置 `SENDMER_VERSION`。只有在明确需要跟随最新版本时，才设置
+`SENDMER_ALLOW_LATEST=1`。
 
 默认安装路径：
 

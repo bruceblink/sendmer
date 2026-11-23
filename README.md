@@ -23,22 +23,22 @@ sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses chan
 ### Windows (PowerShell)
 
 ```powershell
-# Install latest release
-iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
-
-# Or install a specific version
+# Pin both the installer and the release version
 $env:SENDMER_VERSION="v0.11.2"
-iwr https://raw.githubusercontent.com/bruceblink/sendmer/main/install.ps1 -useb | iex
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.11.2/install.ps1 -useb | iex
 ```
 
 For Git Bash, MSYS2, or Cygwin, use the shell installer instead. It requires `unzip`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+export SENDMER_VERSION=v0.11.2
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.11.2/install.sh | bash
 ```
 
-Release installers verify the archive and SBOM with Sigstore before extraction;
-install `cosign` first and keep it on `PATH`.
+The installer verifies the archive, SBOM, and SLSA provenance with Sigstore
+before extraction. It downloads the pinned Cosign verifier and verifies its
+SHA-256. `SENDMER_VERSION` is required. Set `SENDMER_ALLOW_LATEST=1` only when
+following the latest release is intentional.
 
 Default install path:
 
@@ -55,16 +55,14 @@ After installation:
 ### Linux / macOS
 
 ```bash
-# Install latest release
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
-
-# Or install a specific version
-SENDMER_VERSION=v0.11.2 \
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/main/install.sh | bash
+export SENDMER_VERSION=v0.11.2
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.11.2/install.sh | bash
 ```
 
-The installer requires `cosign` on `PATH` so signed release assets are verified
-before installation.
+The installer verifies the archive, SBOM, and SLSA provenance before
+installation. It downloads the pinned Cosign verifier and verifies its
+SHA-256. `SENDMER_VERSION` is required. Set `SENDMER_ALLOW_LATEST=1` only when
+following the latest release is intentional.
 
 Default install path:
 
