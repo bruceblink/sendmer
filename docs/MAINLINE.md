@@ -22,6 +22,35 @@
 本文、README、代码注释和 AlterSendmer 文档统一使用这些名称。标准协议名 `QUIC`、`TLS`、
 `JSON Lines` 和 `SHA-256` 保留标准大小写。
 
+## 1.1 2026-11-24 简化实施基线
+
+本批次冻结新增协议能力，优先降低核心库和桌面客户端的维护成本。核心代码已按职责拆分为
+`transport`、`transfer`、`manifest`、`recovery`、`filesystem` 和 `events` 六个边界。
+`sender`、`receiver`、`progress` 和接收缓存目录是这些边界在 Rust crate 内的实现目录。
+
+已完成的结构调整包括：
+
+- 事件模型、顺序校验和进度发射拆分为独立文件。
+- TM1 manifest 模型、路径编码和校验拆分为独立文件。
+- 接收缓存的 manifest、Lease、锁、容量检查和过期清理拆分为独立文件。
+- sender 和 receiver 的准备、导入、下载、重试、导出和终态处理拆分为独立文件。
+- iroh endpoint 入口移入 `core/transport`。
+- staging、路径安全、目标冲突和原子提交移入 `core/filesystem`。
+- 新增 `RecoverySnapshot`，只记录会话角色、会话标识、已验证范围、处理字节和终态。
+- 新增 `send_handle(path, options)` 和 `receive(ticket, options)` 作为主要库入口。
+  事件、取消和资源上限入口保留一个兼容周期。
+
+当前代码和函数大小验收使用以下条件。
+
+- `find src -type f -name '*.rs'` 的单文件行数均不超过 600。
+- sender、receiver、manifest、filesystem、recovery 和事件状态逻辑的函数均不超过 120 行。
+- stable Rust `1.100.0` 下 format、严格 Clippy、workspace tests 和 CLI tests 通过。
+- relay 和弱网测试继续使用显式 opt-in。未执行时保持 ignored，不把本地 loopback 结果写成真实 relay 结果。
+
+`AlterSendmer` 当前仍使用 crates.io 的 `sendmer 0.11.0`。核心新 API 需要随正式 crate 版本发布后再
+更新桌面依赖。桌面端的 UI 状态、历史、偏好和更新逻辑继续由 AlterSendmer 持有，缓存布局、导出
+提交和恢复范围由 sendmer Core 持有。
+
 ## 2. 产品边界与当前基线
 
 当前核心发布基线为 `sendmer v0.11.2`。`AlterSendmer v0.7.1` 通过 crates.io 使用

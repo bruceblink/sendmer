@@ -205,17 +205,17 @@ use sendmer::{send_handle, SendOptions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let handle = send_handle(PathBuf::from("./my-file"), SendOptions::default(), None).await?;
+    let handle = send_handle(PathBuf::from("./my-file"), SendOptions::default()).await?;
     println!("sendmer receive {}", handle.ticket());
     handle.close().await?;
     Ok(())
 }
 ```
 
-旧的 `send` 函数和 `SendResult::shutdown` 仍保留用于兼容。接收端可以使用 `receive`，
-或使用带取消能力的 `receive_with_cancellation` 与 `ReceiveOptions`。需要限制普通文件数量或
-payload 总大小时，使用 `receive_with_limits` 或 `receive_with_limits_and_cancellation`，不需要
-修改现有的 `ReceiveOptions` 结构体。
+旧的 `send` 函数和 `SendResult::shutdown` 在一个兼容周期内保留。接收端的主要入口是
+`receive(ticket, options)`。GUI 和服务集成可以使用 `receive_with_events` 或
+`receive_with_events_and_cancellation`。需要限制普通文件数量或 payload 总大小时，使用带
+limits 的入口，不需要修改现有的 `ReceiveOptions` 结构体。
 
 嵌入式调用方可设置 `SendOptions::session_lifetime`。生命周期到期后 router 会关闭，sender
 发出一次不可重试的超时事件，并发布 `SenderTransferStatus::Expired`，调用方随后复用正常清理路径。
@@ -243,7 +243,9 @@ cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode
 
 - 参数和选项类型
 - 传输事件类型、`EventEmitter` 与 `TransferEventStreamValidator`
-- `send`、`send_handle`、`receive`、`receive_with_cancellation`、`receive_with_limits` 和
+- `send_handle`、`send_handle_with_events`、`receive`、`receive_with_events` 和
+  `receive_with_events_and_cancellation`
+- 兼容入口 `send`、`receive_with_cancellation`、`receive_with_limits` 和
   `receive_with_limits_and_cancellation`
 - 推荐使用的 `SendHandle`，以及兼容用的 `SendResult` 与 `ReceiveResult`
 

@@ -11,7 +11,8 @@ It is based on [n0-computer/sendme v0.31.0](https://github.com/n0-computer/sendm
 - Send a file or an entire directory with a single command
 - NAT traversal and hole punching via iroh, with relay fallback when needed
 - Verified streaming with blake3 through `iroh-blobs`
-- Reusable Rust API via exported `send` and `receive` functions
+- Reusable Rust API via canonical `send_handle(path, options)` and `receive(ticket, options)` entry points
+- Optional event and cancellation adapters remain available for GUI and service integrations
 - Versioned transfer events with ordered sessions and structured errors
 - Optional shared sender upload limit, CLI progress output, and clipboard helper
 - Optional TM1 transfer manifest for empty directories and portable file metadata
@@ -211,17 +212,17 @@ use sendmer::{send_handle, SendOptions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let handle = send_handle(PathBuf::from("./my-file"), SendOptions::default(), None).await?;
+    let handle = send_handle(PathBuf::from("./my-file"), SendOptions::default()).await?;
     println!("sendmer receive {}", handle.ticket());
     handle.close().await?;
     Ok(())
 }
 ```
 
-The legacy `send` function and `SendResult::shutdown` remain available for compatibility. A receiver
-can use `receive` or `receive_with_cancellation` with `ReceiveOptions`. Use `receive_with_limits` or
-`receive_with_limits_and_cancellation` when the receiver must enforce file-count and payload-size
-quotas without changing the existing `ReceiveOptions` struct.
+The legacy `send` function and `SendResult::shutdown` remain available for one compatibility cycle.
+The canonical receiver entry point is `receive(ticket, options)`. GUI and service integrations can
+use `receive_with_events` or `receive_with_events_and_cancellation`. Use the limit variants when a
+receiver must enforce file-count and payload-size quotas without changing `ReceiveOptions`.
 
 Set `SendOptions::session_lifetime` when an embedding needs a bounded sender lifetime. On expiry,
 the router closes, the sender emits one non-retryable timeout event, and
@@ -252,7 +253,9 @@ The library re-exports:
 
 - argument and option types
 - transfer event types, `EventEmitter`, and `TransferEventStreamValidator`
-- `send`, `send_handle`, `receive`, `receive_with_cancellation`, `receive_with_limits`, and
+- `send_handle`, `send_handle_with_events`, `receive`, `receive_with_events`, and
+  `receive_with_events_and_cancellation`
+- Compatibility entries `send`, `receive_with_cancellation`, `receive_with_limits`, and
   `receive_with_limits_and_cancellation`
 - preferred `SendHandle`, plus legacy `SendResult` and `ReceiveResult`
 

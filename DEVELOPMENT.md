@@ -2,7 +2,22 @@
 
 本文件包含开发者在本仓库中常用的本地检查、Clippy 与工具链设置说明。
 
-架构、稳定接口约定和主线迭代计划统一见：[docs/MAINLINE.md](docs/MAINLINE.md)
+架构、稳定接口约定和主线迭代计划统一见：[docs/MAINLINE.md](docs/MAINLINE.md)。核心模块拆分记录也在该文件中。
+
+## 当前模块边界
+
+核心传输代码按以下职责组织。
+
+- `src/core/transport` 负责 iroh endpoint、地址和 relay 入口。
+- `src/core/sender` 负责发送准备、导入、provider 控制和 sender 生命周期。
+- `src/core/receiver` 负责接收准备、下载重试、恢复和接收终态。
+- `src/core/manifest` 负责 TM1 清单模型、路径编码和清单校验。
+- `src/core/filesystem` 负责 staging、路径安全、冲突检查和原子提交。
+- `src/core/receive_cache` 和 `src/core/recovery` 负责缓存生命周期和恢复快照。
+- `src/core/events` 和 `src/core/progress` 负责事件 schema、顺序校验、进度和终态。
+
+单个代码文件不得超过 600 行。单个函数不得超过 120 行。核心模块使用同一事件 schema
+和相同的文件提交规则，避免 CLI 和桌面客户端复制传输实现。
 
 ## Clippy & 项目配置
 本项目在 crate 根使用了 Clippy 警告（`#![warn(clippy::all)]` 和 `#![warn(clippy::nursery)]`），并包含 `clippy.toml`（`msrv = "1.91.0"`）。为避免工具链不匹配，推荐使用 Rust 1.91 或更高版本。
@@ -27,7 +42,8 @@ cargo test --workspace
 ```
 
 ## 回归测试清单（发送/接收）
-每次修改 `src/core/sender.rs` 或 `src/core/receiver.rs` 后，至少确认：
+每次修改 `src/core/sender`、`src/core/receiver`、`src/core/filesystem` 或
+`src/core/receive_cache` 后，至少确认：
 
 - 路径安全：
 - 接收端拒绝路径穿越（`..`、空段、分隔符注入）。
@@ -49,11 +65,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## 关键流程说明
 
-- `sender::send`：
+- `sendmer::send_handle`：
 - 校验输入路径，准备 endpoint/store，导入文件后生成 ticket。
 - 发送侧进度由 provider 事件流驱动，不参与主错误控制流。
 
-- `receiver::receive`：
+- `sendmer::receive`：
 - 根据 ticket 建立连接，先下载缺失 blob，再导出到目标目录。
 - 导出阶段若遇冲突路径必须失败，并执行临时目录清理。
 - 下载阶段若流异常提前结束（无 `Done`）必须返回错误。
