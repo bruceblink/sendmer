@@ -36,6 +36,96 @@ async fn send_started(
     if ctrl_c_requested(ctrl_c.as_mut()).await {
         return Err(transfer_cancelled_error());
     }
+    let plan = prepare_sender_plan(&path, &options, ctrl_c.as_mut()).await?;
+    let endpoint = prepare_endpoint(&options).await.map_err(|error| {
+        sender_failure(
+            error,
+            TransferErrorCode::ConnectionFailed,
+            TransferPhase::Connecting,
+            true,
+            "unable to initialize sender networking",
+        )
+    })?;
+    if ctrl_c_requested(ctrl_c.as_mut()).await {
+        endpoint.close().await;
+        return Err(transfer_cancelled_error());
+    }
+    let share_request = plan.build_request(path, event_emitter.clone());
+    let setup_result = select! {
+        biased;
+        x = setup_data_sharing(
+            endpoint,
+            plan.blobs_data_dir.clone(),
+            share_request
+        ) => x,
+        _ = &mut ctrl_c => {
+            Err(transfer_cancelled_error())
+        }
+    };
+    let setup = match setup_result {
+        Ok(setup) => setup,
+        Err(error) => {
+            let cleanup_result = if is_transfer_cancelled(&error) {
+                // 取消时 setup future 可能仍持有存储资源，先保留目录避免并发删除。
+                Ok(())
+            } else {
+                remove_temp_sender_dir(&plan.blobs_data_dir).await
+            };
+            return Err(finalize_failed_sender_setup(error, cleanup_result));
+        }
+    };
+    let online_wait_outcome = {
+        let online_wait =
+            wait_until_endpoint_is_online(setup.router.endpoint(), plan.wait_for_online);
+        tokio::pin!(online_wait);
+        select! {
+            biased;
+            _ = &mut ctrl_c => None,
+            result = &mut online_wait => Some(result),
+        }
+    };
+    match online_wait_outcome {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            return Err(shutdown_started_sender_setup(
+                setup,
+                plan.entry_type,
+                plan.ticket_type,
+                event_emitter.clone(),
+                error,
+            )
+            .await);
+        }
+        None => {
+            return Err(shutdown_started_sender_setup(
+                setup,
+                plan.entry_type,
+                plan.ticket_type,
+                event_emitter.clone(),
+                transfer_cancelled_error(),
+            )
+            .await);
+        }
+    }
+    let mut result = setup.into_send_result(plan.entry_type, plan.ticket_type, event_emitter);
+    result.arm_session_lifetime(options.session_lifetime);
+    info!(
+        hash = %result.hash,
+        size = result.size,
+        entry_type = %result.entry_type,
+        "send setup complete"
+    );
+    Ok(result)
+}
+
+async fn prepare_sender_plan<F>(
+    path: &Path,
+    options: &SendOptions,
+    mut ctrl_c: Pin<&mut F>,
+) -> anyhow::Result<SharePlan>
+where
+    F: Future<Output = std::io::Result<()>> + ?Sized,
+{
     info!(
         relay_mode = ?options.relay_mode,
         ticket_type = ?options.ticket_type,
@@ -60,7 +150,7 @@ async fn send_started(
     if ctrl_c_requested(ctrl_c.as_mut()).await {
         return Err(transfer_cancelled_error());
     }
-    validate_share_path(&path, options.manifest_mode).map_err(|error| {
+    validate_share_path(path, options.manifest_mode).map_err(|error| {
         sender_failure(
             error,
             TransferErrorCode::InvalidInput,
@@ -73,7 +163,7 @@ async fn send_started(
         return Err(transfer_cancelled_error());
     }
     if options.max_files.is_some() || options.max_total_size_bytes.is_some() {
-        validate_share_limits(&path, options.max_files, options.max_total_size_bytes).map_err(
+        validate_share_limits(path, options.max_files, options.max_total_size_bytes).map_err(
             |error| {
                 sender_failure(
                     error,
@@ -88,8 +178,7 @@ async fn send_started(
     if ctrl_c_requested(ctrl_c.as_mut()).await {
         return Err(transfer_cancelled_error());
     }
-
-    let plan = SharePlan::new(&path, &options).map_err(|error| {
+    let plan = SharePlan::new(path, options).map_err(|error| {
         sender_failure(
             error,
             TransferErrorCode::Filesystem,
@@ -101,93 +190,7 @@ async fn send_started(
     if ctrl_c_requested(ctrl_c.as_mut()).await {
         return Err(transfer_cancelled_error());
     }
-    let endpoint = prepare_endpoint(&options).await.map_err(|error| {
-        sender_failure(
-            error,
-            TransferErrorCode::ConnectionFailed,
-            TransferPhase::Connecting,
-            true,
-            "unable to initialize sender networking",
-        )
-    })?;
-    if ctrl_c_requested(ctrl_c.as_mut()).await {
-        endpoint.close().await;
-        return Err(transfer_cancelled_error());
-    }
-    let share_request = plan.build_request(path, event_emitter.clone());
-
-    // If setup and Ctrl+C become ready together, retain the completed setup so it can
-    // be shut down gracefully below instead of dropping a live router.
-    let setup_result = select! {
-        biased;
-        x = setup_data_sharing(
-            endpoint,
-            plan.blobs_data_dir.clone(),
-            share_request
-        ) => x,
-        _ = &mut ctrl_c => {
-            Err(transfer_cancelled_error())
-        }
-    };
-    let setup = match setup_result {
-        Ok(setup) => setup,
-        Err(error) => {
-            let cleanup_result = if is_transfer_cancelled(&error) {
-                // 取消时 setup future 可能仍持有存储资源，先保留目录避免并发删除。
-                Ok(())
-            } else {
-                remove_temp_sender_dir(&plan.blobs_data_dir).await
-            };
-            return Err(finalize_failed_sender_setup(error, cleanup_result));
-        }
-    };
-
-    let online_wait_outcome = {
-        let online_wait =
-            wait_until_endpoint_is_online(setup.router.endpoint(), plan.wait_for_online);
-        tokio::pin!(online_wait);
-
-        select! {
-            biased;
-            _ = &mut ctrl_c => None,
-            result = &mut online_wait => Some(result),
-        }
-    };
-
-    match online_wait_outcome {
-        Some(Ok(())) => {}
-        Some(Err(error)) => {
-            return Err(shutdown_started_sender_setup(
-                setup,
-                plan.entry_type,
-                plan.ticket_type,
-                event_emitter.clone(),
-                error,
-            )
-            .await);
-        }
-        None => {
-            return Err(shutdown_started_sender_setup(
-                setup,
-                plan.entry_type,
-                plan.ticket_type,
-                event_emitter.clone(),
-                transfer_cancelled_error(),
-            )
-            .await);
-        }
-    }
-
-    let mut result = setup.into_send_result(plan.entry_type, plan.ticket_type, event_emitter);
-    result.arm_session_lifetime(options.session_lifetime);
-
-    info!(
-        hash = %result.hash,
-        size = result.size,
-        entry_type = %result.entry_type,
-        "send setup complete"
-    );
-    Ok(result)
+    Ok(plan)
 }
 
 /// Start a share and return the opaque v0.7 lifecycle handle.
