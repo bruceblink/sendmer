@@ -257,7 +257,7 @@ Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名
   target 在上传前生成 SPDX SBOM、archive/SBOM Sigstore bundle 和 GitHub provenance bundle。
 - Unix 与 PowerShell 安装器在解压前下载并校验 checksum、签名 bundle 和 provenance 文件；缺失
   `cosign` 或任一信任材料为空时 fail closed。
-- CI native acceptance 已覆盖 Linux x86_64/ARM64、macOS Intel/ARM64 和 Windows MSVC/GNU；
+- CI native acceptance 已覆盖 Linux x86_64/ARM64、macOS ARM64 和 Windows MSVC/GNU；
   release workflow 仍保留 Linux/macOS ARM64 的交叉构建与资产发布矩阵。
 - 保持 release workflow 可重入：同一 tag 重跑时更新 Release 正文，不制造重复资产或版本。
 
@@ -533,7 +533,7 @@ Clippy 拒绝新增测试中的手写空 waker（`manual_noop_waker`）。测试
 [`38553327600`](https://github.com/bruceblink/sendmer/actions/runs/38553327600)，包括全部平台/
 toolchain matrix job、lint、MSRV、workflow 和安装器检查；相对输出目录后续提交另行验收。
 
-- CI 继续覆盖 Linux x86_64/ARM64、macOS Intel/ARM64 和 Windows MSVC/GNU；原生文件名、权限、
+- CI 继续覆盖 Linux x86_64/ARM64、macOS ARM64 和 Windows MSVC/GNU；原生文件名、权限、
   时间戳和窗口结果以对应 runner 的证据为准。
 - release workflow 必须从目标 tag checkout，Release 正文由 tag 提交范围生成，并在重跑同一
   tag 时幂等更新；手动 dispatch 也必须让 provenance identity 与实际 workflow ref 一致。

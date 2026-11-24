@@ -62,7 +62,6 @@ run_expected_matrix() {
   done <<'MATRIX'
 x86_64-unknown-linux-musl|tar.gz
 aarch64-unknown-linux-musl|tar.gz
-x86_64-apple-darwin|tar.gz
 aarch64-apple-darwin|tar.gz
 x86_64-pc-windows-msvc|zip
 x86_64-pc-windows-gnu|zip
@@ -76,7 +75,6 @@ validate_workflow_matrix() {
   for target in \
     x86_64-unknown-linux-musl \
     aarch64-unknown-linux-musl \
-    x86_64-apple-darwin \
     aarch64-apple-darwin \
     x86_64-pc-windows-msvc \
     x86_64-pc-windows-gnu; do
@@ -270,7 +268,7 @@ validate_immutable_release_contract() {
     return 1
   fi
   grep -Fq 'Existing release asset has a different digest' .github/workflows/release.yml
-  grep -Fq 'All six target groups and trust assets are present.' .github/workflows/release.yml
+  grep -Fq 'All five target groups and trust assets are present.' .github/workflows/release.yml
   grep -Fq '.immutable' .github/workflows/release.yml
   if grep -Fq -- '--clobber' .github/workflows/release.yml; then
     echo 'release uploads must not use --clobber' >&2
@@ -285,9 +283,7 @@ validate_ci_native_matrix() {
   for target in \
     'os: "ubuntu-latest"' \
     'os: "ubuntu-24.04-arm"' \
-    'os: "macos-15-intel"' \
     'os: "macos-15"' \
-    'toolchain: "x86_64-apple-darwin"' \
     'toolchain: "aarch64-apple-darwin"' \
     'toolchain: "x86_64-pc-windows-msvc"' \
     'toolchain: "x86_64-pc-windows-gnu"'; do

@@ -102,9 +102,6 @@ jobs:
           - os: "ubuntu-24.04-arm"
             toolchain: "aarch64-unknown-linux-gnu"
             name: "Linux ARM64 GNU"
-          - os: "macos-15-intel"
-            toolchain: "x86_64-apple-darwin"
-            name: "macOS Intel"
           - os: "macos-15"
             toolchain: "aarch64-apple-darwin"
             name: "macOS ARM64"
@@ -116,7 +113,7 @@ jobs:
             name: "Windows GNU"
         # Temporarily pin nightly to the last all-platform pass (run 37933637953;
         # rustc 1.101.0-nightly a30aa9064). The 2026-10-10 nightly ICEs in iroh-blobs
-        # (run 38055295590); remove the pin after a current nightly passes all six platforms.
+        # (run 38055295590); remove the pin after a current nightly passes all five platforms.
         channel:
           - "stable"
           - "beta"

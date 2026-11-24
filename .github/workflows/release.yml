@@ -282,8 +282,6 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             use_cross: true
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
           - os: macos-15
             target: aarch64-apple-darwin
           - os: windows-latest
@@ -582,7 +580,6 @@ jobs:
           for target in \
             x86_64-unknown-linux-musl \
             aarch64-unknown-linux-musl \
-            x86_64-apple-darwin \
             aarch64-apple-darwin \
             x86_64-pc-windows-msvc \
             x86_64-pc-windows-gnu; do
@@ -600,7 +597,7 @@ jobs:
               fi
             done
           done
-          echo "All six target groups and trust assets are present."
+          echo "All five target groups and trust assets are present."
 
       - name: Publish draft release and require immutability
         env:
