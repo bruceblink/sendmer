@@ -124,6 +124,7 @@ jobs:
       contents: write
     outputs:
       release_version: ${{ needs.release-context.outputs.release_version }}
+      release_id: ${{ steps.release.outputs.id }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -188,6 +189,7 @@ jobs:
           echo "Repository immutable releases are enabled."
 
       - name: Ensure GitHub release exists
+        id: release
         if: github.event_name == 'push' || github.event.inputs.create_release == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -196,31 +198,36 @@ jobs:
           set -euo pipefail
           VERSION="$RELEASE_VERSION"
           RELEASE_COMMIT="$(git rev-parse HEAD)"
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}")"
-            DRAFT="$(jq -r '.draft' <<<"$RELEASE_JSON")"
-            IMMUTABLE="$(jq -r '.immutable // false' <<<"$RELEASE_JSON")"
-            EXISTING_COMMIT="$(jq -r '.body // ""' <<<"$RELEASE_JSON" | sed -n 's/.*<!-- sendmer-release-commit: \([0-9a-f]\{40,64\}\) -->.*/\1/p' | head -n 1)"
-            if [ "$DRAFT" != "true" ]; then
-              echo "Release ${VERSION} already exists and is published; refusing to mutate or overwrite it." >&2
-              exit 1
-            fi
-            if [ "$IMMUTABLE" = "true" ]; then
-              echo "Release ${VERSION} is already immutable; refusing to add or replace assets." >&2
-              exit 1
-            fi
-            if [ "$EXISTING_COMMIT" != "$RELEASE_COMMIT" ]; then
-              echo "Existing draft ${VERSION} belongs to ${EXISTING_COMMIT:-unknown}, expected ${RELEASE_COMMIT}." >&2
-              exit 1
-            fi
-            echo "Reusing matching draft release ${VERSION}."
-          else
+          # The REST tag endpoint returns only published releases. List releases
+          # with the write token so drafts are included, and resolve exactly one ID.
+          lookup_release() {
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
+              jq -c --arg tag "$VERSION" '[.[][] | select(.tag_name == $tag)] | if length > 1 then error("Multiple releases for tag") else .[0] end'
+          }
+          RELEASE_JSON="$(lookup_release)"
+          if [ "$RELEASE_JSON" = "null" ]; then
             gh release create "$VERSION" \
               --verify-tag \
               --draft \
               --title "$VERSION" \
               --notes-file release-notes.md
+            RELEASE_JSON="$(lookup_release)"
           fi
+          RELEASE_ID="$(jq -er '.id | select(type == "number" and . > 0)' <<<"$RELEASE_JSON")"
+          DRAFT="$(jq -r '.draft' <<<"$RELEASE_JSON")"
+          IMMUTABLE="$(jq -r '.immutable' <<<"$RELEASE_JSON")"
+          EXISTING_COMMIT="$(jq -r '.body // ""' <<<"$RELEASE_JSON" | sed -n 's/.*<!-- sendmer-release-commit: \([0-9a-f]\{40,64\}\) -->.*/\1/p' | head -n 1)"
+          if [ "$DRAFT" != "true" ] || [ "$IMMUTABLE" != "false" ]; then
+            echo "Release ${VERSION} is not a mutable draft; refusing to change it." >&2
+            exit 1
+          fi
+          if [ "$EXISTING_COMMIT" != "$RELEASE_COMMIT" ]; then
+            echo "Existing draft ${VERSION} belongs to ${EXISTING_COMMIT:-unknown}, expected ${RELEASE_COMMIT}." >&2
+            exit 1
+          fi
+          echo "Using matching draft release ${VERSION} (ID ${RELEASE_ID})."
+          printf 'id=%s\n' "$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
 
   build-release:
     name: Build Release Binaries
@@ -467,10 +474,13 @@ jobs:
           RELEASE_ASSET_SIGNATURE: ${{ steps.signatures.outputs.asset-signature }}
           RELEASE_SBOM_SIGNATURE: ${{ steps.signatures.outputs.sbom-signature }}
           RELEASE_PROVENANCE: ${{ steps.provenance-file.outputs.provenance }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         shell: bash
         run: |
           set -euo pipefail
-          RELEASE_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_VERSION}" --jq '.id')"
+          [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          jq -e --arg tag "$RELEASE_VERSION" '.tag_name == $tag and .draft == true and .immutable == false' <<<"$RELEASE_JSON" >/dev/null
           ASSETS_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100")"
 
           sha256_for_file() {
@@ -516,7 +526,7 @@ jobs:
   publish-release:
     name: Publish immutable GitHub Release
     if: github.event_name == 'push' || (github.event.inputs.create_release == 'true' && github.event.inputs.upload_artifacts == 'true')
-    needs: [release-context, build-release]
+    needs: [release-context, create-release, build-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -525,15 +535,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         shell: bash
         run: |
           set -euo pipefail
-          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_VERSION}")"
-          if [ "$(jq -r '.draft' <<<"$RELEASE_JSON")" != "true" ]; then
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          if ! jq -e --arg tag "$RELEASE_VERSION" '.tag_name == $tag and .draft == true and .immutable == false' <<<"$RELEASE_JSON" >/dev/null; then
             echo "Release ${RELEASE_VERSION} is not a draft; refusing to publish it." >&2
             exit 1
           fi
-          RELEASE_ID="$(jq -r '.id' <<<"$RELEASE_JSON")"
           ASSETS_JSON="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100")"
           for target in \
             x86_64-unknown-linux-musl \
@@ -563,6 +573,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
           RELEASE_VERSION: ${{ needs.release-context.outputs.release_version }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -572,8 +583,10 @@ jobs:
             echo "Repository immutable releases are disabled; refusing to publish ${RELEASE_VERSION}." >&2
             exit 1
           fi
-          gh release edit "$RELEASE_VERSION" --draft=false
-          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_VERSION}")"
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          jq -e --arg tag "$RELEASE_VERSION" '.tag_name == $tag and .draft == true and .immutable == false' <<<"$RELEASE_JSON" >/dev/null
+          gh release edit "$RELEASE_VERSION" --draft=false --verify-tag
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
           if [ "$(jq -r '.draft' <<<"$RELEASE_JSON")" != "false" ]; then
             echo "Release ${RELEASE_VERSION} was not published" >&2
             exit 1
