@@ -616,7 +616,7 @@ jobs:
           fi
           RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
           jq -e --arg tag "$RELEASE_VERSION" '.tag_name == $tag and .draft == true and .immutable == false' <<<"$RELEASE_JSON" >/dev/null
-          gh release edit "$RELEASE_VERSION" --draft=false --verify-tag
+          gh release edit "$RELEASE_VERSION" --draft=false
           RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
           if [ "$(jq -r '.draft' <<<"$RELEASE_JSON")" != "false" ]; then
             echo "Release ${RELEASE_VERSION} was not published" >&2
