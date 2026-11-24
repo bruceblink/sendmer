@@ -198,20 +198,40 @@ jobs:
           set -euo pipefail
           VERSION="$RELEASE_VERSION"
           RELEASE_COMMIT="$(git rev-parse HEAD)"
-          # The REST tag endpoint returns only published releases. List releases
-          # with the write token so drafts are included, and resolve exactly one ID.
+          # `gh release view` resolves draft releases and returns the numeric database ID
+          # needed by the asset and publication jobs.
           lookup_release() {
-            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
-              jq -c --arg tag "$VERSION" '[.[][] | select(.tag_name == $tag)] | if length > 1 then error("Multiple releases for tag") else .[0] end'
+            gh release view "$VERSION" --json databaseId,tagName,isDraft,isImmutable,body |
+              jq -c --arg tag "$VERSION" 'select(.tagName == $tag) | {id:.databaseId,tag_name:.tagName,draft:.isDraft,immutable:.isImmutable,body:.body}'
           }
-          RELEASE_JSON="$(lookup_release)"
+          RELEASE_JSON="null"
+          for attempt in 1 2 3 4 5; do
+            if RELEASE_JSON="$(lookup_release)" && [ "$RELEASE_JSON" != "null" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              sleep 2
+            fi
+          done
           if [ "$RELEASE_JSON" = "null" ]; then
             gh release create "$VERSION" \
               --verify-tag \
               --draft \
               --title "$VERSION" \
               --notes-file release-notes.md
-            RELEASE_JSON="$(lookup_release)"
+            RELEASE_JSON="null"
+            for attempt in 1 2 3 4 5; do
+              if RELEASE_JSON="$(lookup_release)" && [ "$RELEASE_JSON" != "null" ]; then
+                break
+              fi
+              if [ "$attempt" -lt 5 ]; then
+                sleep 2
+              fi
+            done
+          fi
+          if [ "$RELEASE_JSON" = "null" ]; then
+            echo "GitHub did not return a draft release for ${VERSION} after retries." >&2
+            exit 1
           fi
           RELEASE_ID="$(jq -er '.id | select(type == "number" and . > 0)' <<<"$RELEASE_JSON")"
           DRAFT="$(jq -r '.draft' <<<"$RELEASE_JSON")"
