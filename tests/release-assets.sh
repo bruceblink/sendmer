@@ -190,6 +190,74 @@ assert root_package["checksums"] == [{"algorithm": "SHA256", "checksumValue": di
 PY
 }
 
+# Exercise the actual draft-resolution shell step against mocked GitHub responses.
+validate_draft_release_lookup() {
+  local root="$TEST_ROOT/draft-lookup"
+  local step="$root/step.sh"
+  local commit fixture published immutable mismatch duplicate
+  mkdir -p "$root/bin"
+  awk '
+    /^      - name: Ensure GitHub release exists$/ { found=1; next }
+    found && /^        run: \|$/ { running=1; next }
+    running && /^          / { sub(/^          /, ""); print; next }
+    running && NF { exit }
+  ' .github/workflows/release.yml > "$step"
+  test -s "$step"
+  bash -n "$step"
+
+  cat > "$root/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$*" = "api --paginate --slurp repos/bruceblink/sendmer/releases?per_page=100" ]; then
+  if [ "$MOCK_CASE" = "api-error" ]; then
+    exit 17
+  fi
+  if [ "$MOCK_CASE" = "missing" ] && [ ! -f "$MOCK_CREATED" ]; then
+    printf '[[]]\n'
+  else
+    printf '%s\n' "$MOCK_JSON"
+  fi
+elif [ "$*" = "release create v0.12.0 --verify-tag --draft --title v0.12.0 --notes-file release-notes.md" ]; then
+  test "$MOCK_CASE" = "missing"
+  test ! -e "$MOCK_CREATED"
+  touch "$MOCK_CREATED"
+else
+  echo "Unexpected GitHub command: $*" >&2
+  exit 1
+fi
+MOCK
+  chmod +x "$root/bin/gh"
+
+  commit="$(git rev-parse HEAD)"
+  fixture="$(jq -nc --arg commit "$commit" '[[{tag_name:"v0.11.2"}],[{tag_name:"v0.12.0",id:456157962,draft:true,immutable:false,body:("<!-- sendmer-release-commit: "+$commit+" -->")}]]')"
+  published="$(jq -c '.[1][0].draft=false' <<<"$fixture")"
+  immutable="$(jq -c '.[1][0].immutable=true' <<<"$fixture")"
+  mismatch="$(jq -c '.[1][0].body="wrong commit"' <<<"$fixture")"
+  duplicate="$(jq -c '.[0] += [.[1][0]]' <<<"$fixture")"
+
+  run_lookup() {
+    rm -f "$root/created"
+    : > "$root/output"
+    env PATH="$root/bin:$PATH" MOCK_CASE="$1" MOCK_JSON="$2" \
+      MOCK_CREATED="$root/created" GITHUB_REPOSITORY=bruceblink/sendmer \
+      RELEASE_VERSION=v0.12.0 GITHUB_OUTPUT="$root/output" bash "$step"
+  }
+
+  run_lookup existing "$fixture"
+  grep -Fxq 'id=456157962' "$root/output"
+  test ! -e "$root/created"
+  run_lookup missing "$fixture"
+  grep -Fxq 'id=456157962' "$root/output"
+  test -e "$root/created"
+  expect_rejection "published release" run_lookup existing "$published"
+  expect_rejection "immutable draft" run_lookup existing "$immutable"
+  expect_rejection "different source commit" run_lookup existing "$mismatch"
+  expect_rejection "duplicate release tag" run_lookup existing "$duplicate"
+  expect_rejection "release list API failure" run_lookup api-error "$fixture"
+  test ! -s "$root/output"
+  test ! -e "$root/created"
+}
+
 validate_immutable_release_contract() {
   grep -Fq 'cancel-in-progress: false' .github/workflows/release.yml
   grep -Fq 'Require repository immutable releases' .github/workflows/release.yml
@@ -198,6 +266,11 @@ validate_immutable_release_contract() {
   grep -Fq -- '--draft' .github/workflows/release.yml
   grep -Fq 'Publish immutable GitHub Release' .github/workflows/release.yml
   grep -Fq 'gh release edit "$RELEASE_VERSION" --draft=false' .github/workflows/release.yml
+  grep -Fq 'release_id: ${{ steps.release.outputs.id }}' .github/workflows/release.yml
+  if grep -Fq '/releases/tags/' .github/workflows/release.yml; then
+    echo 'draft releases must not use the REST tag endpoint' >&2
+    return 1
+  fi
   grep -Fq 'Existing release asset has a different digest' .github/workflows/release.yml
   grep -Fq 'All six target groups and trust assets are present.' .github/workflows/release.yml
   grep -Fq '.immutable' .github/workflows/release.yml
@@ -254,6 +327,7 @@ validate_windows_safe_identity_regex
 validate_sbom_integrity_contract
 validate_sbom_enrichment
 validate_immutable_release_contract
+validate_draft_release_lookup
 validate_ci_native_matrix
 run_expected_matrix
 run_negative_cases
