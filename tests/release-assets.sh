@@ -194,7 +194,7 @@ PY
 validate_draft_release_lookup() {
   local root="$TEST_ROOT/draft-lookup"
   local step="$root/step.sh"
-  local commit fixture published immutable mismatch duplicate
+  local commit fixture published immutable mismatch
   mkdir -p "$root/bin"
   awk '
     /^      - name: Ensure GitHub release exists$/ { found=1; next }
@@ -208,14 +208,14 @@ validate_draft_release_lookup() {
   cat > "$root/bin/gh" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "$*" = "api --paginate --slurp repos/bruceblink/sendmer/releases?per_page=100" ]; then
+  if [ "$*" = "release view v0.12.0 --json databaseId,tagName,isDraft,isImmutable,body" ]; then
   if [ "$MOCK_CASE" = "api-error" ]; then
     exit 17
   fi
   if [ "$MOCK_CASE" = "missing" ] && [ ! -f "$MOCK_CREATED" ]; then
-    printf '[[]]\n'
+      exit 1
   else
-    printf '%s\n' "$MOCK_JSON"
+      printf '%s\n' "$MOCK_JSON" | jq -c '[.[][] | select(.tag_name == "v0.12.0")][0] | {databaseId:.id,tagName:.tag_name,isDraft:.draft,isImmutable:.immutable,body:.body}'
   fi
 elif [ "$*" = "release create v0.12.0 --verify-tag --draft --title v0.12.0 --notes-file release-notes.md" ]; then
   test "$MOCK_CASE" = "missing"
@@ -233,7 +233,6 @@ MOCK
   published="$(jq -c '.[1][0].draft=false' <<<"$fixture")"
   immutable="$(jq -c '.[1][0].immutable=true' <<<"$fixture")"
   mismatch="$(jq -c '.[1][0].body="wrong commit"' <<<"$fixture")"
-  duplicate="$(jq -c '.[0] += [.[1][0]]' <<<"$fixture")"
 
   run_lookup() {
     rm -f "$root/created"
@@ -252,8 +251,7 @@ MOCK
   expect_rejection "published release" run_lookup existing "$published"
   expect_rejection "immutable draft" run_lookup existing "$immutable"
   expect_rejection "different source commit" run_lookup existing "$mismatch"
-  expect_rejection "duplicate release tag" run_lookup existing "$duplicate"
-  expect_rejection "release list API failure" run_lookup api-error "$fixture"
+  expect_rejection "release view API failure" run_lookup api-error "$fixture"
   test ! -s "$root/output"
   test ! -e "$root/created"
 }

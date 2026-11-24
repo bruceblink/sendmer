@@ -201,14 +201,26 @@ jobs:
           # `gh release view` resolves draft releases and returns the numeric database ID
           # needed by the asset and publication jobs.
           lookup_release() {
-            gh release view "$VERSION" --json databaseId,tagName,isDraft,isImmutable,body |
-              jq -c --arg tag "$VERSION" 'select(.tagName == $tag) | {id:.databaseId,tag_name:.tagName,draft:.isDraft,immutable:.isImmutable,body:.body}'
+            local release_json status
+            if release_json="$(gh release view "$VERSION" --json databaseId,tagName,isDraft,isImmutable,body 2>/dev/null)"; then
+              jq -c --arg tag "$VERSION" 'select(.tagName == $tag) | {id:.databaseId,tag_name:.tagName,draft:.isDraft,immutable:.isImmutable,body:.body}' <<<"$release_json"
+              return 0
+            else
+              status=$?
+            fi
+            if [ "$status" -eq 1 ]; then
+              printf 'null\n'
+              return 0
+            fi
+            return "$status"
           }
           RELEASE_JSON="null"
           for attempt in 1 2 3 4 5; do
-            if RELEASE_JSON="$(lookup_release)" && [ "$RELEASE_JSON" != "null" ]; then
-              break
+            if ! RELEASE_JSON="$(lookup_release)"; then
+              echo "Unable to query the GitHub release ${VERSION}." >&2
+              exit 1
             fi
+            if [ "$RELEASE_JSON" != "null" ]; then break; fi
             if [ "$attempt" -lt 5 ]; then
               sleep 2
             fi
@@ -221,9 +233,11 @@ jobs:
               --notes-file release-notes.md
             RELEASE_JSON="null"
             for attempt in 1 2 3 4 5; do
-              if RELEASE_JSON="$(lookup_release)" && [ "$RELEASE_JSON" != "null" ]; then
-                break
+              if ! RELEASE_JSON="$(lookup_release)"; then
+                echo "Unable to query the GitHub release ${VERSION} after creation." >&2
+                exit 1
               fi
+              if [ "$RELEASE_JSON" != "null" ]; then break; fi
               if [ "$attempt" -lt 5 ]; then
                 sleep 2
               fi
