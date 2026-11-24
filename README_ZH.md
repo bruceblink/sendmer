@@ -24,15 +24,15 @@ sendmer 使用 256 位节点 ID，因此 ticket 在 IP 地址变化后仍可继�
 
 ```powershell
 # 固定安装器和发布版本
-$env:SENDMER_VERSION="v0.12.1"
-iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.1/install.ps1 -useb | iex
+$env:SENDMER_VERSION="v0.12.0"
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.ps1 -useb | iex
 ```
 
 Git Bash、MSYS2 或 Cygwin 请改用 shell 安装器，并确保已安装 `unzip`：
 
 ```bash
-export SENDMER_VERSION=v0.12.1
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.1/install.sh | bash
+export SENDMER_VERSION=v0.12.0
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash
 ```
 
 安装器会在解压前使用 Sigstore 校验归档、SBOM 和 SLSA provenance。
@@ -55,8 +55,8 @@ C:\Users\<用户名>\.sendmer\bin\sendmer.exe
 ### Linux / macOS
 
 ```bash
-export SENDMER_VERSION=v0.12.1
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.1/install.sh | bash
+export SENDMER_VERSION=v0.12.0
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash
 ```
 
 安装器会在安装前校验归档、SBOM 和 SLSA provenance。

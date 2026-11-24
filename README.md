@@ -25,15 +25,15 @@ sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses chan
 
 ```powershell
 # Pin both the installer and the release version
-$env:SENDMER_VERSION="v0.12.1"
-iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.1/install.ps1 -useb | iex
+$env:SENDMER_VERSION="v0.12.0"
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.ps1 -useb | iex
 ```
 
 For Git Bash, MSYS2, or Cygwin, use the shell installer instead. It requires `unzip`:
 
 ```bash
-export SENDMER_VERSION=v0.12.1
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.1/install.sh | bash
+export SENDMER_VERSION=v0.12.0
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash
 ```
 
 The installer verifies the archive, SBOM, and SLSA provenance with Sigstore
@@ -56,8 +56,8 @@ After installation:
 ### Linux / macOS
 
 ```bash
-export SENDMER_VERSION=v0.12.1
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.1/install.sh | bash
+export SENDMER_VERSION=v0.12.0
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash
 ```
 
 The installer verifies the archive, SBOM, and SLSA provenance before
