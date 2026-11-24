@@ -261,7 +261,7 @@ validate_immutable_release_contract() {
   grep -Fq 'gh release create "$VERSION"' .github/workflows/release.yml
   grep -Fq -- '--draft' .github/workflows/release.yml
   grep -Fq 'Publish immutable GitHub Release' .github/workflows/release.yml
-  grep -Fq 'gh release edit "$RELEASE_VERSION" --draft=false' .github/workflows/release.yml
+  grep -Fq 'gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false' .github/workflows/release.yml
   grep -Fq 'release_id: ${{ steps.release.outputs.id }}' .github/workflows/release.yml
   if grep -Fq '/releases/tags/' .github/workflows/release.yml; then
     echo 'draft releases must not use the REST tag endpoint' >&2
