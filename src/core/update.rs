@@ -11,7 +11,6 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-const REPOSITORY: &str = "bruceblink/sendmer";
 const API_URL: &str = "https://api.github.com/repos/bruceblink/sendmer/releases/latest";
 const RAW_BASE_URL: &str = "https://raw.githubusercontent.com/bruceblink/sendmer";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -81,7 +80,8 @@ async fn fetch_latest_version() -> anyhow::Result<Version> {
     if !output.status.success() {
         anyhow::bail!("latest release request returned {}", output.status);
     }
-    let payload: Value = serde_json::from_slice(&output.stdout).context("decode latest release response")?;
+    let payload: Value =
+        serde_json::from_slice(&output.stdout).context("decode latest release response")?;
     let tag = payload
         .get("tag_name")
         .and_then(Value::as_str)
@@ -176,10 +176,6 @@ fn windows_script(version: &str, pid: u32, log_path: &Path) -> String {
     )
 }
 
-fn current_version_string() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
 impl Version {
     const fn current() -> Self {
         Self::parse_const(env!("CARGO_PKG_VERSION"))
@@ -214,7 +210,10 @@ impl Version {
 
     fn parse(value: &str) -> anyhow::Result<Self> {
         let value = value.strip_prefix('v').context("missing v prefix")?;
-        let core = value.split(['-', '+']).next().context("missing version core")?;
+    let core = value
+        .split(['-', '+'])
+        .next()
+        .context("missing version core")?;
         let mut parts = core.split('.');
         let version = Self {
             major: parts.next().context("missing major")?.parse()?,
