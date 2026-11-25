@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 fn sample_common_args() -> CommonArgs {
     CommonArgs {
+        no_update_check: false,
         magic_ipv4_addr: None,
         magic_ipv6_addr: None,
         format: Default::default(),
