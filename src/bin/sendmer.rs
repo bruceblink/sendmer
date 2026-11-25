@@ -17,9 +17,7 @@ use sendmer::core::cli_helper::CliEventEmitter;
 use sendmer::core::results::SenderTransferStatus;
 use sendmer::core::{receiver, sender};
 use sendmer::{AppHandle, ReceiveCacheOptions, ReceiveLimits, ReceiveOptions, SendOptions};
-#[cfg(feature = "clipboard")]
-use std::io::IsTerminal;
-use std::io::Write as _;
+use std::io::{IsTerminal, Write as _};
 use std::sync::Arc;
 use std::{future::Future, io, process::ExitCode};
 
@@ -56,6 +54,15 @@ pub async fn run() -> anyhow::Result<()> {
 
     let json_events = common_args(&args.command).is_some_and(|common| common.json_events);
     if let Some(common) = common_args(&args.command) {
+        if !common.no_update_check
+            && !common.json_events
+            && std::io::stdin().is_terminal()
+            && std::io::stdout().is_terminal()
+        {
+            if sendmer::core::update::check_and_offer_update().await? {
+                return Ok(());
+            }
+        }
         init_tracing(common.verbose).map_err(|error| cli_error(error, json_events))?;
         maybe_show_secret(common).map_err(|error| cli_error(error, json_events))?;
     } else {

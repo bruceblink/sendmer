@@ -59,6 +59,10 @@ pub struct CachePruneArgs {
 
 #[derive(Parser, Debug)]
 pub struct CommonArgs {
+    /// Check for a newer release before starting the command.
+    #[clap(long, default_value_t = false, help_heading = "Update options")]
+    pub no_update_check: bool,
+
     /// The IPv4 address that magicsocket will listen on.
     ///
     /// If None, defaults to a random free port, but it can be useful to specify a fixed
