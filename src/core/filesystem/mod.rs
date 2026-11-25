@@ -14,8 +14,6 @@ use iroh_blobs::{
     format::collection::Collection,
 };
 use n0_future::StreamExt;
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
