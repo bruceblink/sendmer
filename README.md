@@ -95,6 +95,12 @@ The usual commands need only a path or a ticket. Use `sendmer send -h` or
 `sendmer receive -h` for the short help. Use `--help` instead of `-h` to see all
 advanced options. Existing options and their defaults remain unchanged.
 
+### Updates
+
+When an interactive `send` or `receive` command starts, sendmer checks the latest stable GitHub Release. If a newer version exists, it asks whether to update. The update is optional. Answer `n` or press Enter to continue without updating. Answer `y` to run the pinned release installer after the current process exits.
+
+Use `--no-update-check` to skip the check for one invocation, or set `SENDMER_NO_UPDATE_CHECK=1` for scripts and local policy. Update checks are skipped automatically for non-interactive and `--json-events` invocations.
+
 ### Send
 
 ```bash

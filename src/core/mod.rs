@@ -18,3 +18,4 @@ mod shutdown;
 mod storage;
 pub(crate) mod transport;
 pub mod types;
+pub mod update;
