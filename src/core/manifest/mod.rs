@@ -11,7 +11,6 @@ pub(crate) use validate::validate_windows_utf8_component;
 #[cfg(windows)]
 #[allow(unused_imports)]
 pub(crate) use validate::validate_windows_wide_component;
-#[allow(unused_imports)]
 
 #[cfg(test)]
 mod tests;
