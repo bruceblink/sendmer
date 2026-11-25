@@ -58,10 +58,9 @@ pub async fn run() -> anyhow::Result<()> {
             && !common.json_events
             && std::io::stdin().is_terminal()
             && std::io::stdout().is_terminal()
+            && sendmer::core::update::check_and_offer_update().await?
         {
-            if sendmer::core::update::check_and_offer_update().await? {
-                return Ok(());
-            }
+            return Ok(());
         }
         init_tracing(common.verbose).map_err(|error| cli_error(error, json_events))?;
         maybe_show_secret(common).map_err(|error| cli_error(error, json_events))?;
