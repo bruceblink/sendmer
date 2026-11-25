@@ -22,7 +22,7 @@
 本文、README、代码注释和 AlterSendmer 文档统一使用这些名称。标准协议名 `QUIC`、`TLS`、
 `JSON Lines` 和 `SHA-256` 保留标准大小写。
 
-## 1.1 2026-11-24 简化实施基线
+## 1.1 2026-11-26 简化实施基线
 
 本批次冻结新增协议能力，优先降低核心库和桌面客户端的维护成本。核心代码已按职责拆分为
 `transport`、`transfer`、`manifest`、`recovery`、`filesystem` 和 `events` 六个边界。
@@ -40,21 +40,69 @@
 - 新增 `send_handle(path, options)` 和 `receive(ticket, options)` 作为主要库入口。
   事件、取消和资源上限入口保留一个兼容周期。
 
-当前代码和函数大小验收使用以下条件。
+当前代码和函数大小验收覆盖源码、测试和安装脚本。
 
-- `find src -type f -name '*.rs'` 的单文件行数均不超过 600。
-- sender、receiver、manifest、filesystem、recovery 和事件状态逻辑的函数均不超过 120 行。
+- Rust、Shell 和 PowerShell 代码文件均不超过 600 行。
+- 单个函数均不超过 120 行，测试函数也必须遵守该限制。
 - stable Rust `1.100.0` 下 format、严格 Clippy、workspace tests 和 CLI tests 通过。
 - relay 和弱网测试继续使用显式 opt-in。未执行时保持 ignored，不把本地 loopback 结果写成真实 relay 结果。
 
-`AlterSendmer` 当前仍使用 crates.io 的 `sendmer 0.11.0`。核心新 API 需要随正式 crate 版本发布后再
-更新桌面依赖。桌面端的 UI 状态、历史、偏好和更新逻辑继续由 AlterSendmer 持有，缓存布局、导出
+当前验收发现 `tests/cli.rs`、`tests/support/weak_network.rs` 和多个跨进程测试函数超过大小限制。
+这些文件在后续批次中按传输、缓存、事件、恢复和弱网职责拆分。`sender` 和 `receiver` 当前使用
+`include!` 合并实现文件，后续改为真实 Rust 子模块，使用明确的 `pub(super)` 接口限制依赖方向。
+
+`AlterSendmer` 当前仍使用 crates.io 的 `sendmer 0.11.0`。核心新 API 需要先完成桌面依赖迁移，
+再移除兼容入口。桌面端的 UI 状态、历史、偏好和更新逻辑继续由 AlterSendmer 持有，缓存布局、导出
 提交和恢复范围由 sendmer Core 持有。
+
+## 1.2 2026-11-26 代码审查后的后续计划
+
+本计划以 `main` 为唯一开发分支。分支收敛提交为 `da6c14c`，远端已删除功能分支。当前代码审查
+保留以下核心能力：iroh 传输、文件和目录发送、BLAKE3 校验、原子导出、目标冲突拒绝、基本重试、
+基本取消和基本进度事件。新增协议能力暂缓，后续工作只降低耦合、收敛接口和补齐已有能力的验收证据。
+
+审查确认的维护问题如下：
+
+- 事件校验器检查序号和终态，但没有集中校验阶段转换。
+- `RecoverySnapshot` 只有数据结构和单元测试，没有接入接收缓存的实际读写流程。
+- `core` 仍公开多个内部模块，兼容入口和 `SendResult` 内部字段继续扩大公共 API。
+- sender 和 receiver 的文件拆分没有形成真实模块边界。
+- 默认 feature 仍启用 clipboard，更新检查实现位于核心模块，增加了默认构建的维护范围。
+- 安装器仍接受 macOS `x86_64`，与 ARM64-only 发布矩阵不一致。
+- CLI 测试和弱网测试超过文件或函数大小限制。
+
+| 阶段 | 负责范围 | 主要工作 | 通过条件 | 回滚边界 |
+| --- | --- | --- | --- | --- |
+| C12.1 平台与大小约束 | sendmer | 拒绝 macOS Intel 安装目标；拆分超限测试；增加文件和函数大小检查 | 安装器测试覆盖 ARM64 成功和 Intel 拒绝；所有代码文件不超过 600 行；所有函数不超过 120 行 | 只回退安装器、测试和检查脚本 |
+| C12.2 模块边界 | sendmer | 将 `sender`、`receiver` 和测试从 `include!` 改为真实子模块 | 模块只通过明确接口交互，严格 Clippy 和 workspace 测试通过 | 每个模块拆分保持独立提交 |
+| C12.3 统一状态机 | sendmer | 定义统一的内部传输状态，集中校验阶段转换和终态 | 非法阶段、重复终态、终态后事件和跨角色事件均有单元测试 | 保留现有事件 schema，先回退内部状态实现 |
+| C12.4 恢复流程 | sendmer | 接入 `RecoverySnapshot` 的原子读写、范围校验、TTL 和终态判断 | 中断、重启、发送方重启、过期、旧 schema 和损坏快照测试通过 | 可关闭快照复用，保留已验证缓存数据 |
+| C12.5 API 迁移 | sendmer 与 AlterSendmer | AlterSendmer 迁移到 `sendmer 0.12.0`，统一使用 `send_handle` 和 `receive`，再收紧 `core` 和 `SendResult` | 下游不再依赖 `sendmer::core::*`，两个仓库的格式、Clippy 和测试通过 | 兼容入口保留一个发布周期 |
+| C12.6 可选功能 | sendmer | 将 clipboard、manifest、JSON Lines、持久恢复、诊断和 updater 移入 feature 或 CLI 层 | 默认构建只编译主路径，`--no-default-features` 和 `--all-features` 均通过 | 保留旧 feature 名称，下一版本再移除默认启用 |
+
+每个阶段都必须先完成对应验收，再提交和推送。涉及公开 API 时同步更新 rustdoc、示例、fixture、
+README、README_ZH 和 AlterSendmer 迁移记录。涉及平台安装器或 workflow 时增加 actionlint、安装器
+测试和 release rehearsal。外部 relay 不可达时标记为“未执行”，不把本地 loopback 结果写成真实
+relay 结果。
+
+建议的最小验证集如下：
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo check --locked --workspace --no-default-features --bins --tests --examples
+cargo test --locked --workspace --all-features --bins --tests --examples
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --all-features --no-deps
+bash ./tests/release-version.sh
+python3 ./tests/release-notes.py
+bash ./tests/release-assets.sh
+```
 
 ## 2. 产品边界与当前基线
 
-当前核心发布基线为 `sendmer v0.11.2`。`AlterSendmer v0.7.1` 通过 crates.io 使用
-`sendmer 0.11.0`。本项目提供一次性的点对点文件传输。接收方持有有效传输票据即可请求内容，
+当前核心发布基线为 `sendmer v0.12.0`。tag `v0.12.0` 指向 `b4460a2`，Release workflow
+`45422939567` 已完成构建和发布，crates.io 可解析 `sendmer 0.12.0`。`AlterSendmer v0.7.3`
+仍通过 crates.io 使用 `sendmer 0.11.0`。本项目提供一次性的点对点文件传输。接收方持有有效传输票据即可请求内容，
 因此用户应通过可信渠道分享票据。
 
 核心传输层负责：
@@ -64,13 +112,14 @@
 - `SendHandle`、receive 取消、结构化错误、版本化事件和 JSON Lines 输出。
 - sender 共享上传限速和可选持久接收缓存。
 
-当前阶段事实：`sendmer v0.10.0` 的 tag 指向 `fe1f475`；`AlterSendmer v0.6.0` 的 Release
+历史发布事实：`sendmer v0.10.0` 的 tag 指向 `fe1f475`；`AlterSendmer v0.6.0` 的 Release
 workflow `32866559790` 已完成三个平台打包、签名、SBOM、provenance、更新清单和 checksum，
 共上传 23 个资产。`sendmer v0.11.0` 已于 2026-10-09 发布，tag 指向
 `afb449069155d7d8b661f5f3a84ff1dfc573b54a`；GitHub Release 工作流 `37939914533` 全部成功，
 发布页上传 36 个归档、checksum、SBOM、Sigstore 签名和 provenance 资产，crates.io 已可解析
 `sendmer 0.11.0`。`AlterSendmer v0.7.0` 已完成该核心版本的桌面适配和三平台发布。
-`v0.7.1` 修复 macOS 图标，核心依赖继续使用 `sendmer 0.11.0`。
+`v0.7.1` 修复 macOS 图标，核心依赖继续使用 `sendmer 0.11.0`。当前 release 和 CI 的 macOS
+目标只保留 ARM64，安装器、资产检查和相关文档必须保持相同约束。
 
 核心传输层不负责：
 
@@ -264,7 +313,10 @@ Linux、macOS、Windows（MSVC/GNU），并将真实权限/时间戳与原始名
 验收：签名与校验失败均 fail closed；SBOM/provenance 可由发布 tag 追溯；所有资产名、checksum、
 安装器选择规则和 CI native platform matrix 均有自动化测试。
 
-## 7. 下一阶段：质量改进与可演进性（2026-08-26 起）
+## 7. 历史质量改进记录与补充验收
+
+本节保留 2026-08-26 起的历史批次、测试证据和发布记录。当前后续开发以第 1.2 节的 C12 批次为准，
+本节中的旧批次状态只用于回溯，不覆盖新的优先级和验收条件。
 
 ### 7.1 阶段目标与版本策略
 
