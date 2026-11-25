@@ -210,10 +210,10 @@ impl Version {
 
     fn parse(value: &str) -> anyhow::Result<Self> {
         let value = value.strip_prefix('v').context("missing v prefix")?;
-    let core = value
-        .split(['-', '+'])
-        .next()
-        .context("missing version core")?;
+        let core = value
+            .split(['-', '+'])
+            .next()
+            .context("missing version core")?;
         let mut parts = core.split('.');
         let version = Self {
             major: parts.next().context("missing major")?.parse()?,
