@@ -51,30 +51,37 @@ pub async fn check_and_offer_update() -> anyhow::Result<bool> {
 }
 
 async fn fetch_latest_version() -> anyhow::Result<Version> {
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .user_agent(format!("{REPOSITORY}/{current_version_string()}"))
-        .build()
-        .context("build update client")?;
-
-    let response = tokio::time::timeout(
-        REQUEST_TIMEOUT,
-        client
-            .get(API_URL)
-            .header("Accept", "application/vnd.github+json")
-            .send(),
-    )
-    .await
-    .context("latest release request timed out")?
-    .context("latest release request failed")?
-    .error_for_status()
-    .context("latest release request returned an error")?;
-
-    let payload: Value = tokio::time::timeout(REQUEST_TIMEOUT, response.json())
+    let output = if cfg!(windows) {
+        tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            tokio::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Invoke-RestMethod -TimeoutSec 2 -Headers @{Accept='application/vnd.github+json'} -Uri 'https://api.github.com/repos/bruceblink/sendmer/releases/latest' | ConvertTo-Json -Compress",
+                ])
+                .output(),
+        )
         .await
-        .context("latest release response timed out")?
-        .context("decode latest release response")?;
+        .context("latest release request timed out")?
+        .context("latest release request failed")?
+    } else {
+        tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            tokio::process::Command::new("curl")
+                .args(["-fsSL", "--max-time", "2", API_URL])
+                .output(),
+        )
+        .await
+        .context("latest release request timed out")?
+        .context("latest release request failed")?
+    };
 
+    if !output.status.success() {
+        anyhow::bail!("latest release request returned {}", output.status);
+    }
+    let payload: Value = serde_json::from_slice(&output.stdout).context("decode latest release response")?;
     let tag = payload
         .get("tag_name")
         .and_then(Value::as_str)
