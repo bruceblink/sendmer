@@ -8,6 +8,7 @@ mod validate;
 
 pub use model::*;
 pub(crate) use validate::validate_windows_utf8_component;
+#[allow(unused_imports)]
 
 #[cfg(test)]
 mod tests;
