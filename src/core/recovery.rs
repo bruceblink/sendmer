@@ -79,7 +79,10 @@ impl RecoverySnapshot {
     /// 写入一个终态并返回是否仍可用于失败后的恢复。
     pub const fn record_terminal_state(&mut self, state: RecoveryTerminalState) -> bool {
         self.last_terminal_state = Some(state);
-        !matches!(state, RecoveryTerminalState::Completed)
+        !matches!(
+            state,
+            RecoveryTerminalState::Completed | RecoveryTerminalState::Expired
+        )
     }
 
     /// 判断快照是否可以作为后续接收的范围摘要。
@@ -88,7 +91,7 @@ impl RecoverySnapshot {
             && !self.verified_ranges.is_empty()
             && !matches!(
                 self.last_terminal_state,
-                Some(RecoveryTerminalState::Completed)
+                Some(RecoveryTerminalState::Completed | RecoveryTerminalState::Expired)
             )
     }
 }

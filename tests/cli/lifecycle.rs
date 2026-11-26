@@ -1,6 +1,6 @@
 use super::{
     RecordingEmitter, RunningSend, assert_ordered_single_session, ephemeral_loopback_addr,
-    parse_json_events, sendmer_bin,
+    parse_json_events, recovery::read_snapshot, sendmer_bin,
 };
 use iroh_blobs::ticket::BlobTicket;
 use sendmer::{TransferErrorCode, TransferEvent, TransferEventData};
@@ -101,6 +101,12 @@ fn cancellable_receive_preserves_cache_and_emits_one_cancelled_terminal() {
     assert!(cache_entry.join("blobs.db").is_file());
     assert!(!output_dir.path().join(name).exists());
     let events = emitter.snapshot();
+    let snapshot = read_snapshot(&cache_entry);
+    assert_eq!(snapshot.session_id, events[0].session_id);
+    assert_eq!(
+        snapshot.last_terminal_state,
+        Some(sendmer::RecoveryTerminalState::Cancelled)
+    );
     assert_ordered_single_session(&events);
     assert!(matches!(
         events.last().map(|event| &event.event),

@@ -1,7 +1,7 @@
 use super::RECEIVE_TEMP_DIR_PREFIX;
 use super::errors::receive_failure;
 use super::shutdown::{close_receive_endpoint, remove_temp_receive_dir};
-use crate::core::events::{TransferErrorCode, TransferPhase};
+use crate::core::events::{TransferErrorCode, TransferPhase, TransferSessionId};
 use crate::core::options::{
     MAX_LEGACY_COLLECTION_ITEMS, ReceiveLimits, ReceiveOptions, ReceiveRetryPolicy,
 };
@@ -45,6 +45,7 @@ impl ReceiveContext {
         ticket: BlobTicket,
         options: &ReceiveOptions,
         limits: ReceiveLimits,
+        session_id: TransferSessionId,
     ) -> anyhow::Result<Self> {
         options.retry_policy.validate().map_err(|error| {
             receive_failure(
@@ -68,6 +69,9 @@ impl ReceiveContext {
         }
         let addr = ticket.addr().clone();
         let (endpoint, iroh_data_dir, db, cache_lease) = prepare_env(&ticket, options).await?;
+        if let Some(lease) = &cache_lease {
+            lease.begin_recovery(session_id);
+        }
         Ok(Self {
             ticket,
             addr,

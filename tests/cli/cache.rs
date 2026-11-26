@@ -1,4 +1,4 @@
-use super::{RunningSend, ephemeral_loopback_addr, sendmer_bin};
+use super::{RunningSend, ephemeral_loopback_addr, recovery::read_snapshot, sendmer_bin};
 use iroh::EndpointAddr;
 use iroh_blobs::ticket::BlobTicket;
 use iroh_blobs::{BlobFormat, Hash};
@@ -45,6 +45,12 @@ fn persistent_receive_cache_survives_failure_then_reopens_and_cleans_on_success(
 
     assert!(cache_entry.join("manifest.json").is_file());
     assert!(cache_entry.join("blobs.db").is_file());
+    let snapshot = read_snapshot(&cache_entry);
+    assert_eq!(
+        snapshot.last_terminal_state,
+        Some(sendmer::RecoveryTerminalState::Failed)
+    );
+    assert!(snapshot.verified_bytes() > 0);
     assert_eq!(
         std::fs::read(first_output.path().join(name)).unwrap(),
         b"existing"
@@ -131,6 +137,12 @@ fn persistent_receive_cache_recovers_after_receiver_process_is_killed() {
     interrupt_receive_after_progress(&mut first_receive, &line_receiver, reader);
     assert!(!output_dir.path().join(name).exists());
     assert!(cache_entry.join("blobs.db").is_file());
+    let interrupted = read_snapshot(&cache_entry);
+    assert!(
+        interrupted.can_resume(),
+        "crashed receive must persist a verified checkpoint"
+    );
+    assert_eq!(interrupted.last_terminal_state, None);
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (durable_bytes, missing_request) = runtime.block_on(async {
@@ -252,6 +264,8 @@ fn persistent_receive_cache_recovers_after_sender_restart() {
 
     first_sender.cleanup();
     assert!(cache_entry.join("blobs.db").is_file());
+    let before_restart = read_snapshot(&cache_entry);
+    assert!(before_restart.can_resume());
 
     let mut restarted_sender = RunningSend::spawn_with_config(
         &src_file,

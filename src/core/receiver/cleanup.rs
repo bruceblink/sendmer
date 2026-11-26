@@ -1,5 +1,6 @@
 use super::context::{ReceiveArtifacts, ReceiveContext};
 use super::shutdown::{close_receive_endpoint, remove_temp_receive_dir};
+use crate::core::recovery::RecoveryTerminalState;
 use crate::core::results::ReceiveResult;
 use crate::core::shutdown::with_shutdown_deadline;
 use iroh_blobs::api::Store;
@@ -15,7 +16,11 @@ pub(super) fn finalize_failed_receive(
     primary_error
 }
 
-pub(super) async fn cleanup_failed_receive(context: &mut ReceiveContext) -> anyhow::Result<()> {
+pub(super) async fn cleanup_failed_receive(
+    context: &mut ReceiveContext,
+    terminal: RecoveryTerminalState,
+) -> anyhow::Result<()> {
+    context.refresh_recovery(None).await;
     let endpoint_cleanup_result = close_receive_endpoint(&context.endpoint).await;
     let store_cleanup_result =
         shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
@@ -23,6 +28,9 @@ pub(super) async fn cleanup_failed_receive(context: &mut ReceiveContext) -> anyh
     let preserve_uncached_storage =
         should_preserve_uncached_storage(context.cache_lease.is_some(), &store_cleanup_result);
     let shutdown_result = combine_cleanup_results(endpoint_cleanup_result, store_cleanup_result);
+    if let Some(lease) = &context.cache_lease {
+        lease.finish_recovery(terminal);
+    }
     let storage_cleanup_result =
         finalize_receive_storage_after_store_cleanup(context, false, preserve_uncached_storage)
             .await;
@@ -40,6 +48,7 @@ pub(super) async fn finish_receive(
     context: &mut ReceiveContext,
     artifacts: ReceiveArtifacts,
 ) -> anyhow::Result<ReceiveResult> {
+    context.refresh_recovery(None).await;
     let endpoint_cleanup_result = close_receive_endpoint(&context.endpoint).await;
     let store_cleanup_result =
         shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
@@ -47,6 +56,14 @@ pub(super) async fn finish_receive(
     let preserve_uncached_storage =
         should_preserve_uncached_storage(context.cache_lease.is_some(), &store_cleanup_result);
     let shutdown_result = combine_cleanup_results(endpoint_cleanup_result, store_cleanup_result);
+    if let Some(lease) = &context.cache_lease {
+        let terminal = if shutdown_result.is_ok() {
+            RecoveryTerminalState::Completed
+        } else {
+            RecoveryTerminalState::Failed
+        };
+        lease.finish_recovery(terminal);
+    }
     let storage_cleanup_result = finalize_receive_storage_after_store_cleanup(
         context,
         shutdown_result.is_ok(),

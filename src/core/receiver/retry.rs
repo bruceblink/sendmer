@@ -31,6 +31,9 @@ pub(super) async fn download_missing_data(
         })?;
     if local.is_complete() {
         completed_local_total_files_from_children(local.children())?;
+        if let Some(lease) = &context.cache_lease {
+            lease.checkpoint_recovery(&local, None);
+        }
         return Ok(());
     }
 
@@ -62,6 +65,9 @@ pub(super) async fn download_missing_data(
             )
         },
     )?;
+    if let Some(lease) = &context.cache_lease {
+        lease.set_recovery_layout(sizes);
+    }
     execute_download_with_retries(context, &plan, &emitter).await?;
 
     Ok(())
@@ -92,6 +98,9 @@ async fn execute_download_with_retries(
                     "unable to inspect receiver storage",
                 )
             })?;
+        if let Some(lease) = &context.cache_lease {
+            lease.checkpoint_recovery(&local, None);
+        }
         if local.is_complete() {
             reporter.emit_completed_progress();
             return Ok(());
@@ -181,7 +190,7 @@ async fn execute_download_attempt(
         reporter,
         context.retry_policy.download_idle_timeout(),
         max_transfer_limit(plan, context.limits),
-        context.cache_lease.as_ref(),
+        Some(context),
     )
     .await
     .context("download blob stream")

@@ -30,6 +30,15 @@ impl TransferEventEmitter {
         }
     }
 
+    /// Use the same identifier in the private recovery journal and public events.
+    pub(crate) fn session_id(&self) -> TransferSessionId {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .session_id
+            .clone()
+    }
+
     /// Start one session before any progress or terminal event is emitted.
     pub fn emit_started(&self, phase: TransferPhase) {
         self.emit_data(phase, TransferEventData::Started);

@@ -5,6 +5,7 @@
 mod lease;
 mod model;
 mod prune;
+mod snapshot;
 
 pub use model::ReceiveCachePruneReport;
 pub use prune::prune_receive_cache;

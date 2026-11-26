@@ -181,7 +181,14 @@ Receive-specific options:
 
 The only conflict policy in this release is **fail**. If the destination root already exists as a file, directory, or symbolic link, receive fails and leaves it unchanged; sendmer never merges into, renames, skips, or overwrites an existing target. Collections with multiple top-level roots are also rejected because they cannot be committed as one atomic destination.
 
-Retry reuses data already obtained by the current receive process. Cross-process resume is opt-in: configure the same private `--cache-dir` for a later receive of the same content. Failed or cancelled receives preserve verified ranges, successful receives remove their completed cache entry, and the sender still needs to be reachable.
+Retry reuses data already obtained by the current receive process. Cross-process resume is opt-in: configure the same private `--cache-dir` for a later receive of the same content. Failed or cancelled receives preserve verified ranges, successful receives remove their completed cache entry, and the sender must still be reachable if any data is missing.
+
+Persistent entries also keep a bounded advisory recovery checkpoint in `recovery.json`.
+It records validated byte ranges and the recorded receive session's terminal outcome. The
+iroh store is still the sole authority for missing data: a missing, stale, corrupt, or
+unsupported checkpoint cannot cause any unverified data to be skipped. Set
+`SENDMER_DISABLE_RECOVERY_SNAPSHOT=1` to disable checkpoint reads and writes without disabling
+the original cache/resume behavior. TTL pruning and completed-entry cleanup still apply.
 
 Expired entries are pruned automatically when a persistent cache is opened. You can run the same maintenance explicitly:
 
