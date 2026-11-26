@@ -81,6 +81,10 @@ validate_workflow_matrix() {
     grep -Fq "target: $target" .github/workflows/release.yml
   done
   grep -Fq 'native release binary version smoke' .github/workflows/ci.yml
+  if grep -Eq '(x86_64|amd64)-apple-darwin' .github/workflows/{ci,release}.yml; then
+    echo "macOS release and CI matrices must remain ARM64-only" >&2
+    return 1
+  fi
 }
 
 # Git Bash on Windows rewrites backslash escapes in command arguments. Keep the

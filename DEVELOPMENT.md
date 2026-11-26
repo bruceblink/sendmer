@@ -19,6 +19,22 @@
 单个代码文件不得超过 600 行。单个函数不得超过 120 行。核心模块使用同一事件 schema
 和相同的文件提交规则，避免 CLI 和桌面客户端复制传输实现。
 
+## 代码大小检查
+
+CI 和 Release Quality Gate 自动检查 Git 跟踪及新增、未忽略的 Rust、Shell、
+PowerShell 和 Python 文件。文件按物理行数计数（包含空行和注释）；函数从定义签名
+开始至函数体结束，包含空行和注释，不包含前置属性或装饰器。命名函数及嵌套函数
+均检查，解析失败也会阻止通过。Markdown 和 workflow YAML 属于文档及配置，不计入代码文件。
+
+本地复现（在仓库外的 Python 虚拟环境中安装固定版本的语法解析器）：
+
+```bash
+python -m pip install -r scripts/code-size-requirements.txt
+python -B tests/check-code-size.py
+python scripts/check-code-size.py
+rustfmt --edition 2024 --check tests/cli/*.rs tests/support/weak_network/*.rs
+```
+
 ## Clippy & 项目配置
 本项目在 crate 根使用了 Clippy 警告（`#![warn(clippy::all)]` 和 `#![warn(clippy::nursery)]`），并包含 `clippy.toml`（`msrv = "1.91.0"`）。为避免工具链不匹配，推荐使用 Rust 1.91 或更高版本。
 
@@ -93,6 +109,7 @@ bash scripts/install-git-hooks.sh
 在创建并推送 `v<version>` 标签前，按以下顺序确认：
 
 - `Cargo.toml` 的 package 版本与准备创建的标签一致。
+- `python scripts/check-code-size.py`（先安装上方检查依赖）。
 - `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7`
 - `cargo fmt --all -- --check`
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
@@ -100,7 +117,7 @@ bash scripts/install-git-hooks.sh
 - `cargo test --locked --workspace --all-features --bins --tests --examples`
 - `git status --short` 为空，且发布说明会包含本次变更和验证结果。
 
-本地质量检查通过后，先创建本地标签并运行无上传演练；脚本会在临时 worktree 中校验标签版本并执行同一组发布前检查：
+本地质量检查通过后，先创建本地标签并运行无上传演练；脚本会在临时 worktree 中校验标签版本并执行发布前检查。含代码大小检查的新标签需要先激活上文的 Python 环境：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rehearse-release.ps1 -Tag v0.10.0

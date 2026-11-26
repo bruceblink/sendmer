@@ -80,6 +80,19 @@
 | C12.5 API 迁移 | sendmer 与 AlterSendmer | AlterSendmer 迁移到 `sendmer 0.12.0`，统一使用 `send_handle` 和 `receive`，再收紧 `core` 和 `SendResult` | 下游不再依赖 `sendmer::core::*`，两个仓库的格式、Clippy 和测试通过 | 兼容入口保留一个发布周期 |
 | C12.6 可选功能 | sendmer | 将 clipboard、manifest、JSON Lines、持久恢复、诊断和 updater 移入 feature 或 CLI 层 | 默认构建只编译主路径，`--no-default-features` 和 `--all-features` 均通过 | 保留旧 feature 名称，下一版本再移除默认启用 |
 
+**C12.1 本地实施记录（2026-11-26）**：基于 `1312081`，安装器在下载前拒绝 macOS Intel
+目标，测试覆盖 ARM64 两种架构名称、Intel 拒绝及原有签名失败。CLI 和弱网测试按职责拆分，
+保持现有集成测试入口、断言和 opt-in 条件；真实子模块仍属于 C12.2。CI 和 Release Quality Gate
+使用语法解析器检查 Rust、Shell、PowerShell 和 Python 文件及命名函数的物理行数。
+本地扫描 87 个代码文件、775 个函数，最长分别为 595 和 111 行。
+
+Linux x86_64 / Rust 1.100.0：format、严格 Clippy、无默认 feature 检查、Rustdoc、安装器模拟、
+actionlint、发布版本/说明/资产契约演练通过。首次 workspace 测试的限速用例出现接收 endpoint
+关闭超时；单独复测通过，完整复跑 250 项通过、2 项按原条件 ignored。未修改核心关闭逻辑或测试
+阈值。Linux PowerShell 7.7 模拟失败清理和演练脚本语法通过；原生 macOS/Windows、真实 relay
+及 macOS 弱网注入未执行。本地验收证据不替代这些平台的 CI 或真实签名资产安装验证。
+尚未推送或发布，也未进入 C12.2。
+
 每个阶段都必须先完成对应验收，再提交和推送。涉及公开 API 时同步更新 rustdoc、示例、fixture、
 README、README_ZH 和 AlterSendmer 迁移记录。涉及平台安装器或 workflow 时增加 actionlint、安装器
 测试和 release rehearsal。外部 relay 不可达时标记为“未执行”，不把本地 loopback 结果写成真实

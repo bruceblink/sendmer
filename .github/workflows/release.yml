@@ -97,10 +97,21 @@ jobs:
           fi
 
           echo "Release tag verified: ${RELEASE_VERSION} (${TAG_COMMIT})"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install code size parser dependencies
+        run: python -m pip install -r scripts/code-size-requirements.txt
+      - name: Check code size limits
+        run: |
+          python -B tests/check-code-size.py
+          python scripts/check-code-size.py
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Cargo fmt
         run: cargo fmt --all -- --check
+      - name: Check included integration test formatting
+        run: rustfmt --edition 2024 --check tests/cli/*.rs tests/support/weak_network/*.rs
       - name: Cargo clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Cargo check

@@ -54,6 +54,8 @@ C:\Users\<用户名>\.sendmer\bin\sendmer.exe
 
 ### Linux / macOS
 
+macOS 预编译发布资产仅支持 Apple Silicon（ARM64）。请在原生 ARM64 Shell 中运行安装器；不支持 Intel 和 Rosetta x86_64 安装目标。
+
 ```bash
 export SENDMER_VERSION=v0.12.0
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash

@@ -11,23 +11,6 @@ COSIGN_BIN="${SENDMER_COSIGN_BIN:-}"
 
 echo "📦 Installing sendmer..."
 
-# A release must be selected explicitly. This prevents a production install
-# from silently following a future /releases/latest version.
-if [[ -z "$VERSION" ]]; then
-  if [[ "${SENDMER_ALLOW_LATEST:-}" == "1" ]]; then
-    echo "🔍 Fetching latest release (explicitly enabled)..."
-    VERSION="$(curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      https://api.github.com/repos/${REPO}/releases/latest \
-      | sed -nE 's/^[[:space:]]*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' \
-      | head -n 1)"
-  else
-    echo "❌ SENDMER_VERSION is required (for example: v0.11.2)" >&2
-    echo "   Set SENDMER_ALLOW_LATEST=1 only when floating latest is intentional." >&2
-    exit 2
-  fi
-fi
-
 # ----------------------------
 # Detect OS
 # ----------------------------
@@ -77,13 +60,35 @@ if [[ "$OS_TAG" == "pc-windows-msvc" && "$ARCH_TAG" != "x86_64" ]]; then
   exit 1
 fi
 
+# The release and CI matrices only publish native macOS ARM64 assets.
+if [[ "$OS_TAG" == "apple-darwin" && "$ARCH_TAG" != "aarch64" ]]; then
+  echo "❌ Unsupported macOS architecture: $ARCH (ARM64 only; use a native Apple Silicon shell)" >&2
+  exit 1
+fi
+
+# A release must be selected explicitly. This prevents a production install
+# from silently following a future /releases/latest version.
+if [[ -z "$VERSION" ]]; then
+  if [[ "${SENDMER_ALLOW_LATEST:-}" == "1" ]]; then
+    echo "🔍 Fetching latest release (explicitly enabled)..."
+    VERSION="$(curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      https://api.github.com/repos/${REPO}/releases/latest \
+      | sed -nE 's/^[[:space:]]*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' \
+      | head -n 1)"
+  else
+    echo "❌ SENDMER_VERSION is required (for example: v0.11.2)" >&2
+    echo "   Set SENDMER_ALLOW_LATEST=1 only when floating latest is intentional." >&2
+    exit 2
+  fi
+fi
+
 if [[ "$OS_TAG" == "pc-windows-msvc" ]]; then
   COSIGN_ASSET="cosign-windows-amd64.exe"
 else
   case "${OS_TAG}-${ARCH_TAG}" in
     unknown-linux-musl-x86_64) COSIGN_ASSET="cosign-linux-amd64" ;;
     unknown-linux-musl-aarch64) COSIGN_ASSET="cosign-linux-arm64" ;;
-    apple-darwin-x86_64) COSIGN_ASSET="cosign-darwin-amd64" ;;
     apple-darwin-aarch64) COSIGN_ASSET="cosign-darwin-arm64" ;;
     *) echo "❌ No pinned Cosign asset for ${ARCH_TAG}-${OS_TAG}" >&2; exit 1 ;;
   esac
@@ -94,7 +99,6 @@ fi
 case "$COSIGN_ASSET" in
   cosign-linux-amd64)  COSIGN_SHA256="424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa" ;;
   cosign-linux-arm64)  COSIGN_SHA256="ade83b7aac62e131cacfe96d958948b2150cc9ef46a570a2649b8e27dedad2" ;;
-  cosign-darwin-amd64) COSIGN_SHA256="9d1e4abe2b6be279ed0d2ff706fde1ccd738747c834e3e6d44039c238867334f" ;;
   cosign-darwin-arm64) COSIGN_SHA256="9f9b8cd557cf2e5b3df3373a00baa005a86b02391e3e06dd0ce37b3a1533d3a4" ;;
   cosign-windows-amd64.exe) COSIGN_SHA256="cbe953787074611f1334cbf37dc1cf953995bb8c45398eb4fc7bb781d29c1f2a" ;;
   *) echo "❌ No pinned Cosign checksum for $COSIGN_ASSET" >&2; exit 1 ;;
@@ -137,6 +141,11 @@ sha256_file() {
   fi
 }
 
+# macOS system Bash 3.2 does not support Bash 4 case conversion.
+lowercase_hash() {
+  printf '%s' "$1" | LC_ALL=C tr 'A-F' 'a-f'
+}
+
 resolve_cosign() {
   if [[ -n "$COSIGN_BIN" ]]; then
     if [[ ! -x "$COSIGN_BIN" ]] && ! command -v "$COSIGN_BIN" >/dev/null 2>&1; then
@@ -164,7 +173,8 @@ resolve_cosign() {
   curl -fL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/${COSIGN_ASSET}" -o "$cosign_path"
   local actual
   actual="$(sha256_file "$cosign_path")"
-  if [[ "${actual,,}" != "${COSIGN_SHA256,,}" ]]; then
+  actual="$(lowercase_hash "$actual")" || return 1
+  if [[ "$actual" != "$COSIGN_SHA256" ]]; then
     echo "❌ Cosign SHA-256 verification failed" >&2
     return 1
   fi
@@ -186,10 +196,10 @@ if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-fA-F]{64}$ || "$EXPECTED_FILE" != "$ARCHIVE
   echo "❌ Invalid checksum file for $ARCHIVE_NAME"
   exit 1
 fi
-EXPECTED_SHA256="${EXPECTED_SHA256,,}"
+EXPECTED_SHA256="$(lowercase_hash "$EXPECTED_SHA256")" || exit 1
 
 ACTUAL_SHA256="$(sha256_file "$ARCHIVE")"
-ACTUAL_SHA256="${ACTUAL_SHA256,,}"
+ACTUAL_SHA256="$(lowercase_hash "$ACTUAL_SHA256")" || exit 1
 
 if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
   echo "❌ Checksum verification failed for $ARCHIVE_NAME"
