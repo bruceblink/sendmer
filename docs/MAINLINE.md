@@ -110,6 +110,28 @@ Release version/notes/assets 契约检查均通过。大小门禁扫描 95 个�
 平台条件已恢复；没有执行真实 macOS/Windows、relay 或故障注入，原生平台验证以 CI 为准。
 未改变协议、事件 schema、公开 API、依赖或版本号，不实施 C12.3 至 C12.6。
 
+**C12.3 实施记录（2026-11-26）**：基于 main `501c6a0`。C12.2 已通过 PR #10 合并，但
+[PR CI](https://github.com/bruceblink/sendmer/actions/runs/45753289801) 和
+[main CI](https://github.com/bruceblink/sendmer/actions/runs/45753306798) 的 Windows MSVC/GNU
+六个矩阵任务失败，日志定位到两个 Unix 专用测试导入未设置 cfg(unix)。
+C12.3 首先独立修复该问题，不改变测试或降低警告标准。
+
+事件发射器和事件流校验器共享内部 EventStreamState，集中维护会话 ID、角色、序号、活动阶段和
+互斥终态。发射器在同一会话锁内计算取消/内部失败阶段、校验、分配序号并发射；拒绝无效输入不消耗
+序号。消费者保留首次错误并永久拒绝该流。保留 metadata-after-progress、重试失败报告早期阶段、
+无进度完成、sender 多接收方共享会话等已有语义；不新增 wire 事件，不改变 schema 1。
+公开校验错误枚举新增 InvalidPhase（穷举匹配需要适配），其余公开入口和错误分支保留；
+README、迁移指南、fixture 和示例同步更新，AlterSendmer 后续迁移时处理此分支。
+本阶段不更改恢复快照、缓存、网络关闭逻辑、依赖或版本。
+
+Linux x86_64 / Rust 1.100.0：完整 workspace 首轮 260 项通过、1 项接收 endpoint 关闭超时、
+2 项按原条件 ignored。失败的 send_recv_dir 单独复测通过（2.07 秒）；完整复跑 261 项通过、
+2 项 ignored，CLI 30/30。新增 11 项测试覆盖阶段矩阵、终态尾部事件、重试兼容、序号耗尽、
+非法阶段 JSONL 和并发竞争。严格 Clippy、format、无默认 feature、Rustdoc、doc tests（0 项）、
+大小检查（99 个文件、800 个函数；最大 595/111 行）、actionlint、安装器模拟及发布版本/说明/资产
+契约均通过。原生 Windows/macOS 和真实 relay/弱网故障注入不计入本地通过结果。首次关闭超时
+根因未确定，未修改阈值或传输逻辑。
+
 每个阶段都必须先完成对应验收，再提交和推送。涉及公开 API 时同步更新 rustdoc、示例、fixture、
 README、README_ZH 和 AlterSendmer 迁移记录。涉及平台安装器或 workflow 时增加 actionlint、安装器
 测试和 release rehearsal。外部 relay 不可达时标记为“未执行”，不把本地 loopback 结果写成真实

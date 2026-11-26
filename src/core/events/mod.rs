@@ -4,18 +4,24 @@
 
 mod legacy;
 mod payload;
+mod state;
+mod stream_error;
 mod types;
 mod validator;
 
 #[allow(deprecated)]
 pub use legacy::{EventEmitter, LegacyTransferEvent, TransferEvent};
 pub use payload::{TransferEventData, TransferEventEnvelope};
+pub use stream_error::TransferEventStreamError;
 pub use types::{
     ParseTransferSessionIdError, Role, TRANSFER_EVENT_SCHEMA_VERSION, TransferError,
     TransferErrorCode, TransferPhase, TransferSessionId,
 };
-pub use validator::{TransferEventStreamError, TransferEventStreamValidator};
+pub use validator::TransferEventStreamValidator;
 
+pub(crate) use state::EventStreamState;
+
+#[cfg(test)]
 pub(crate) use payload::is_safe_event_file_name;
 pub(crate) use types::{
     classified_transfer_error, classify_transfer_error, is_transfer_cancelled,

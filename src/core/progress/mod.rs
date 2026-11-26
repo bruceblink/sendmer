@@ -13,4 +13,6 @@ pub use sender::{SenderProgressReporter, SenderTransferStatus};
 pub use tracker::{CompletionStatus, ProgressTracker, ProviderProgressTracker, TransferId};
 
 #[cfg(test)]
+mod emitter_tests;
+#[cfg(test)]
 mod tests;

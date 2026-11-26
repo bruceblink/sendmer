@@ -125,6 +125,22 @@ receiver 会话，第二行切换到 sender 后被拒绝，第三行恢复 recei
 桌面适配清单：从正式 `sendmer v0.11.0` 开始，为每个 send 或 receive 会话单独创建校验器；在更新
 UI 或历史前调用 `accept`；收到 `RoleChanged` 后停止该会话的事件更新并显示事件流无效摘要。
 
+### C12.3（尚未发布）：阶段与终态统一校验
+
+事件发射器和消费者校验器共享同一套内部状态转换规则。schema 1 的字段、序列化和单条事件
+反序列化规则不变。首事件仍为 Started；兼容 Preparing、Connecting、Metadata、Transferring
+四个起始阶段。Progress 必须位于 Transferring，FileNames 必须位于 Metadata，
+Completed 必须位于 Finalizing，Cancelled 必须沿用最后接受的活动阶段。
+Failed 的信封阶段必须与 error.phase 一致，Sender 不可报告 Exporting 失败。
+允许跳过不可见的内部阶段、进度之后的元数据、以及重试失败报告较早的操作阶段；
+不要求 phase 按枚举顺序单调递增。发送端单次 provider request 完成不关闭整个会话。
+
+公开错误枚举新增 `TransferEventStreamError::InvalidPhase { sequence, role, previous, found }`。
+这是 Rust 穷举匹配的源码兼容性变化，不能视为完全向后兼容的 API；在后续正式版本发布时
+应明确告知调用方。旧有错误分支和事件载荷结构保留。AlterSendmer 迁移时为每个会话保留独立
+校验器，并将 InvalidPhase 与其他非法事件流错误统一处理；本阶段不修改桌面仓库。
+可用 `transfer_event_invalid_phase.jsonl` 验证首次拒绝后不再接受后续输入。
+
 ## 5. CLI JSONL 迁移
 
 `--json-events` 现在把事件信封逐行写入并刷新到 `stdout`。日志、票据提示和人类可读结果写入
