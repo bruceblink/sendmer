@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::events::{
-    AppHandle, Role, TransferError, TransferEventData, TransferEventEnvelope, TransferPhase,
-    TransferSessionId, emit_event, is_safe_event_file_name,
+    AppHandle, EventStreamState, Role, TransferError, TransferEventData, TransferEventEnvelope,
+    TransferPhase, TransferSessionId, emit_event,
 };
 
 #[derive(Clone)]
@@ -15,10 +15,7 @@ pub struct TransferEventEmitter {
 
 struct TransferEventState {
     session_id: TransferSessionId,
-    next_sequence: u64,
-    started: bool,
-    terminal: bool,
-    current_phase: TransferPhase,
+    stream: EventStreamState,
 }
 
 impl TransferEventEmitter {
@@ -28,10 +25,7 @@ impl TransferEventEmitter {
             role,
             state: Arc::new(StdMutex::new(TransferEventState {
                 session_id: TransferSessionId::new(),
-                next_sequence: 1,
-                started: false,
-                terminal: false,
-                current_phase: TransferPhase::Preparing,
+                stream: EventStreamState::new(),
             })),
         }
     }
@@ -62,39 +56,32 @@ impl TransferEventEmitter {
 
     /// Emit a conservative failure until the caller has a more specific error mapping.
     pub fn emit_internal_failure(&self, message: impl Into<String>) {
-        self.emit_failed(TransferError::new(
-            crate::core::events::TransferErrorCode::Internal,
-            self.current_phase(),
-            false,
-            message,
-        ));
+        let message = message.into();
+        self.emit_with(move |phase| {
+            let error = TransferError::new(
+                crate::core::events::TransferErrorCode::Internal,
+                phase,
+                false,
+                message,
+            );
+            (phase, TransferEventData::Failed { error })
+        });
     }
 
     pub fn emit_cancelled(&self) {
-        let phase = self.current_phase();
-        self.emit_data(phase, TransferEventData::Cancelled);
+        self.emit_with(|phase| (phase, TransferEventData::Cancelled));
     }
 
     /// Emit relative logical names without exposing absolute or traversing paths.
     pub fn emit_file_names(&self, file_names: Vec<String>) {
-        if file_names.iter().any(|name| !is_safe_event_file_name(name)) {
-            tracing::warn!(
-                file_count = file_names.len(),
-                "ignored transfer file-name event with unsafe path"
-            );
-            return;
-        }
         self.emit_data(
             TransferPhase::Metadata,
             TransferEventData::FileNames { file_names },
         );
     }
 
-    fn current_phase(&self) -> TransferPhase {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .current_phase
+    fn emit_data(&self, phase: TransferPhase, event: TransferEventData) -> bool {
+        self.emit_with(move |_| (phase, event))
     }
 
     /// Assign sequence and timestamp while holding the session lock through emission.
@@ -105,8 +92,12 @@ impl TransferEventEmitter {
         clippy::significant_drop_tightening,
         reason = "the state lock deliberately preserves emission order"
     )]
-    fn emit_data(&self, phase: TransferPhase, event: TransferEventData) -> bool {
+    fn emit_with(
+        &self,
+        build: impl FnOnce(TransferPhase) -> (TransferPhase, TransferEventData),
+    ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let (phase, event) = build(state.stream.current_phase());
         let event_kind = match &event {
             TransferEventData::Started => "started",
             TransferEventData::Progress { .. } => "progress",
@@ -115,36 +106,31 @@ impl TransferEventEmitter {
             TransferEventData::Failed { .. } => "failed",
             TransferEventData::Cancelled => "cancelled",
         };
-        let is_started = matches!(event, TransferEventData::Started);
-        if state.terminal || (is_started && state.started) || (!is_started && !state.started) {
-            tracing::debug!(
-                session_id = %state.session_id,
-                ?phase,
-                event_kind,
-                "ignored transfer event that violates session lifecycle"
-            );
-            return false;
-        }
-        let Some(next_sequence) = state.next_sequence.checked_add(1) else {
-            tracing::warn!(
-                session_id = %state.session_id,
-                "transfer event sequence exhausted"
-            );
-            state.terminal = true;
-            return false;
-        };
         let envelope = TransferEventEnvelope::new(
             state.session_id.clone(),
-            state.next_sequence,
+            state.stream.next_sequence(),
             unix_timestamp_ms(),
             self.role,
             phase,
             event,
         );
-        state.next_sequence = next_sequence;
-        state.started |= is_started;
-        state.terminal |= envelope.event.is_terminal();
-        state.current_phase = phase;
+        if let Err(error) = state.stream.accept(&envelope) {
+            if matches!(
+                error,
+                crate::core::events::TransferEventStreamError::UnsafeFileName { .. }
+            ) {
+                tracing::warn!("ignored transfer file-name event with unsafe path");
+            }
+            // Only the structured validation error is logged, never the event payload.
+            tracing::debug!(
+                session_id = %state.session_id,
+                ?phase,
+                event_kind,
+                %error,
+                "ignored transfer event that violates session lifecycle"
+            );
+            return false;
+        }
         emit_event(&self.app_handle, &envelope);
         true
     }
