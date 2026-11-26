@@ -10,6 +10,7 @@ mod errors;
 mod limits;
 mod policy;
 mod prepare;
+#[cfg(feature = "persistent-recovery")]
 mod recovery;
 mod retry;
 mod shutdown;

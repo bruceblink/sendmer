@@ -31,6 +31,7 @@ pub(super) async fn download_missing_data(
         })?;
     if local.is_complete() {
         completed_local_total_files_from_children(local.children())?;
+        #[cfg(feature = "persistent-recovery")]
         context.checkpoint_recovery(&local, None).await;
         return Ok(());
     }
@@ -63,6 +64,7 @@ pub(super) async fn download_missing_data(
             )
         },
     )?;
+    #[cfg(feature = "persistent-recovery")]
     if let Some(lease) = &context.cache_lease {
         lease.set_recovery_layout(sizes);
     }
@@ -96,6 +98,7 @@ async fn execute_download_with_retries(
                     "unable to inspect receiver storage",
                 )
             })?;
+        #[cfg(feature = "persistent-recovery")]
         context.checkpoint_recovery(&local, None).await;
         if local.is_complete() {
             reporter.emit_completed_progress();

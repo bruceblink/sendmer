@@ -81,6 +81,12 @@ validate_workflow_matrix() {
     grep -Fq "target: $target" .github/workflows/release.yml
   done
   grep -Fq 'native release binary version smoke' .github/workflows/ci.yml
+  # Feature-split releases must ship the full CLI on every native and cross target.
+  if grep -Fq 'persistent-recovery = [' Cargo.toml; then
+    grep -Fq 'cross build --locked --release --all-features --target' .github/workflows/release.yml
+    grep -Fq 'cargo build --locked --release --all-features --target' .github/workflows/release.yml
+    grep -Fq 'cargo build --locked --release --all-features --target' .github/workflows/ci.yml
+  fi
   if grep -Eq '(x86_64|amd64)-apple-darwin' .github/workflows/{ci,release}.yml; then
     echo "macOS release and CI matrices must remain ARM64-only" >&2
     return 1

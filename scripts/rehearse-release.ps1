@@ -148,6 +148,28 @@ function Invoke-QualityGate {
         }
     )
 
+    # Feature-split tags also test minimal library and default CLI configurations.
+    if (Test-Path -LiteralPath (Join-Path $WorkingDirectory "tests/features.rs")) {
+        $checks += @(
+            @{
+                Description = "minimal library clippy"
+                Arguments   = @("clippy", "--locked", "--all-targets", "--no-default-features", "--", "-D", "warnings")
+            },
+            @{
+                Description = "minimal library tests"
+                Arguments   = @("test", "--locked", "--no-default-features", "--lib", "--test", "features")
+            },
+            @{
+                Description = "default CLI clippy"
+                Arguments   = @("clippy", "--locked", "--all-targets", "--", "-D", "warnings")
+            },
+            @{
+                Description = "default CLI tests"
+                Arguments   = @("test", "--locked", "--workspace", "--bins", "--tests", "--examples")
+            }
+        )
+    }
+
     foreach ($check in $checks) {
         Invoke-CheckedCommand `
             -WorkingDirectory $WorkingDirectory `

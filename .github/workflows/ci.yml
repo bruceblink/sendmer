@@ -144,7 +144,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --release --target "${{ matrix.target.toolchain }}" --bin sendmer
+          cargo build --locked --release --all-features --target "${{ matrix.target.toolchain }}" --bin sendmer
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             BINARY="target/${{ matrix.target.toolchain }}/release/sendmer.exe"
           else
@@ -164,3 +164,11 @@ jobs:
         run: cargo check --locked --workspace --all-features --bins
       - name: cargo check without default features
         run: cargo check --locked --workspace --no-default-features --bins --tests --examples
+      - name: minimal library test and lint
+        run: |
+          cargo clippy --locked --all-targets --no-default-features -- -D warnings
+          cargo test --locked --no-default-features --lib --test features
+      - name: default CLI test and lint
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --workspace --bins --tests --examples

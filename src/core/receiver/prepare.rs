@@ -10,7 +10,9 @@ use iroh_blobs::api::remote::GetProgressItem;
 use iroh_blobs::get::request::get_hash_seq_and_sizes;
 use n0_future::StreamExt;
 use std::sync::Arc as StdArc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "persistent-recovery")]
+use std::time::Instant;
 
 /// Fetch remote collection sizes with a fresh connection for each retry.
 ///
@@ -137,6 +139,9 @@ where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
 {
     let mut seen_done = false;
+    #[cfg(not(feature = "persistent-recovery"))]
+    let _ = context;
+    #[cfg(feature = "persistent-recovery")]
     let mut last_checkpoint = Instant::now();
     while let Some(item) = next_get_progress_item(stream, idle_timeout).await? {
         match item {
@@ -149,6 +154,7 @@ where
                         "received transfer exceeds the configured byte limit"
                     );
                 }
+                #[cfg(feature = "persistent-recovery")]
                 if let Some(context) = context
                     && let Some(cache_lease) = &context.cache_lease
                 {
@@ -162,6 +168,7 @@ where
             }
             GetProgressItem::Done(value) => {
                 let _stats = value;
+                #[cfg(feature = "persistent-recovery")]
                 if let Some(context) = context
                     && let Some(cache_lease) = &context.cache_lease
                 {

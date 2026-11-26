@@ -1,3 +1,5 @@
+#![cfg(feature = "cli")]
+
 use iroh_blobs::ticket::BlobTicket;
 use sendmer::{RelayModeOption, TransferEvent, TransferEventData};
 use std::{

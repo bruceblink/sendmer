@@ -78,7 +78,7 @@
 | C12.2 模块边界 | sendmer | 将 `sender`、`receiver` 和测试从 `include!` 改为真实子模块 | 模块只通过明确接口交互，严格 Clippy 和 workspace 测试通过 | 每个模块拆分保持独立提交 |
 | C12.3 统一状态机 | sendmer | 定义统一的内部传输状态，集中校验阶段转换和终态 | 非法阶段、重复终态、终态后事件和跨角色事件均有单元测试 | 保留现有事件 schema，先回退内部状态实现 |
 | C12.4 恢复流程 | sendmer | 接入 `RecoverySnapshot` 的原子读写、范围校验、TTL 和终态判断 | 中断、重启、发送方重启、过期、旧 schema 和损坏快照测试通过 | 可关闭快照复用，保留已验证缓存数据 |
-| C12.5 API 迁移 | sendmer 与 AlterSendmer | AlterSendmer 迁移到 `sendmer 0.12.0`，统一使用 `send_handle` 和 `receive`，再收紧 `core` 和 `SendResult` | 下游不再依赖 `sendmer::core::*`，两个仓库的格式、Clippy 和测试通过 | 兼容入口保留一个发布周期 |
+| C12.5 API 迁移 | sendmer 与 AlterSendmer | 统一 CLI/库公共 API、收紧 core 与 SendResult；核心正式发布 v0.13.0 后迁移 AlterSendmer | 核心 API 契约、格式、Clippy、测试通过；正式发布后下游不再依赖 core 并独立验收 | 兼容入口保留一个发布周期 |
 | C12.6 可选功能 | sendmer | 将 clipboard、manifest、JSON Lines、持久恢复、诊断和 updater 移入 feature 或 CLI 层 | 默认构建只编译主路径，`--no-default-features` 和 `--all-features` 均通过 | 保留旧 feature 名称，下一版本再移除默认启用 |
 
 **C12.1 本地实施记录（2026-11-26）**：基于 `1312081`，安装器在下载前拒绝 macOS Intel
@@ -165,6 +165,23 @@ fmt、严格 Clippy、无默认 feature 检查、Rustdoc、3 项 doc tests、大
 105 个代码文件、836 个函数，最大 595/115 行。未验证真实 relay 或断电持久性。
 AlterSendmer 与 sendmer 同步维护。根据最新开发顺序，先完成核心 C12.5/C12.6，
 发布新的正式 crate，再迁移 AlterSendmer 至该已发布版本；旧项目 AlterSendme 不纳入验收。
+
+**C12.6 实施记录（2026-11-26，v0.13.0 发布候选）**：C12.5 已通过 PR #14 合入 main
+（`515c580`），PR CI 20/20 成功。按用户确定的发布顺序，AlterSendmer PR #2 为 draft，
+不在核心正式 Release 和 crates.io 发布前合并。CLI 与 AlterSendmer 通过同一 crate-root API。
+新增 cli、manifest、persistent-recovery feature，保留 clipboard 名称并依赖 cli。
+默认源码构建启用基础 CLI；无默认 feature 的核心构建不直接依赖 clap、console、indicatif、
+tracing-subscriber、crossterm、filetime、fs4。CLI 展示、JSONL、诊断和 updater 在二进制层；
+TM1 导入导出、持久缓存和快照逻辑按 feature 编译，公开模型及安全验证保留。
+禁用能力明确返回错误：禁用缓存不创建或清理存储；不支持的 TM1 不作为 legacy 数据导出。
+正式五平台原生和 cross 构建显式启用全部 feature，兼容既有安装用户。
+v0.13.0 是包含 Rust 源码/API/默认 feature 变更的新次版本；不覆盖已发布 v0.12.0。
+Linux x86_64 / Rust 1.100.0：三种构建严格 Clippy 通过；最小库 184 项、默认 CLI 237 项、
+全功能 270 项测试通过（默认及全功能各 2 项 opt-in ignored）；默认 CLI 19 项、全功能 CLI
+31 项通过。实际 v0.12.0 全功能 sender 到 v0.13.0 默认 receiver 的 TM1 拒绝测试通过，
+无导出文件。大小门禁 108 个文件、843 个函数，最大 573/115 行。未验证真实 relay、
+故障注入或断电持久性。正式 tag 仅在候选 PR/main CI 与发布前门禁验收完成后创建，
+签名、SBOM、provenance、不可变 release 信任策略不变；未发布时不得声称 v0.13.0 已上线。
 
 每个阶段都必须先完成对应验收，再提交和推送。涉及公开 API 时同步更新 rustdoc、示例、fixture、
 README、README_ZH 和 AlterSendmer 迁移记录。涉及平台安装器或 workflow 时增加 actionlint、安装器

@@ -43,7 +43,9 @@ mod core;
 
 // Retain the published argument types for one compatibility cycle. The CLI's
 // presentation and updater implementation are private to the binary.
+#[cfg(feature = "cli")]
 mod cli_args;
+#[cfg(feature = "cli")]
 pub use cli_args::{
     Args, CacheArgs, CacheCommands, CachePruneArgs, Commands, CommonArgs, Format, ReceiveArgs,
     SendArgs,

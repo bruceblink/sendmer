@@ -5,6 +5,7 @@ use crate::core::events::{TransferErrorCode, TransferPhase, TransferSessionId};
 use crate::core::options::{
     MAX_LEGACY_COLLECTION_ITEMS, ReceiveLimits, ReceiveOptions, ReceiveRetryPolicy,
 };
+#[cfg(feature = "persistent-recovery")]
 use crate::core::receive_cache::ReceiveCacheLease;
 use crate::core::storage::{load_fs_store, unique_temp_dir};
 use crate::core::transport::base_endpoint_builder;
@@ -23,6 +24,7 @@ pub(super) struct ReceiveContext {
     pub(super) db: Store,
     pub(super) retry_policy: ReceiveRetryPolicy,
     pub(super) limits: ReceiveLimits,
+    #[cfg(feature = "persistent-recovery")]
     pub(super) cache_lease: Option<ReceiveCacheLease>,
     pub(super) active_staging_dir: Option<PathBuf>,
 }
@@ -57,6 +59,17 @@ impl ReceiveContext {
             )
         })?;
         if let Some(cache) = &options.receive_cache {
+            if !cfg!(feature = "persistent-recovery") {
+                return Err(receive_failure(
+                    anyhow::anyhow!(
+                        "persistent receive cache requires the persistent-recovery feature"
+                    ),
+                    TransferErrorCode::InvalidInput,
+                    TransferPhase::Preparing,
+                    false,
+                    "persistent receive cache feature is disabled",
+                ));
+            }
             cache.validate().map_err(|error| {
                 receive_failure(
                     error,
@@ -68,19 +81,23 @@ impl ReceiveContext {
             })?;
         }
         let addr = ticket.addr().clone();
-        let (endpoint, iroh_data_dir, db, cache_lease) = prepare_env(&ticket, options).await?;
-        if let Some(lease) = &cache_lease {
+        let (endpoint, db, storage) = prepare_env(&ticket, options).await?;
+        #[cfg(not(feature = "persistent-recovery"))]
+        let _ = session_id;
+        #[cfg(feature = "persistent-recovery")]
+        if let Some(lease) = &storage.cache_lease {
             lease.begin_recovery(session_id);
         }
         Ok(Self {
             ticket,
             addr,
             endpoint,
-            iroh_data_dir,
+            iroh_data_dir: storage.path,
             db,
             retry_policy: options.retry_policy,
             limits,
-            cache_lease,
+            #[cfg(feature = "persistent-recovery")]
+            cache_lease: storage.cache_lease,
             active_staging_dir: None,
         })
     }
@@ -157,7 +174,7 @@ impl DownloadPlan {
 async fn prepare_env(
     ticket: &BlobTicket,
     options: &ReceiveOptions,
-) -> anyhow::Result<(Endpoint, PathBuf, Store, Option<ReceiveCacheLease>)> {
+) -> anyhow::Result<(Endpoint, Store, StorageSetup)> {
     let mut builder = base_endpoint_builder(options, vec![]).map_err(|error| {
         receive_failure(
             error,
@@ -181,22 +198,7 @@ async fn prepare_env(
         )
     })?;
 
-    let storage_result = options.receive_cache.as_ref().map_or_else(
-        || {
-            unique_temp_dir(&format!(
-                "{RECEIVE_TEMP_DIR_PREFIX}{}-",
-                ticket.hash().to_hex()
-            ))
-            .map(|path| (path, None))
-        },
-        |cache| {
-            ReceiveCacheLease::open(cache, ticket.hash_and_format()).map(|lease| {
-                let path = lease.entry_dir().to_path_buf();
-                (path, Some(lease))
-            })
-        },
-    );
-    let (iroh_data_dir, cache_lease) = match storage_result {
+    let storage = match open_receive_storage(ticket, options) {
         Ok(storage) => storage,
         Err(error) => {
             if let Err(close_error) = close_receive_endpoint(&endpoint).await {
@@ -211,16 +213,13 @@ async fn prepare_env(
             ));
         }
     };
-    let db = match load_fs_store(&iroh_data_dir).await {
+    let db = match load_fs_store(&storage.path).await {
         Ok(db) => db,
         Err(error) => {
             if let Err(close_error) = close_receive_endpoint(&endpoint).await {
                 tracing::warn!(error = %close_error, "failed to close receiver endpoint after store setup error");
             }
-            let cleanup_result = match cache_lease {
-                Some(lease) => lease.preserve(),
-                None => remove_temp_receive_dir(&iroh_data_dir).await,
-            };
+            let cleanup_result = storage.cleanup_on_error().await;
             if cleanup_result.is_err() {
                 tracing::warn!("failed to finalize receiver storage after open error");
             }
@@ -233,5 +232,46 @@ async fn prepare_env(
             ));
         }
     };
-    Ok((endpoint, iroh_data_dir, db.into(), cache_lease))
+    Ok((endpoint, db.into(), storage))
+}
+
+struct StorageSetup {
+    path: PathBuf,
+    #[cfg(feature = "persistent-recovery")]
+    cache_lease: Option<ReceiveCacheLease>,
+}
+
+impl StorageSetup {
+    async fn cleanup_on_error(self) -> anyhow::Result<()> {
+        #[cfg(feature = "persistent-recovery")]
+        if let Some(lease) = self.cache_lease {
+            return lease.preserve();
+        }
+        remove_temp_receive_dir(&self.path).await
+    }
+}
+
+fn open_receive_storage(
+    ticket: &BlobTicket,
+    options: &ReceiveOptions,
+) -> anyhow::Result<StorageSetup> {
+    #[cfg(feature = "persistent-recovery")]
+    if let Some(cache) = &options.receive_cache {
+        let lease = ReceiveCacheLease::open(cache, ticket.hash_and_format())?;
+        return Ok(StorageSetup {
+            path: lease.entry_dir().to_path_buf(),
+            cache_lease: Some(lease),
+        });
+    }
+    #[cfg(not(feature = "persistent-recovery"))]
+    let _ = options;
+    let path = unique_temp_dir(&format!(
+        "{RECEIVE_TEMP_DIR_PREFIX}{}-",
+        ticket.hash().to_hex()
+    ))?;
+    Ok(StorageSetup {
+        path,
+        #[cfg(feature = "persistent-recovery")]
+        cache_lease: None,
+    })
 }

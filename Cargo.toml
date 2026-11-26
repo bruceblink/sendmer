@@ -1,6 +1,6 @@
 [package]
 name = "sendmer"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 rust-version = "1.91"
 authors = ["likanug <likanug.g@qq.com>"]
@@ -18,6 +18,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "sendmer"
 path = "src/bin/sendmer.rs"
+required-features = ["cli"]
 
 [[bench]]
 name = "share_scale"
@@ -25,14 +26,14 @@ harness = false
 
 [dependencies]
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-console = "0.16"
+clap = { version = "4", features = ["derive"], optional = true }
+console = { version = "0.16", optional = true }
 derive_more = { version = "2", features = [
     "display",
     "from_str"
 ] }
 # I had some issues with futures-buffered 0.2.9
-indicatif = "0.18"
+indicatif = { version = "0.18", optional = true }
 iroh-blobs = { version = "0.103" }
 iroh = "1"
 rand = "0.9"
@@ -41,11 +42,11 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 walkdir = "2.5"
 data-encoding = "2.9"
-filetime = "0.2"
-fs4 = "1.1"
+filetime = { version = "0.2", optional = true }
+fs4 = { version = "1.1", optional = true }
 n0-future = "0.3"
 crossterm = { version = "0.29", features = [
     "event-stream",
@@ -59,13 +60,17 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Console"] }
 
 [dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.9"
 tempfile = "3.23"
 tokio = { version = "1", features = ["test-util"] }
 
 [features]
-clipboard = ["dep:crossterm"]
-default = ["clipboard"]
+default = ["cli"]
+cli = ["dep:clap", "dep:console", "dep:indicatif", "dep:tracing-subscriber"]
+clipboard = ["cli", "dep:crossterm"]
+manifest = ["dep:filetime"]
+persistent-recovery = ["dep:fs4"]
 
 [profile.release]
 panic = "abort"

@@ -6,26 +6,33 @@ use super::super::limits::{
     completed_local_total_files, completed_local_total_files_from_children,
     validate_partial_receive_limits, validate_receive_limits,
 };
+#[cfg(feature = "manifest")]
 use super::support::{
     assert_cached_payload, find_staging_dir, finish_cancelled_export_cleanup, poll_once_then_drop,
 };
 use crate::core::events::{TransferErrorCode, TransferPhase, classified_transfer_error};
+#[cfg(feature = "manifest")]
+use crate::core::filesystem::export_manifest_atomically;
 #[cfg(unix)]
 use crate::core::filesystem::get_export_path;
 use crate::core::filesystem::{
-    collection_root_name, commit_staged_export, create_staging_dir, export_manifest_atomically,
+    collection_root_name, commit_staged_export, create_staging_dir,
     move_staged_root_without_replacing,
 };
+#[cfg(feature = "manifest")]
 use crate::core::manifest::{
     MANIFEST_ENTRY_PREFIX, ManifestEntry, ManifestEntryKind, ManifestMetadata, ManifestPath,
     ManifestPayload, ManifestRoot, TransferManifest,
 };
 use crate::core::options::{MAX_LEGACY_COLLECTION_ITEMS, ReceiveLimits};
 use iroh_blobs::Hash;
+#[cfg(feature = "manifest")]
 use iroh_blobs::format::collection::Collection;
 use std::num::NonZeroU64;
+#[cfg(feature = "manifest")]
 use std::path::Path;
 
+#[cfg(feature = "manifest")]
 #[tokio::test]
 async fn cancelled_manifest_export_cleans_staging_after_store_shutdown() {
     let output_temp = tempfile::tempdir().expect("output temp directory");

@@ -1,10 +1,15 @@
+#![cfg(feature = "cli")]
+
 use iroh_blobs::ticket::BlobTicket;
-use sendmer::{EventEmitter, TransferEvent, TransferEventData, TransferEventStreamValidator};
+#[cfg(feature = "persistent-recovery")]
+use sendmer::EventEmitter;
+use sendmer::{TransferEvent, TransferEventData, TransferEventStreamValidator};
 use std::io::{self, Read};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
+#[cfg(feature = "persistent-recovery")]
 use std::sync::Mutex;
 
 // Resolve the binary before changing the child working directory so parallel
@@ -126,17 +131,20 @@ fn assert_ordered_single_session(events: &[TransferEvent]) {
     assert!(validator.is_terminal());
 }
 
+#[cfg(feature = "persistent-recovery")]
 #[derive(Default)]
 struct RecordingEmitter {
     events: Mutex<Vec<TransferEvent>>,
 }
 
+#[cfg(feature = "persistent-recovery")]
 impl RecordingEmitter {
     fn snapshot(&self) -> Vec<TransferEvent> {
         self.events.lock().expect("event recording lock").clone()
     }
 }
 
+#[cfg(feature = "persistent-recovery")]
 impl EventEmitter for RecordingEmitter {
     fn emit(&self, event: &TransferEvent) {
         self.events
@@ -164,6 +172,7 @@ struct RunningSend {
 ///
 /// This helper deliberately exercises the public CLI and library receive API together, so
 /// platform-specific filesystem assertions below cover the same path used by real consumers.
+#[cfg(feature = "manifest")]
 fn round_trip_manifest(source_root: &Path, source_cwd: &Path, output_dir: &Path) -> PathBuf {
     let mut send = RunningSend::spawn_with_manifest(source_root, source_cwd)
         .expect("manifest sender should start");
@@ -233,6 +242,7 @@ impl RunningSend {
     }
 
     /// Launch a sender in explicit TM1 manifest mode for v0.10 directory fixtures.
+    #[cfg(feature = "manifest")]
     fn spawn_with_manifest(path: &Path, cwd: &Path) -> io::Result<Self> {
         let child = Command::new(sendmer_bin())
             .args([
@@ -332,6 +342,7 @@ impl Drop for RunningSend {
     }
 }
 
+#[cfg(feature = "persistent-recovery")]
 #[path = "cli/cache.rs"]
 mod cache;
 
@@ -341,11 +352,13 @@ mod events;
 #[path = "cli/lifecycle.rs"]
 mod lifecycle;
 
+#[cfg(feature = "manifest")]
 #[path = "cli/manifest.rs"]
 mod manifest;
 
 #[path = "cli/transport.rs"]
 mod transport;
 
+#[cfg(feature = "persistent-recovery")]
 #[path = "cli/recovery.rs"]
 mod recovery;

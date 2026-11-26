@@ -18,12 +18,3 @@ pub struct ReceiveCacheManifest {
     pub created_at_unix_seconds: u64,
     pub ttl_seconds: u64,
 }
-
-/// Summary returned by receive-cache maintenance.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct ReceiveCachePruneReport {
-    pub removed_entries: u64,
-    pub retained_entries: u64,
-    pub active_entries: u64,
-    pub unknown_entries: u64,
-}

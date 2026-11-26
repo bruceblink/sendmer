@@ -124,6 +124,12 @@ jobs:
         run: cargo package --locked --no-verify
       - name: Cargo test
         run: cargo test --locked --workspace --all-features --bins --tests --examples
+      - name: Minimal and default feature validation
+        run: |
+          cargo clippy --locked --all-targets --no-default-features -- -D warnings
+          cargo test --locked --no-default-features --lib --test features
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --workspace --bins --tests --examples
 
   create-release:
     name: Create GitHub Release
@@ -328,9 +334,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --locked --release --target ${{ matrix.target }}
+            cross build --locked --release --all-features --target ${{ matrix.target }}
           else
-            cargo build --locked --release --target ${{ matrix.target }}
+            cargo build --locked --release --all-features --target ${{ matrix.target }}
           fi
 
       - name: Prepare artifact directory
