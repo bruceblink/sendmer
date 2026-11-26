@@ -1,21 +1,24 @@
 //! 在 macOS 回环链路上测试真实 sendmer 进程。测试链路只转发 UDP 数据包。
 
+#[path = "weak_network/forwarding.rs"]
+mod forwarding;
+#[path = "weak_network/verification.rs"]
+mod verification;
+
 use super::{read_ticket, sendmer_bin, stop_child};
 use anyhow::{Context, ensure};
+use forwarding::{LOOPBACK, Network, PAYLOAD_BYTES, SEED, Traffic, forward_udp};
 use iroh::EndpointAddr;
-use iroh_blobs::{Hash, ticket::BlobTicket};
+use iroh_blobs::Hash;
+use iroh_blobs::ticket::BlobTicket;
 use rand::{Rng, SeedableRng, rngs::StdRng};
-use sendmer::{TransferEvent, TransferEventData, TransferEventStreamValidator};
-use std::{collections::BTreeMap, future::pending, net::SocketAddr, path::Path, process::Stdio};
-use tokio::{
-    io::{AsyncBufReadExt, BufReader, Lines},
-    net::UdpSocket,
-    process::{ChildStdout, Command},
-    time::{Duration, Instant, sleep_until, timeout},
-};
-
-include!("weak_network/forwarding.rs");
-include!("weak_network/verification.rs");
+use std::path::Path;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::net::UdpSocket;
+use tokio::process::Command;
+use tokio::time::{Duration, Instant, timeout};
+use verification::{verify_combined_payload, verify_events, verify_link};
 
 /// 限制测试子进程只能向转发端口发包，防止 iroh 建连后改走直连。
 fn isolated_sendmer(proxy_port: u16) -> Command {

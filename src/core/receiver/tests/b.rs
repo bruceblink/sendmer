@@ -1,3 +1,29 @@
+use super::super::cleanup::should_preserve_uncached_storage;
+use super::super::context::DownloadPlan;
+use super::super::entry::{cancellation_requested, wait_for_cancellation};
+use super::super::errors::receive_failed_message;
+use super::super::limits::{
+    completed_local_total_files, completed_local_total_files_from_children,
+    validate_partial_receive_limits, validate_receive_limits,
+};
+use super::support::{
+    assert_cached_payload, find_staging_dir, finish_cancelled_export_cleanup, poll_once_then_drop,
+};
+use crate::core::events::{TransferErrorCode, TransferPhase, classified_transfer_error};
+use crate::core::filesystem::{
+    collection_root_name, commit_staged_export, create_staging_dir, export_manifest_atomically,
+    get_export_path, move_staged_root_without_replacing,
+};
+use crate::core::manifest::{
+    MANIFEST_ENTRY_PREFIX, ManifestEntry, ManifestEntryKind, ManifestMetadata, ManifestPath,
+    ManifestPayload, ManifestRoot, TransferManifest,
+};
+use crate::core::options::{MAX_LEGACY_COLLECTION_ITEMS, ReceiveLimits};
+use iroh_blobs::Hash;
+use iroh_blobs::format::collection::Collection;
+use std::num::NonZeroU64;
+use std::path::Path;
+
 #[tokio::test]
 async fn cancelled_manifest_export_cleans_staging_after_store_shutdown() {
     let output_temp = tempfile::tempdir().expect("output temp directory");
@@ -49,8 +75,7 @@ async fn cancelled_manifest_export_cleans_staging_after_store_shutdown() {
     ));
     let staging_dir = find_staging_dir(&output_dir);
     assert_cached_payload(&db, payload_hash, payload_size as usize, 0xa5).await;
-    finish_cancelled_export_cleanup(&mut active_staging_dir, &staging_dir, &db, &output_dir)
-        .await;
+    finish_cancelled_export_cleanup(&mut active_staging_dir, &staging_dir, &db, &output_dir).await;
 }
 
 #[test]
@@ -63,8 +88,7 @@ fn commit_staged_export_moves_complete_root_into_place() {
     std::fs::create_dir_all(&staged_root).expect("staged root");
     std::fs::write(staged_root.join("file.txt"), b"complete").expect("staged file");
 
-    commit_staged_export(&staging_dir, &output_dir, "root")
-        .expect("staged export should commit");
+    commit_staged_export(&staging_dir, &output_dir, "root").expect("staged export should commit");
 
     assert_eq!(
         std::fs::read(output_dir.join("root/file.txt")).expect("committed file"),
@@ -181,8 +205,8 @@ fn get_export_path_rejects_dangling_target_symlink() {
     std::fs::create_dir_all(&root).expect("create output directory");
     symlink(&outside_target, root.join("file.txt")).expect("create dangling target symlink");
 
-    let err = get_export_path(&root, "file.txt")
-        .expect_err("dangling target symlink should be rejected");
+    let err =
+        get_export_path(&root, "file.txt").expect_err("dangling target symlink should be rejected");
     assert!(err.to_string().contains("symbolic link"));
     assert!(
         !outside_target.exists(),

@@ -110,13 +110,6 @@ function Invoke-QualityGate {
             -Executable "python" -Arguments @("-B", "tests/check-code-size.py")
         Invoke-CheckedCommand -WorkingDirectory $WorkingDirectory -Description "code size limits" `
             -Executable "python" -Arguments @("scripts/check-code-size.py")
-        $fragments = @(
-            Get-ChildItem -Path (Join-Path $WorkingDirectory "tests/cli/*.rs") -File
-            Get-ChildItem -Path (Join-Path $WorkingDirectory "tests/support/weak_network/*.rs") -File
-        )
-        $formatArgs = @("--edition", "2024", "--check") + @($fragments | ForEach-Object { $_.FullName })
-        Invoke-CheckedCommand -WorkingDirectory $WorkingDirectory -Description "included test formatting" `
-            -Executable "rustfmt" -Arguments $formatArgs
     }
 
     # Keep this list aligned with the release workflow so local rehearsal catches the same failures.

@@ -1,8 +1,25 @@
+use super::cleanup::{cleanup_failed_receive, finalize_failed_receive, finish_receive};
+use super::context::ReceiveContext;
+use super::download::receive_once;
+use super::errors::{emit_receive_failed, receive_failed_message, receive_failure};
+use crate::core::events::{
+    AppHandle, Role, TransferErrorCode, TransferPhase, classified_transfer_error,
+    is_transfer_cancelled, transfer_cancelled_error,
+};
+use crate::core::filesystem::resolve_output_dir;
+use crate::core::options::{ReceiveLimits, ReceiveOptions};
+use crate::core::progress::TransferEventEmitter;
+use crate::core::results::ReceiveResult;
+use iroh_blobs::ticket::BlobTicket;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::str::FromStr;
+use tokio::select;
+use tracing::info;
+
 /// 下载并导出由 `ticket_str` 指定的数据到本地目录，不发射事件。
-pub async fn receive(
-    ticket_str: String,
-    options: ReceiveOptions,
-) -> anyhow::Result<ReceiveResult> {
+pub async fn receive(ticket_str: String, options: ReceiveOptions) -> anyhow::Result<ReceiveResult> {
     receive_with_limits_and_cancellation(ticket_str, options, ReceiveLimits::default(), None, None)
         .await
 }
@@ -75,14 +92,9 @@ pub async fn receive_with_limits_and_cancellation(
     let event_emitter = TransferEventEmitter::new(app_handle, Role::Receiver);
     event_emitter.emit_started(TransferPhase::Preparing);
     let mut cancellation = cancellation;
-    let (mut context, output_dir) = prepare_receive_context(
-        &ticket_str,
-        &options,
-        limits,
-        &cancellation,
-        &event_emitter,
-    )
-    .await?;
+    let (mut context, output_dir) =
+        prepare_receive_context(&ticket_str, &options, limits, &cancellation, &event_emitter)
+            .await?;
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
     if cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await {
@@ -260,7 +272,9 @@ where
 ///
 /// A missing receiver becomes a pending future, so the normal `receive` API keeps its existing
 /// Ctrl+C-only behavior while the GPUI adapter can opt into graceful cancellation.
-fn cancellation_requested(cancellation: Option<&tokio::sync::watch::Receiver<bool>>) -> bool {
+pub(super) fn cancellation_requested(
+    cancellation: Option<&tokio::sync::watch::Receiver<bool>>,
+) -> bool {
     cancellation.is_some_and(|receiver| *receiver.borrow())
 }
 
@@ -276,7 +290,9 @@ where
     }
 }
 
-async fn wait_for_cancellation(cancellation: Option<tokio::sync::watch::Receiver<bool>>) {
+pub(super) async fn wait_for_cancellation(
+    cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+) {
     let Some(mut cancellation) = cancellation else {
         std::future::pending::<()>().await;
         return;

@@ -47,9 +47,9 @@
 - stable Rust `1.100.0` 下 format、严格 Clippy、workspace tests 和 CLI tests 通过。
 - relay 和弱网测试继续使用显式 opt-in。未执行时保持 ignored，不把本地 loopback 结果写成真实 relay 结果。
 
-当前验收发现 `tests/cli.rs`、`tests/support/weak_network.rs` 和多个跨进程测试函数超过大小限制。
-这些文件在后续批次中按传输、缓存、事件、恢复和弱网职责拆分。`sender` 和 `receiver` 当前使用
-`include!` 合并实现文件，后续改为真实 Rust 子模块，使用明确的 `pub(super)` 接口限制依赖方向。
+本次简化前的验收发现 CLI 和弱网测试超过大小限制，且 sender 和 receiver 通过 `include!`
+共享作用域。C12.1 已拆分超限测试并增加大小门禁；C12.2 已将目标模块改为真实 Rust 子模块，
+使用明确的内部接口约束依赖方向。
 
 `AlterSendmer` 当前仍使用 crates.io 的 `sendmer 0.11.0`。核心新 API 需要先完成桌面依赖迁移，
 再移除兼容入口。桌面端的 UI 状态、历史、偏好和更新逻辑继续由 AlterSendmer 持有，缓存布局、导出
@@ -91,7 +91,24 @@ actionlint、发布版本/说明/资产契约演练通过。首次 workspace 测
 关闭超时；单独复测通过，完整复跑 250 项通过、2 项按原条件 ignored。未修改核心关闭逻辑或测试
 阈值。Linux PowerShell 7.7 模拟失败清理和演练脚本语法通过；原生 macOS/Windows、真实 relay
 及 macOS 弱网注入未执行。本地验收证据不替代这些平台的 CI 或真实签名资产安装验证。
-尚未推送或发布，也未进入 C12.2。
+C12.1 已通过 PR [#9](https://github.com/bruceblink/sendmer/pull/9) 合入 main（`f60c5e3`）；
+[PR CI](https://github.com/bruceblink/sendmer/actions/runs/45747157746) 和
+[main CI](https://github.com/bruceblink/sendmer/actions/runs/45747197657) 均成功。未发布新版本。
+
+**C12.2 本地实施记录（2026-11-26）**：基于 main `f60c5e3`，sender 和 receiver 分别迁移为 5 个和
+10 个私有实现子模块，保留原有公开重导出；核心测试、CLI 和弱网 fixture 使用真实子模块。
+内部依赖显式导入，生产模块的同级导入图无环。迁移范围内的 291 个函数和 127 个测试（含平台条件及
+ignored 属性）保留，10 个公开函数签名一致；除测试调用路径调整外函数 token 一致（排除可见性、
+注释和格式化尾逗号）。现有 `--test cli`、`--test weak_network_smoke` 及函数名子串过滤保留，
+完整测试名称随模块路径改变。filesystem 的两个 `include!` 不在本阶段迁移范围。
+
+Linux x86_64 / Rust 1.100.0：sender 41 项、receiver 52 项单独测试通过；
+完整 workspace 250 项通过、2 项按原 opt-in 条件 ignored，CLI 30/30 通过。
+严格 Clippy、format、无默认 feature、Rustdoc、doc tests（无示例）、actionlint、安装器模拟及
+Release version/notes/assets 契约检查均通过。大小门禁扫描 95 个文件、775 个函数，
+最长分别为 595 行和 111 行。macOS 专用弱网 fixture 在 Linux 临时启用模块后编译和 Clippy 通过，
+平台条件已恢复；没有执行真实 macOS/Windows、relay 或故障注入，原生平台验证以 CI 为准。
+未改变协议、事件 schema、公开 API、依赖或版本号，不实施 C12.3 至 C12.6。
 
 每个阶段都必须先完成对应验收，再提交和推送。涉及公开 API 时同步更新 rustdoc、示例、fixture、
 README、README_ZH 和 AlterSendmer 迁移记录。涉及平台安装器或 workflow 时增加 actionlint、安装器

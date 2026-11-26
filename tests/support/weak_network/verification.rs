@@ -1,5 +1,17 @@
+use super::forwarding::{
+    Direction, JITTER_MS, Network, ONE_WAY_MS, OUTAGE, PAYLOAD_BYTES, RATE_BYTES_PER_SECOND, SEED,
+    Traffic,
+};
+use anyhow::{Context, ensure};
+use sendmer::{TransferEvent, TransferEventData, TransferEventStreamValidator};
+use tokio::io::{BufReader, Lines};
+use tokio::process::ChildStdout;
+use tokio::time::{Duration, Instant};
+
 /// 读完进程发出的事件。验证顺序、单一终态及重连后的累计进度。
-async fn verify_events(lines: &mut Lines<BufReader<ChildStdout>>) -> anyhow::Result<Instant> {
+pub(super) async fn verify_events(
+    lines: &mut Lines<BufReader<ChildStdout>>,
+) -> anyhow::Result<Instant> {
     let mut validator = TransferEventStreamValidator::new();
     let mut completed = None;
     let mut progress = 0;
@@ -20,7 +32,7 @@ async fn verify_events(lines: &mut Lines<BufReader<ChildStdout>>) -> anyhow::Res
 }
 
 /// 核对实际转发量和故障计数。断网后转发的仍是加密 UDP 字节，包含协议开销。
-fn verify_link(
+pub(super) fn verify_link(
     network: Network,
     traffic: &Traffic,
     started: Instant,
@@ -116,7 +128,11 @@ fn verify_link(
 }
 
 /// 组合弱网会增加 QUIC 重传。用 iroh-blobs 的成功请求统计量核对重试实际读取的载荷。
-fn verify_combined_payload(network: Network, log: &str, retry_count: usize) -> anyhow::Result<()> {
+pub(super) fn verify_combined_payload(
+    network: Network,
+    log: &str,
+    retry_count: usize,
+) -> anyhow::Result<()> {
     let payload = log
         .lines()
         .rev()

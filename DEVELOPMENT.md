@@ -16,6 +16,14 @@
 - `src/core/receive_cache` 和 `src/core/recovery` 负责缓存生命周期和恢复快照。
 - `src/core/events` 和 `src/core/progress` 负责事件 schema、顺序校验、进度和终态。
 
+sender 和 receiver 的内部实现使用私有子模块；原有公开入口由各自的 `mod.rs` 显式重导出。
+内部跨模块调用使用明确的 `use` 和最小必要的 `pub(super)`，不新增 crate 对外接口。
+sender 的 lifecycle 调用 setup/validation，setup 调用 import/provider/validation；
+receiver 的 entry 调用 context/download/cleanup，download 调用 retry，retry 调用
+prepare/policy/limits；错误分类及关闭原语独立于入口。CLI 和弱网测试保留原集成测试目标，
+但测试完整限定名包含子模块名；原有按函数名子串筛选的命令继续有效。
+真实子模块的格式检查统一由 `cargo fmt --all -- --check` 执行。
+
 单个代码文件不得超过 600 行。单个函数不得超过 120 行。核心模块使用同一事件 schema
 和相同的文件提交规则，避免 CLI 和桌面客户端复制传输实现。
 
@@ -32,7 +40,6 @@ PowerShell 和 Python 文件。文件按物理行数计数（包含空行和注�
 python -m pip install -r scripts/code-size-requirements.txt
 python -B tests/check-code-size.py
 python scripts/check-code-size.py
-rustfmt --edition 2024 --check tests/cli/*.rs tests/support/weak_network/*.rs
 ```
 
 ## Clippy & 项目配置

@@ -1,5 +1,21 @@
+use super::import::ImportedCollection;
+use crate::core::options::{AddrInfoOptions, SendOptions};
+use crate::core::storage::unique_temp_dir;
+use crate::core::transport::base_endpoint_builder;
+use anyhow::Context;
+use iroh::Endpoint;
+use iroh::address_lookup::PkarrPublisher;
+use std::collections::{BTreeSet, HashSet};
+use std::future::Future;
+use std::num::NonZeroU64;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::time::Duration;
+use tracing::warn;
+use walkdir::WalkDir;
+
 /// 只检查一次 Ctrl+C future，避免准备步骤在取消后继续打开资源。
-async fn ctrl_c_requested<F>(signal: Pin<&mut F>) -> bool
+pub(super) async fn ctrl_c_requested<F>(signal: Pin<&mut F>) -> bool
 where
     F: Future<Output = std::io::Result<()>> + ?Sized,
 {
@@ -11,7 +27,7 @@ where
 }
 
 /// Prepare endpoint with the given options
-async fn prepare_endpoint(options: &SendOptions) -> anyhow::Result<Endpoint> {
+pub(super) async fn prepare_endpoint(options: &SendOptions) -> anyhow::Result<Endpoint> {
     let mut builder = base_endpoint_builder(options, vec![iroh_blobs::protocol::ALPN.to_vec()])?;
 
     if options.ticket_type == AddrInfoOptions::Id {
@@ -22,12 +38,15 @@ async fn prepare_endpoint(options: &SendOptions) -> anyhow::Result<Endpoint> {
 }
 
 /// Prepare temporary directory for blob storage
-fn prepare_temp_directory() -> anyhow::Result<PathBuf> {
+pub(super) fn prepare_temp_directory() -> anyhow::Result<PathBuf> {
     unique_temp_dir(".sendmer-send-")
 }
 
 /// Validate the path to be shared
-fn validate_share_path(path: &Path, allow_empty_directories: bool) -> anyhow::Result<()> {
+pub(super) fn validate_share_path(
+    path: &Path,
+    allow_empty_directories: bool,
+) -> anyhow::Result<()> {
     let canonical_cwd = std::env::current_dir()?.canonicalize()?;
     let source_metadata = std::fs::symlink_metadata(path).with_context(|| {
         format!(
@@ -111,7 +130,7 @@ fn validate_share_directory_contents(root: &Path) -> anyhow::Result<()> {
 }
 
 /// Enforce optional share-size limits before endpoint or temp-store setup.
-fn validate_share_limits(
+pub(super) fn validate_share_limits(
     path: &Path,
     max_files: Option<NonZeroU64>,
     max_total_size_bytes: Option<NonZeroU64>,
@@ -161,7 +180,7 @@ fn validate_share_limits(
 ///
 /// The first metadata scan happens before storage setup. A source file can change between
 /// that scan and import, so the imported blob totals are the final limit decision.
-fn validate_imported_share_limits(
+pub(super) fn validate_imported_share_limits(
     imported: &ImportedCollection,
     max_files: Option<NonZeroU64>,
     max_total_size_bytes: Option<NonZeroU64>,
@@ -174,7 +193,7 @@ fn validate_imported_share_limits(
     )
 }
 
-fn validate_imported_share_totals(
+pub(super) fn validate_imported_share_totals(
     file_count: u64,
     total_size_bytes: u64,
     max_files: Option<NonZeroU64>,
@@ -198,3 +217,31 @@ fn validate_imported_share_totals(
     }
     Ok(())
 }
+
+pub(super) async fn wait_until_endpoint_is_online(
+    endpoint: &iroh::Endpoint,
+    wait_for_online: bool,
+) -> anyhow::Result<()> {
+    if wait_for_online {
+        match tokio::time::timeout(ENDPOINT_ONLINE_WAIT_TIMEOUT, endpoint.online()).await {
+            Ok(()) => {}
+            Err(_error) => {
+                warn!(
+                    timeout_secs = ENDPOINT_ONLINE_WAIT_TIMEOUT.as_secs(),
+                    "endpoint online probe timed out; continuing with available addresses"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {
+    if path.is_file() {
+        crate::core::types::EntryType::File
+    } else {
+        crate::core::types::EntryType::Directory
+    }
+}
+
+const ENDPOINT_ONLINE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);

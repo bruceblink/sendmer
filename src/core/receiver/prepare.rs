@@ -1,90 +1,22 @@
-async fn prepare_env(
-    ticket: &BlobTicket,
-    options: &ReceiveOptions,
-) -> anyhow::Result<(Endpoint, PathBuf, Store, Option<ReceiveCacheLease>)> {
-    let mut builder = base_endpoint_builder(options, vec![]).map_err(|error| {
-        receive_failure(
-            error,
-            TransferErrorCode::InvalidInput,
-            TransferPhase::Preparing,
-            false,
-            "invalid receive networking options",
-        )
-    })?;
-
-    if ticket.addr().relay_urls().next().is_none() && ticket.addr().ip_addrs().next().is_none() {
-        builder = builder.address_lookup(DnsAddressLookup::n0_dns());
-    }
-    let endpoint = builder.bind().await.map_err(|error| {
-        receive_failure(
-            error.into(),
-            TransferErrorCode::ConnectionFailed,
-            TransferPhase::Connecting,
-            true,
-            "unable to initialize receiver networking",
-        )
-    })?;
-
-    let storage_result = options.receive_cache.as_ref().map_or_else(
-        || {
-            unique_temp_dir(&format!(
-                "{RECEIVE_TEMP_DIR_PREFIX}{}-",
-                ticket.hash().to_hex()
-            ))
-            .map(|path| (path, None))
-        },
-        |cache| {
-            ReceiveCacheLease::open(cache, ticket.hash_and_format()).map(|lease| {
-                let path = lease.entry_dir().to_path_buf();
-                (path, Some(lease))
-            })
-        },
-    );
-    let (iroh_data_dir, cache_lease) = match storage_result {
-        Ok(storage) => storage,
-        Err(error) => {
-            if let Err(close_error) = close_receive_endpoint(&endpoint).await {
-                tracing::warn!(error = %close_error, "failed to close receiver endpoint after storage setup error");
-            }
-            return Err(receive_failure(
-                error,
-                TransferErrorCode::Filesystem,
-                TransferPhase::Preparing,
-                false,
-                "unable to create receiver storage",
-            ));
-        }
-    };
-    let db = match load_fs_store(&iroh_data_dir).await {
-        Ok(db) => db,
-        Err(error) => {
-            if let Err(close_error) = close_receive_endpoint(&endpoint).await {
-                tracing::warn!(error = %close_error, "failed to close receiver endpoint after store setup error");
-            }
-            let cleanup_result = match cache_lease {
-                Some(lease) => lease.preserve(),
-                None => remove_temp_receive_dir(&iroh_data_dir).await,
-            };
-            if cleanup_result.is_err() {
-                tracing::warn!("failed to finalize receiver storage after open error");
-            }
-            return Err(receive_failure(
-                error,
-                TransferErrorCode::Filesystem,
-                TransferPhase::Preparing,
-                false,
-                "unable to open receiver storage",
-            ));
-        }
-    };
-    Ok((endpoint, iroh_data_dir, db.into(), cache_lease))
-}
+use super::errors::{receive_failure, receive_protocol_failure, show_get_error};
+use super::policy::{await_receive_phase, size_fetch_backoff};
+use crate::core::events::{TransferErrorCode, TransferPhase};
+use crate::core::options::{MAX_LEGACY_COLLECTION_METADATA_BYTES, ReceiveRetryPolicy};
+use crate::core::progress::ReceiverProgressReporter;
+use crate::core::receive_cache::ReceiveCacheLease;
+use anyhow::Context;
+use iroh::Endpoint;
+use iroh_blobs::api::remote::GetProgressItem;
+use iroh_blobs::get::request::get_hash_seq_and_sizes;
+use n0_future::StreamExt;
+use std::sync::Arc as StdArc;
+use std::time::Duration;
 
 /// Fetch remote collection sizes with a fresh connection for each retry.
 ///
 /// Reconnecting inside the attempt loop means an initial connection failure is
 /// retried too, instead of skipping the retry policy before any request starts.
-async fn get_sizes_with_retries(
+pub(super) async fn get_sizes_with_retries(
     endpoint: &Endpoint,
     addr: &iroh::EndpointAddr,
     hash: &iroh_blobs::Hash,
@@ -170,18 +102,9 @@ async fn get_sizes_with_retries(
     }))
 }
 
-/// Calculate the transfer-byte ceiling that includes collection protocol overhead.
-fn max_transfer_limit(plan: &DownloadPlan, limits: ReceiveLimits) -> Option<u64> {
-    limits.max_total_size_bytes.map(|limit| {
-        limit
-            .get()
-            .saturating_add(plan.transfer_total.saturating_sub(plan.payload_size))
-    })
-}
-
 /// Consume one get stream without an additional byte ceiling.
 #[cfg(test)]
-async fn process_get_stream_with_reporter<S>(
+pub(super) async fn process_get_stream_with_reporter<S>(
     stream: &mut S,
     already_downloaded: u64,
     reporter: &mut ReceiverProgressReporter,
@@ -202,7 +125,7 @@ where
 }
 
 /// Consume one get stream and reject progress beyond the configured byte ceiling.
-async fn process_get_stream_with_limit<S>(
+pub(super) async fn process_get_stream_with_limit<S>(
     stream: &mut S,
     already_downloaded: u64,
     reporter: &mut ReceiverProgressReporter,

@@ -1,3 +1,25 @@
+use super::super::cleanup::{finalize_cleanup, finalize_failed_receive};
+use super::super::entry::receive_with_limits_and_cancellation;
+use super::super::errors::{emit_receive_failed, receive_failure};
+use super::super::policy::{await_receive_phase, download_backoff, size_fetch_backoff};
+use super::super::prepare::process_get_stream_with_reporter;
+use super::super::shutdown::close_receive_endpoint;
+use super::support::{RecordingEmitter, receiver_reporter};
+use crate::core::events::{
+    Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
+    classified_transfer_error,
+};
+use crate::core::filesystem::{process_export_stream, resolve_output_dir};
+use crate::core::options::{ReceiveLimits, ReceiveOptions, ReceiveRetryPolicy, RelayModeOption};
+use crate::core::progress::TransferEventEmitter;
+use crate::core::transport::base_endpoint_builder;
+use iroh_blobs::api::blobs::ExportProgressItem;
+use iroh_blobs::api::remote::GetProgressItem;
+use n0_future::stream;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
 #[tokio::test]
 async fn receive_cancellation_before_prepare_skips_ticket_parsing() {
     let (_sender, receiver) = tokio::sync::watch::channel(true);
@@ -113,8 +135,7 @@ fn resolve_output_dir_resolves_relative_and_preserves_absolute_paths() {
 
     let temp = tempfile::tempdir().expect("private output parent");
     let absolute = temp.path().join("not-created");
-    let resolved =
-        resolve_output_dir(Some(absolute.clone())).expect("absolute output should pass");
+    let resolved = resolve_output_dir(Some(absolute.clone())).expect("absolute output should pass");
     assert_eq!(resolved, absolute);
     assert!(
         !absolute.exists(),

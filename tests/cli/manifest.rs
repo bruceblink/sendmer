@@ -1,3 +1,4 @@
+use super::{RunningSend, round_trip_manifest};
 #[test]
 fn send_recv_manifest_preserves_empty_directory_and_metadata() {
     let src_dir = tempfile::tempdir().unwrap();

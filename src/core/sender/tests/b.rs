@@ -1,3 +1,14 @@
+use super::super::lifecycle::send;
+use super::super::setup::{ShareRequest, setup_data_sharing, shutdown_started_sender_setup};
+use super::super::validation::{prepare_endpoint, validate_share_path};
+use super::support::RecordingEmitter;
+use crate::core::events::{Role, TransferErrorCode, TransferEventData, TransferPhase};
+use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions};
+use crate::core::progress::TransferEventEmitter;
+use crate::core::types::EntryType;
+use std::num::NonZeroU64;
+use std::sync::Arc;
+
 #[tokio::test]
 async fn send_rejects_empty_directory_during_preparation() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -116,8 +127,7 @@ fn validate_share_path_rejects_symbolic_link_source() {
     std::fs::write(&source, b"content").expect("write source file");
     symlink(&source, &link).expect("create source link");
 
-    let error =
-        validate_share_path(&link, false).expect_err("symbolic link should be rejected");
+    let error = validate_share_path(&link, false).expect_err("symbolic link should be rejected");
 
     assert!(error.to_string().contains("symbolic link"));
 }
@@ -148,8 +158,7 @@ async fn sender_setup_failure_removes_blob_store() {
         manifest_mode: false,
     };
 
-    let error = match setup_data_sharing(endpoint, blobs_data_dir.clone(), share_request).await
-    {
+    let error = match setup_data_sharing(endpoint, blobs_data_dir.clone(), share_request).await {
         Ok(_) => panic!("missing source should fail sender setup"),
         Err(error) => error,
     };

@@ -1,8 +1,30 @@
+use super::import::{ImportedCollection, import};
+use super::provider::{ProviderProgressControl, create_event_sender, spawn_provider_progress_task};
+use super::validation::{
+    detect_entry_type, prepare_temp_directory, validate_imported_share_limits,
+};
+use crate::core::events::{
+    TransferError, TransferErrorCode, TransferPhase, classify_transfer_error,
+};
+use crate::core::options::{AddrInfoOptions, SendOptions, apply_options};
+use crate::core::progress::{SenderTransferStatus, TransferEventEmitter};
+use crate::core::results::SendResult;
+use crate::core::storage::load_fs_store;
+use iroh::Endpoint;
+use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::ticket::BlobTicket;
+use iroh_blobs::{BlobFormat, BlobsProtocol};
+use n0_future::task::AbortOnDropHandle;
+use std::num::NonZeroU64;
+use std::path::{Path, PathBuf};
+use tokio::sync::{mpsc, watch};
+use tracing::warn;
+
 /// Set up data sharing and return immediately after the router starts.
 ///
 /// The caller owns the returned setup before it waits for endpoint readiness, so a
 /// later cancellation can use the normal graceful shutdown path.
-async fn setup_data_sharing(
+pub(super) async fn setup_data_sharing(
     endpoint: Endpoint,
     blobs_data_dir: PathBuf,
     share_request: ShareRequest,
@@ -106,7 +128,7 @@ async fn setup_data_sharing(
 
 /// Remove a sender-owned temporary store after setup fails, tolerating a store
 /// that was never created.
-async fn remove_temp_sender_dir(path: &Path) -> anyhow::Result<()> {
+pub(super) async fn remove_temp_sender_dir(path: &Path) -> anyhow::Result<()> {
     match tokio::fs::remove_dir_all(path).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -115,7 +137,7 @@ async fn remove_temp_sender_dir(path: &Path) -> anyhow::Result<()> {
 }
 
 /// Preserve the startup error while recording a best-effort cleanup failure.
-fn finalize_failed_sender_setup(
+pub(super) fn finalize_failed_sender_setup(
     primary_error: anyhow::Error,
     cleanup_result: anyhow::Result<()>,
 ) -> anyhow::Error {
@@ -126,7 +148,7 @@ fn finalize_failed_sender_setup(
 }
 
 /// Pair an internal sender error with the stable details exposed to event consumers.
-fn sender_failure(
+pub(super) fn sender_failure(
     error: anyhow::Error,
     code: TransferErrorCode,
     phase: TransferPhase,
@@ -136,10 +158,23 @@ fn sender_failure(
     classify_transfer_error(error, TransferError::new(code, phase, retryable, message))
 }
 
-struct ShareRequest {
-    path: PathBuf,
-    entry_type: crate::core::types::EntryType,
-    event_emitter: TransferEventEmitter,
+pub(super) struct ShareRequest {
+    pub(super) path: PathBuf,
+    pub(super) entry_type: crate::core::types::EntryType,
+    pub(super) event_emitter: TransferEventEmitter,
+    pub(super) max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    pub(super) max_receivers: Option<NonZeroU64>,
+    pub(super) max_files: Option<NonZeroU64>,
+    pub(super) max_total_size_bytes: Option<NonZeroU64>,
+    pub(super) max_import_memory_bytes: Option<NonZeroU64>,
+    pub(super) manifest_mode: bool,
+}
+
+pub(super) struct SharePlan {
+    pub(super) entry_type: crate::core::types::EntryType,
+    pub(super) wait_for_online: bool,
+    pub(super) blobs_data_dir: PathBuf,
+    pub(super) ticket_type: AddrInfoOptions,
     max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
     max_receivers: Option<NonZeroU64>,
     max_files: Option<NonZeroU64>,
@@ -148,85 +183,113 @@ struct ShareRequest {
     manifest_mode: bool,
 }
 
-struct SharePlan {
-    entry_type: crate::core::types::EntryType,
-    wait_for_online: bool,
+pub(super) struct SharingSetup {
+    pub(super) router: iroh::protocol::Router,
+    pub(super) imported: ImportedCollection,
     blobs_data_dir: PathBuf,
-    ticket_type: AddrInfoOptions,
-    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
-    max_receivers: Option<NonZeroU64>,
-    max_files: Option<NonZeroU64>,
-    max_total_size_bytes: Option<NonZeroU64>,
-    max_import_memory_bytes: Option<NonZeroU64>,
-    manifest_mode: bool,
+    store: FsStore,
+    progress_handle: AbortOnDropHandle<anyhow::Result<()>>,
+    transfer_status_tx: watch::Sender<SenderTransferStatus>,
+    transfer_status_rx: watch::Receiver<SenderTransferStatus>,
+    shutdown_signal_tx: watch::Sender<bool>,
 }
 
-struct ImportedSource {
-    name: String,
-    path: PathBuf,
-    size: u64,
-    fingerprint: SourceFingerprint,
-}
-
-/// 文件导入前记录的元数据，用于确认打开的句柄仍对应扫描到的文件。
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SourceFingerprint {
-    size: u64,
-    modified: std::time::SystemTime,
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-}
-
-impl SourceFingerprint {
-    /// 从文件元数据生成指纹；修改时间缺失时无法安全确认源文件身份。
-    fn from_metadata(metadata: &std::fs::Metadata) -> anyhow::Result<Self> {
+impl SharePlan {
+    pub(super) fn new(path: &Path, options: &SendOptions) -> anyhow::Result<Self> {
         Ok(Self {
-            size: metadata.len(),
-            modified: metadata
-                .modified()
-                .context("source file has no modification timestamp")?,
-            #[cfg(unix)]
-            device: {
-                use std::os::unix::fs::MetadataExt;
-                metadata.dev()
-            },
-            #[cfg(unix)]
-            inode: {
-                use std::os::unix::fs::MetadataExt;
-                metadata.ino()
-            },
+            entry_type: detect_entry_type(path),
+            wait_for_online: !matches!(
+                options.relay_mode,
+                crate::core::options::RelayModeOption::Disabled
+            ),
+            blobs_data_dir: prepare_temp_directory()?,
+            ticket_type: options.ticket_type,
+            max_upload_rate_bytes_per_sec: options.max_upload_rate_bytes_per_sec,
+            max_receivers: options.max_receivers,
+            max_files: options.max_files,
+            max_total_size_bytes: options.max_total_size_bytes,
+            max_import_memory_bytes: options.max_import_memory_bytes,
+            manifest_mode: options.manifest_mode,
         })
     }
 
-    /// 比较打开句柄的元数据，拒绝扫描后被替换的路径。
-    fn verify_open_metadata(
+    pub(super) const fn build_request(
         &self,
-        path: &Path,
-        metadata: &std::fs::Metadata,
-    ) -> anyhow::Result<()> {
-        let actual = Self::from_metadata(metadata)?;
-        anyhow::ensure!(
-            self == &actual,
-            "source file {} changed between scan and open",
-            path.display()
-        );
-        Ok(())
+        path: PathBuf,
+        event_emitter: TransferEventEmitter,
+    ) -> ShareRequest {
+        ShareRequest {
+            path,
+            entry_type: self.entry_type,
+            event_emitter,
+            max_upload_rate_bytes_per_sec: self.max_upload_rate_bytes_per_sec,
+            max_receivers: self.max_receivers,
+            max_files: self.max_files,
+            max_total_size_bytes: self.max_total_size_bytes,
+            max_import_memory_bytes: self.max_import_memory_bytes,
+            manifest_mode: self.manifest_mode,
+        }
     }
 }
 
-struct ImportedBlob {
-    name: String,
-    temp_tag: TempTag,
-    size: u64,
+impl SharingSetup {
+    pub(super) fn into_send_result(
+        self,
+        entry_type: crate::core::types::EntryType,
+        ticket_type: AddrInfoOptions,
+        event_emitter: TransferEventEmitter,
+    ) -> SendResult {
+        let Self {
+            router,
+            imported,
+            blobs_data_dir,
+            store,
+            progress_handle,
+            transfer_status_tx,
+            transfer_status_rx,
+            shutdown_signal_tx,
+        } = self;
+        let ImportedCollection { temp_tag, size, .. } = imported;
+        let hash = temp_tag.hash();
+
+        let mut addr = router.endpoint().addr();
+        apply_options(&mut addr, ticket_type);
+
+        let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
+
+        SendResult {
+            ticket,
+            hash,
+            size,
+            entry_type,
+            router,
+            temp_tag,
+            blobs_data_dir,
+            _progress_handle: progress_handle,
+            _store: store,
+            transfer_status_tx,
+            transfer_status_rx,
+            event_emitter,
+            shutdown_signal_tx,
+            session_expiry_task: None,
+        }
+    }
 }
 
-struct ManifestSource {
-    path: PathBuf,
-    relative: ManifestPath,
-    kind: ManifestEntryKind,
-    size: u64,
-    metadata: ManifestMetadata,
-    fingerprint: Option<SourceFingerprint>,
+/// Shut down a fully initialized share after its final startup step fails or is cancelled.
+///
+/// A `SharingSetup` already owns a live router and file-backed store, so it must be
+/// converted into `SendResult` to reuse the ordered shutdown and directory cleanup logic.
+pub(super) async fn shutdown_started_sender_setup(
+    setup: SharingSetup,
+    entry_type: crate::core::types::EntryType,
+    ticket_type: AddrInfoOptions,
+    event_emitter: TransferEventEmitter,
+    primary_error: anyhow::Error,
+) -> anyhow::Error {
+    let cleanup_result = setup
+        .into_send_result(entry_type, ticket_type, event_emitter)
+        .shutdown_resources()
+        .await;
+    finalize_failed_sender_setup(primary_error, cleanup_result)
 }
