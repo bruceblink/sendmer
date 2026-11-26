@@ -39,6 +39,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install code size parser dependencies
+        run: python -m pip install -r scripts/code-size-requirements.txt
+      - name: Check code size limits
+        run: |
+          python -B tests/check-code-size.py
+          python scripts/check-code-size.py
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -69,6 +78,8 @@ jobs:
       - uses: swatinem/rust-cache@v2
       - name: cargo fmt
         run: cargo fmt --all -- --check
+      - name: Check included integration test formatting
+        run: rustfmt --edition 2024 --check tests/cli/*.rs tests/support/weak_network/*.rs
       - name: cargo clippy
         run: cargo clippy --locked --workspace --all-targets --all-features
       - name: cargo doc
@@ -127,6 +138,9 @@ jobs:
       - uses: swatinem/rust-cache@v2
       - name: cargo test
         run: cargo test --locked --workspace --all-features --bins --tests --examples
+      - name: macOS system Bash installer target validation
+        if: matrix.target.toolchain == 'aarch64-apple-darwin' && matrix.channel == 'stable'
+        run: /bin/bash ./tests/install-target.sh
       - name: native release binary version smoke
         if: matrix.channel == 'stable'
         shell: bash

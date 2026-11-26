@@ -88,23 +88,7 @@ async fn throttled_relay_transfer_recovers_after_sender_restart() -> anyhow::Res
     let secret = secret_string();
     let binary = sendmer_bin();
 
-    let mut sender = Command::new(&binary)
-        .args([
-            "send",
-            "--no-progress",
-            "--relay",
-            &relay,
-            "--ticket-type",
-            "relay",
-            "--max-upload-rate",
-            "65536",
-        ])
-        .arg(&source_file)
-        .env("IROH_SECRET", &secret)
-        .env_remove("RUST_LOG")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
+    let mut sender = spawn_throttled_relay_sender(&binary, &relay, &source_file, &secret, "65536")?;
 
     let mut receiver = None;
     let mut restarted_sender = None;
@@ -121,33 +105,12 @@ async fn throttled_relay_transfer_recovers_after_sender_restart() -> anyhow::Res
             "weak-network smoke ticket unexpectedly contained an IP address"
         );
 
-        receiver = Some(
-            Command::new(&binary)
-                .args([
-                    "receive",
-                    "--json-events",
-                    "--relay",
-                    &relay,
-                    "--retry-limit",
-                    "20",
-                    "--retry-backoff-ms",
-                    "500",
-                    "--connect-timeout-ms",
-                    "15000",
-                    "--metadata-timeout-ms",
-                    "15000",
-                    "--download-idle-timeout-ms",
-                    "15000",
-                    "--output-dir",
-                    target_dir.path().to_str().expect("utf-8 target path"),
-                ])
-                .arg(ticket.to_string())
-                .env_remove("IROH_SECRET")
-                .env_remove("RUST_LOG")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()?,
-        );
+        receiver = Some(spawn_relay_receiver(
+            &binary,
+            &relay,
+            target_dir.path(),
+            &ticket,
+        )?);
         let receiver_process = receiver
             .as_mut()
             .expect("receiver process was just spawned");
@@ -162,25 +125,13 @@ async fn throttled_relay_transfer_recovers_after_sender_restart() -> anyhow::Res
         stop_child(&mut sender).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        restarted_sender = Some(
-            Command::new(&binary)
-                .args([
-                    "send",
-                    "--no-progress",
-                    "--relay",
-                    &relay,
-                    "--ticket-type",
-                    "relay",
-                    "--max-upload-rate",
-                    "262144",
-                ])
-                .arg(&source_file)
-                .env("IROH_SECRET", &secret)
-                .env_remove("RUST_LOG")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()?,
-        );
+        restarted_sender = Some(spawn_throttled_relay_sender(
+            &binary,
+            &relay,
+            &source_file,
+            &secret,
+            "262144",
+        )?);
         let restarted_process = restarted_sender
             .as_mut()
             .expect("restarted sender was just spawned");
@@ -229,6 +180,65 @@ async fn throttled_relay_transfer_recovers_after_sender_restart() -> anyhow::Res
     }
     stop_child(&mut sender).await;
     result
+}
+
+fn spawn_throttled_relay_sender(
+    binary: &Path,
+    relay: &str,
+    source_file: &Path,
+    secret: &str,
+    max_upload_rate: &str,
+) -> std::io::Result<Child> {
+    Command::new(binary)
+        .args([
+            "send",
+            "--no-progress",
+            "--relay",
+            relay,
+            "--ticket-type",
+            "relay",
+            "--max-upload-rate",
+            max_upload_rate,
+        ])
+        .arg(source_file)
+        .env("IROH_SECRET", secret)
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+fn spawn_relay_receiver(
+    binary: &Path,
+    relay: &str,
+    target_dir: &Path,
+    ticket: &BlobTicket,
+) -> std::io::Result<Child> {
+    Command::new(binary)
+        .args([
+            "receive",
+            "--json-events",
+            "--relay",
+            relay,
+            "--retry-limit",
+            "20",
+            "--retry-backoff-ms",
+            "500",
+            "--connect-timeout-ms",
+            "15000",
+            "--metadata-timeout-ms",
+            "15000",
+            "--download-idle-timeout-ms",
+            "15000",
+            "--output-dir",
+            target_dir.to_str().expect("utf-8 target path"),
+        ])
+        .arg(ticket.to_string())
+        .env_remove("IROH_SECRET")
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
 }
 
 /// Wait until the receiver has durable-looking progress before interrupting the sender.

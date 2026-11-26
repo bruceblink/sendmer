@@ -55,6 +55,8 @@ After installation:
 
 ### Linux / macOS
 
+The prebuilt macOS release supports Apple Silicon (ARM64) only. Run the installer in a native ARM64 shell; Intel and Rosetta x86_64 targets are unsupported.
+
 ```bash
 export SENDMER_VERSION=v0.12.0
 curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash
