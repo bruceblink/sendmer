@@ -2,7 +2,8 @@ use super::{RunningSend, sendmer_bin};
 use iroh_blobs::ticket::BlobTicket;
 use sendmer::{RecoverySnapshot, RecoveryTerminalState, Role};
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output};
+use std::time::{Duration, Instant};
 
 pub(super) fn read_snapshot(entry: &Path) -> RecoverySnapshot {
     let value: serde_json::Value = serde_json::from_slice(
@@ -25,6 +26,33 @@ pub(super) fn read_snapshot(entry: &Path) -> RecoverySnapshot {
             .all(|r| !r.is_empty() && r.end <= total)
     );
     snapshot
+}
+
+/// Wait for committed recovery metadata, not a fixed delay after telemetry.
+pub(super) fn wait_for_live_checkpoint(entry: &Path, child: &mut Child, minimum: u64) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        assert!(
+            child.try_wait().expect("inspect receiver").is_none(),
+            "receiver exited before writing an active checkpoint"
+        );
+        if let Ok(bytes) = std::fs::read(entry.join("recovery.json"))
+            && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            && let Ok(snapshot) =
+                serde_json::from_value::<RecoverySnapshot>(value["snapshot"].clone())
+            && snapshot.last_terminal_state.is_none()
+            && snapshot.can_resume()
+            && snapshot.verified_bytes() >= minimum
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("receiver did not persist the required verified checkpoint before deadline");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn receive(ticket: &BlobTicket, cache: &Path, output: &Path, disable: bool) -> Output {
