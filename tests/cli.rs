@@ -1,18 +1,11 @@
-use std::{
-    io::{self, BufRead, BufReader, Read},
-    net::{Ipv4Addr, SocketAddrV4, UdpSocket},
-    path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    str::FromStr,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
-
-use iroh::EndpointAddr;
-use iroh_blobs::{BlobFormat, Hash, ticket::BlobTicket};
-use sendmer::{
-    EventEmitter, TransferErrorCode, TransferEvent, TransferEventData, TransferEventStreamValidator,
-};
+use iroh_blobs::ticket::BlobTicket;
+use sendmer::{EventEmitter, TransferEvent, TransferEventData, TransferEventStreamValidator};
+use std::io::{self, Read};
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::str::FromStr;
+use std::sync::Mutex;
 
 // Resolve the binary before changing the child working directory so parallel
 // tests cannot make the command path point at a temporary directory.
@@ -339,9 +332,17 @@ impl Drop for RunningSend {
     }
 }
 
-// Keep the integration test target and test names stable for existing commands.
-include!("cli/transport.rs");
-include!("cli/lifecycle.rs");
-include!("cli/manifest.rs");
-include!("cli/cache.rs");
-include!("cli/events.rs");
+#[path = "cli/cache.rs"]
+mod cache;
+
+#[path = "cli/events.rs"]
+mod events;
+
+#[path = "cli/lifecycle.rs"]
+mod lifecycle;
+
+#[path = "cli/manifest.rs"]
+mod manifest;
+
+#[path = "cli/transport.rs"]
+mod transport;

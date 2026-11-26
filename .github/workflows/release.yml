@@ -110,8 +110,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Cargo fmt
         run: cargo fmt --all -- --check
-      - name: Check included integration test formatting
-        run: rustfmt --edition 2024 --check tests/cli/*.rs tests/support/weak_network/*.rs
       - name: Cargo clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Cargo check

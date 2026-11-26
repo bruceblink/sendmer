@@ -1,14 +1,22 @@
-const PAYLOAD_BYTES: usize = 1024 * 1024;
-const RATE_BYTES_PER_SECOND: u64 = 256 * 1024;
-const ONE_WAY_MS: u64 = 75;
-const JITTER_MS: [u64; 4] = [50, 75, 100, 75];
-const OUTAGE: Duration = Duration::from_secs(15);
-const SEED: u64 = 21;
-const LOOPBACK: &str = "127.0.0.1:0";
+use anyhow::ensure;
+use std::collections::BTreeMap;
+use std::future::pending;
+use std::net::SocketAddr;
+use std::path::Path;
+use tokio::net::UdpSocket;
+use tokio::time::{Duration, Instant, sleep_until};
+
+pub(super) const PAYLOAD_BYTES: usize = 1024 * 1024;
+pub(super) const RATE_BYTES_PER_SECOND: u64 = 256 * 1024;
+pub(super) const ONE_WAY_MS: u64 = 75;
+pub(super) const JITTER_MS: [u64; 4] = [50, 75, 100, 75];
+pub(super) const OUTAGE: Duration = Duration::from_secs(15);
+pub(super) const SEED: u64 = 21;
+pub(super) const LOOPBACK: &str = "127.0.0.1:0";
 const QUEUE_LIMIT: usize = 1024;
 
 #[derive(Clone, Copy, Debug)]
-enum Network {
+pub(super) enum Network {
     Control,
     RateLimited,
     PacketLoss,
@@ -22,23 +30,23 @@ enum Network {
 
 impl Network {
     /// 组合用例在断网前后都保持限速、丢包和抖动。
-    fn combined(self) -> bool {
+    pub(super) fn combined(self) -> bool {
         matches!(self, Self::Combined | Self::CombinedWithRetry)
     }
 
-    fn rate_limited(self) -> bool {
+    pub(super) fn rate_limited(self) -> bool {
         matches!(self, Self::RateLimited) || self.combined()
     }
 
-    fn loses_packets(self) -> bool {
+    pub(super) fn loses_packets(self) -> bool {
         matches!(self, Self::PacketLoss) || self.combined()
     }
 
-    fn has_outage(self) -> bool {
+    pub(super) fn has_outage(self) -> bool {
         matches!(self, Self::Outage | Self::OutageWithRetry) || self.combined()
     }
 
-    fn forces_retry(self) -> bool {
+    pub(super) fn forces_retry(self) -> bool {
         matches!(self, Self::OutageWithRetry | Self::CombinedWithRetry)
     }
 
@@ -55,14 +63,14 @@ impl Network {
 }
 
 #[derive(Default)]
-struct Direction {
-    eligible: u64,
-    forwarded_bytes: u64,
-    lost: u64,
-    lost_after_outage: u64,
-    blocked: u64,
-    min_wait: Option<Duration>,
-    max_wait: Duration,
+pub(super) struct Direction {
+    pub(super) eligible: u64,
+    pub(super) forwarded_bytes: u64,
+    pub(super) lost: u64,
+    pub(super) lost_after_outage: u64,
+    pub(super) blocked: u64,
+    pub(super) min_wait: Option<Duration>,
+    pub(super) max_wait: Duration,
 }
 
 impl Direction {
@@ -74,12 +82,12 @@ impl Direction {
 }
 
 #[derive(Default)]
-struct Traffic {
-    uplink: Direction,
-    downlink: Direction,
-    outage_start: Option<Instant>,
-    first_packet_after_outage: Option<Instant>,
-    downlink_before_outage: u64,
+pub(super) struct Traffic {
+    pub(super) uplink: Direction,
+    pub(super) downlink: Direction,
+    pub(super) outage_start: Option<Instant>,
+    pub(super) first_packet_after_outage: Option<Instant>,
+    pub(super) downlink_before_outage: u64,
 }
 
 struct QueuedPacket {
@@ -91,7 +99,7 @@ struct QueuedPacket {
 
 /// 用同一个本机地址双向转发。发送端地址从票据读取，接收端地址从首个数据包取得。
 /// 按到期时间转发，允许抖动改变包的先后顺序。队列满时测试失败。
-async fn forward_udp(
+pub(super) async fn forward_udp(
     socket: &UdpSocket,
     sender: SocketAddr,
     network: Network,

@@ -78,8 +78,6 @@ jobs:
       - uses: swatinem/rust-cache@v2
       - name: cargo fmt
         run: cargo fmt --all -- --check
-      - name: Check included integration test formatting
-        run: rustfmt --edition 2024 --check tests/cli/*.rs tests/support/weak_network/*.rs
       - name: cargo clippy
         run: cargo clippy --locked --workspace --all-targets --all-features
       - name: cargo doc

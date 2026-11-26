@@ -1,3 +1,12 @@
+use super::{RunningSend, ephemeral_loopback_addr, sendmer_bin};
+use iroh::EndpointAddr;
+use iroh_blobs::ticket::BlobTicket;
+use iroh_blobs::{BlobFormat, Hash};
+use sendmer::{TransferEvent, TransferEventData};
+use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 #[test]
 fn persistent_receive_cache_survives_failure_then_reopens_and_cleans_on_success() {
     let name = "persistent-cache.bin";
