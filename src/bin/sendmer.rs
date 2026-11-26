@@ -9,14 +9,21 @@ use data_encoding::HEXLOWER;
 use indicatif::HumanBytes;
 #[cfg(feature = "clipboard")]
 use n0_future::StreamExt;
-use sendmer::core::args::{
-    Args, CacheArgs, CacheCommands, Commands, CommonArgs, ReceiveArgs, SendArgs,
-    get_or_create_secret, print_hash,
+#[path = "cli/events.rs"]
+mod cli_events;
+#[path = "cli/output.rs"]
+mod cli_output;
+#[path = "cli/update.rs"]
+mod cli_update;
+
+use cli_events::CliEventEmitter;
+use cli_output::print_hash;
+use sendmer::{
+    AppHandle, Args, CacheArgs, CacheCommands, Commands, CommonArgs, ReceiveArgs,
+    ReceiveCacheOptions, ReceiveLimits, ReceiveOptions, ReceiveRetryPolicy, SendArgs, SendOptions,
+    SenderTransferStatus, endpoint_secret, receive_with_limits_and_cancellation,
+    send_handle_with_events,
 };
-use sendmer::core::cli_helper::CliEventEmitter;
-use sendmer::core::results::SenderTransferStatus;
-use sendmer::core::{receiver, sender};
-use sendmer::{AppHandle, ReceiveCacheOptions, ReceiveLimits, ReceiveOptions, SendOptions};
 use std::io::{IsTerminal, Write as _};
 use std::sync::Arc;
 use std::{future::Future, io, process::ExitCode};
@@ -58,7 +65,7 @@ pub async fn run() -> anyhow::Result<()> {
             && !common.json_events
             && std::io::stdin().is_terminal()
             && std::io::stdout().is_terminal()
-            && sendmer::core::update::check_and_offer_update().await?
+            && cli_update::check_and_offer_update().await?
         {
             return Ok(());
         }
@@ -122,7 +129,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     let opts = send_options(&args);
     let app_handle = cli_app_handle("[send]", args.common.no_progress, args.common.json_events);
 
-    let res = sender::send_handle_with_events(args.path.clone(), opts, app_handle).await?;
+    let res = send_handle_with_events(args.path.clone(), opts, app_handle).await?;
 
     let messages = [
         format!(
@@ -169,8 +176,14 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
     let limits = receive_limits(&args);
     let app_handle = cli_app_handle("[recv]", args.common.no_progress, args.common.json_events);
 
-    let res =
-        receiver::receive_with_limits(args.ticket.to_string(), opts, limits, app_handle).await?;
+    let res = receive_with_limits_and_cancellation(
+        args.ticket.to_string(),
+        opts,
+        limits,
+        app_handle,
+        None,
+    )
+    .await?;
     print_command_output(
         args.common.json_events,
         format!("{} in {:?}", res.message, res.file_path),
@@ -215,7 +228,7 @@ fn receive_options(args: &ReceiveArgs) -> ReceiveOptions {
         relay_mode: args.common.relay.clone(),
         magic_ipv4_addr: args.common.magic_ipv4_addr,
         magic_ipv6_addr: args.common.magic_ipv6_addr,
-        retry_policy: sendmer::core::options::ReceiveRetryPolicy {
+        retry_policy: ReceiveRetryPolicy {
             download_retry_limit: args.retry_limit,
             download_retry_backoff_ms: args.retry_backoff_ms,
             connect_timeout_ms: args.connect_timeout_ms,
@@ -320,7 +333,7 @@ fn init_tracing(verbose: u8) -> anyhow::Result<()> {
 
 fn maybe_show_secret(common: &CommonArgs) -> anyhow::Result<()> {
     if common.show_secret {
-        let secret = get_or_create_secret()?;
+        let secret = endpoint_secret()?;
         eprintln!("Secret: {}", HEXLOWER.encode(&secret.to_bytes()));
     }
     Ok(())

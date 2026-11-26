@@ -508,7 +508,7 @@ fn receive_connection_failure_cleans_temp_dir_after_retries() {
     let before = list_receive_temp_dirs();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let secret = sendmer::core::args::get_or_create_secret().unwrap();
+    let secret = sendmer::endpoint_secret().unwrap();
     let ticket = BlobTicket::new(
         EndpointAddr::new(secret.public()),
         Hash::new(b"sendmer-unreachable-retry-test"),
@@ -520,7 +520,7 @@ fn receive_connection_failure_cleans_temp_dir_after_retries() {
             relay_mode: sendmer::RelayModeOption::Disabled,
             magic_ipv4_addr: None,
             magic_ipv6_addr: None,
-            retry_policy: sendmer::core::options::ReceiveRetryPolicy {
+            retry_policy: sendmer::ReceiveRetryPolicy {
                 size_fetch_retry_limit: 2,
                 size_fetch_chunk_size: 1,
                 size_fetch_backoff_ms: 0,

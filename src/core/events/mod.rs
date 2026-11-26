@@ -19,11 +19,11 @@ pub use types::{
 };
 pub use validator::TransferEventStreamValidator;
 
-pub(crate) use state::EventStreamState;
+pub(super) use state::EventStreamState;
 
 #[cfg(test)]
-pub(crate) use payload::is_safe_event_file_name;
-pub(crate) use types::{
+use payload::is_safe_event_file_name;
+pub(super) use types::{
     classified_transfer_error, classify_transfer_error, is_transfer_cancelled,
     transfer_cancelled_error,
 };

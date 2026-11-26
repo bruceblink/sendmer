@@ -8,7 +8,6 @@ mod provider;
 mod setup;
 mod validation;
 
-pub use import::canonicalized_path_to_string;
 pub use lifecycle::send;
 pub use lifecycle::send_handle;
 pub use lifecycle::send_handle_with_events;

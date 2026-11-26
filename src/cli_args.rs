@@ -1,8 +1,7 @@
-//! 命令行参数定义。
+//! Existing public CLI argument types, retained for source migration.
 //!
 //! 本文件定义：Args, Commands, SendArgs, ReceiveArgs, CommonArgs, Format。
 
-use anyhow::Context;
 use clap::{Parser, Subcommand};
 use iroh_blobs::ticket::BlobTicket;
 use std::fmt::{Display, Formatter};
@@ -10,11 +9,8 @@ use std::net::{SocketAddrV4, SocketAddrV6};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::OnceLock;
 
-use super::options::{AddrInfoOptions, RelayModeOption};
-
-static PROCESS_SECRET: OnceLock<iroh::SecretKey> = OnceLock::new();
+use crate::{AddrInfoOptions, RelayModeOption};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -303,24 +299,6 @@ impl Display for Format {
             Self::Cid => write!(f, "cid"),
         }
     }
-}
-
-pub fn print_hash(hash: &iroh_blobs::Hash, format: Format) -> String {
-    match format {
-        Format::Hex => hash.to_hex(),
-        Format::Cid => hash.to_string(),
-    }
-}
-
-pub fn get_or_create_secret() -> anyhow::Result<iroh::SecretKey> {
-    std::env::var("IROH_SECRET").map_or_else(
-        |_| Ok(PROCESS_SECRET.get_or_init(new_secret_key).clone()),
-        |secret| iroh::SecretKey::from_str(&secret).context("invalid secret"),
-    )
-}
-
-fn new_secret_key() -> iroh::SecretKey {
-    iroh::SecretKey::generate()
 }
 
 #[cfg(test)]

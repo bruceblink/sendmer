@@ -1,5 +1,5 @@
 use iroh_blobs::ticket::BlobTicket;
-use sendmer::core::options::RelayModeOption;
+use sendmer::RelayModeOption;
 use std::{
     path::{Path, PathBuf},
     process::Stdio,

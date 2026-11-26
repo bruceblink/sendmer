@@ -1,4 +1,4 @@
-use sendmer::{RelayModeOption, SendOptions, send};
+use sendmer::{RelayModeOption, SendOptions, send_handle};
 use std::{
     env,
     fs::File,
@@ -146,9 +146,9 @@ async fn run_case(case: BenchmarkCase, config: BenchmarkConfig) -> anyhow::Resul
         };
 
         let started = Instant::now();
-        let sender = send(source, options, None).await?;
+        let sender = send_handle(source, options).await?;
         let elapsed = started.elapsed();
-        sender.shutdown().await?;
+        sender.close().await?;
         timings.push(elapsed);
         println!(
             "case={} iteration={} files={} bytes={} setup_ms={:.3}",

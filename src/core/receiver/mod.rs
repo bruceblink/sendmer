@@ -21,7 +21,7 @@ pub use entry::receive_with_events_and_cancellation;
 pub use entry::receive_with_limits;
 pub use entry::receive_with_limits_and_cancellation;
 
-pub(crate) const RECEIVE_TEMP_DIR_PREFIX: &str = ".sendmer-recv-";
+const RECEIVE_TEMP_DIR_PREFIX: &str = ".sendmer-recv-";
 
 #[cfg(test)]
 mod tests;

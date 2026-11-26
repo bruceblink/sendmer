@@ -31,9 +31,7 @@ pub(super) async fn download_missing_data(
         })?;
     if local.is_complete() {
         completed_local_total_files_from_children(local.children())?;
-        if let Some(lease) = &context.cache_lease {
-            lease.checkpoint_recovery(&local, None);
-        }
+        context.checkpoint_recovery(&local, None).await;
         return Ok(());
     }
 
@@ -98,9 +96,7 @@ async fn execute_download_with_retries(
                     "unable to inspect receiver storage",
                 )
             })?;
-        if let Some(lease) = &context.cache_lease {
-            lease.checkpoint_recovery(&local, None);
-        }
+        context.checkpoint_recovery(&local, None).await;
         if local.is_complete() {
             reporter.emit_completed_progress();
             return Ok(());

@@ -234,10 +234,16 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-The legacy `send` function and `SendResult::shutdown` remain available for one compatibility cycle.
+The legacy crate-root `send` function and `SendResult::shutdown` remain available for a
+compatibility cycle. On unreleased main (C12.5), `core` is private; use crate-root imports
+such as `ReceiveRetryPolicy`, `EntryType` and `ParseTransferSessionIdError`, or
+`sendmer::manifest` for the existing manifest model. `SendResult` retains public transfer
+metadata but no longer exposes router, store, tag, task or temporary-directory handles.
+This is a Rust source-compatibility change, not a wire-format change. Use the published 0.12.0
+crate until a new compatible version is selected for release.
 The canonical receiver entry point is `receive(ticket, options)`. GUI and service integrations can
-use `receive_with_events` or `receive_with_events_and_cancellation`. Use the limit variants when a
-receiver must enforce file-count and payload-size quotas without changing `ReceiveOptions`.
+use `receive_with_events` or `receive_with_events_and_cancellation`. Use `receive_with_limits_and_cancellation` when a receiver must enforce file-count and
+payload-size quotas without changing `ReceiveOptions`; pass `None` when no cancellation is needed.
 
 Set `SendOptions::session_lifetime` when an embedding needs a bounded sender lifetime. On expiry,
 the router closes, the sender emits one non-retryable timeout event, and
@@ -272,8 +278,8 @@ The library re-exports:
 - transfer event types, `EventEmitter`, and `TransferEventStreamValidator`
 - `send_handle`, `send_handle_with_events`, `receive`, `receive_with_events`, and
   `receive_with_events_and_cancellation`
-- Compatibility entries `send`, `receive_with_cancellation`, `receive_with_limits`, and
-  `receive_with_limits_and_cancellation`
+- quota-aware `receive_with_limits_and_cancellation`
+- deprecated compatibility entries `send`, `receive_with_cancellation`, and `receive_with_limits`
 - preferred `SendHandle`, plus legacy `SendResult` and `ReceiveResult`
 
 ## Development

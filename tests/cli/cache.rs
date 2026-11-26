@@ -1,4 +1,8 @@
-use super::{RunningSend, ephemeral_loopback_addr, recovery::read_snapshot, sendmer_bin};
+use super::{
+    RunningSend, ephemeral_loopback_addr,
+    recovery::{read_snapshot, wait_for_live_checkpoint},
+    sendmer_bin,
+};
 use iroh::EndpointAddr;
 use iroh_blobs::ticket::BlobTicket;
 use iroh_blobs::{BlobFormat, Hash};
@@ -86,7 +90,7 @@ fn persistent_receive_cache_survives_failure_then_reopens_and_cleans_on_success(
 #[test]
 fn persistent_receive_cache_recovers_after_receiver_process_is_killed() {
     let name = "cross-process-resume.bin";
-    let data = vec![11u8; 1024 * 1024];
+    let data = vec![11u8; 2 * 1024 * 1024];
     let src_dir = tempfile::tempdir().unwrap();
     let output_dir = tempfile::tempdir().unwrap();
     let cache_root = tempfile::tempdir().unwrap();
@@ -134,7 +138,7 @@ fn persistent_receive_cache_recovers_after_receiver_process_is_killed() {
         }
     });
 
-    interrupt_receive_after_progress(&mut first_receive, &line_receiver, reader);
+    interrupt_receive_after_progress(&mut first_receive, &line_receiver, reader, &cache_entry);
     assert!(!output_dir.path().join(name).exists());
     assert!(cache_entry.join("blobs.db").is_file());
     let interrupted = read_snapshot(&cache_entry);
@@ -262,6 +266,7 @@ fn persistent_receive_cache_recovers_after_sender_restart() {
         }
     }
 
+    wait_for_live_checkpoint(&cache_entry, &mut receiver, minimum_progress);
     first_sender.cleanup();
     assert!(cache_entry.join("blobs.db").is_file());
     let before_restart = read_snapshot(&cache_entry);
@@ -317,7 +322,7 @@ fn invalid_receive_cache_ttl_fails_before_creating_cache_root() {
     let temp = tempfile::tempdir().unwrap();
     let cache_root = temp.path().join("must-not-be-created");
     let output = tempfile::tempdir().unwrap();
-    let secret = sendmer::core::args::get_or_create_secret().unwrap();
+    let secret = sendmer::endpoint_secret().unwrap();
     let ticket = BlobTicket::new(
         EndpointAddr::new(secret.public()),
         Hash::new(b"invalid receive cache options"),
@@ -392,6 +397,7 @@ fn interrupt_receive_after_progress(
     first_receive: &mut Child,
     line_receiver: &std::sync::mpsc::Receiver<String>,
     reader: std::thread::JoinHandle<()>,
+    cache_entry: &Path,
 ) {
     let minimum_progress = 256 * 1024;
     loop {
@@ -424,9 +430,9 @@ fn interrupt_receive_after_progress(
         }
     }
 
-    // The progress event precedes the filesystem actor's durable metadata update.
-    // Give the rate-limited transfer one short flush window before simulating a crash.
-    std::thread::sleep(Duration::from_secs(1));
+    // Progress is not evidence of a committed checkpoint. Wait for an actual
+    // nonempty, active snapshot before interrupting the process.
+    wait_for_live_checkpoint(cache_entry, first_receive, minimum_progress);
     first_receive.kill().expect("kill first receive process");
     first_receive.wait().expect("wait for killed receive");
     reader.join().expect("join receive event reader");

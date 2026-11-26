@@ -161,7 +161,7 @@ fn cli_session_lifetime_expires_and_cleans_sender_storage() {
         events.last().map(|event| &event.event),
         Some(TransferEventData::Failed { error })
             if error.code == TransferErrorCode::Timeout
-                && error.phase == sendmer::core::events::TransferPhase::Finalizing
+                && error.phase == sendmer::TransferPhase::Finalizing
                 && !error.retryable
     ));
     assert!(
@@ -516,7 +516,7 @@ fn assert_over_limit_receive_rejected(ticket: &BlobTicket, rejected_output: &Pat
             rejected_events.last().map(|event| &event.event),
             Some(TransferEventData::Failed { error })
                 if error.code == TransferErrorCode::TransferInterrupted
-                    && error.phase == sendmer::core::events::TransferPhase::Metadata
+                    && error.phase == sendmer::TransferPhase::Metadata
                     && error.retryable
         ),
         "over-limit receive should expose a retryable metadata failure: {rejected_events:?}"
