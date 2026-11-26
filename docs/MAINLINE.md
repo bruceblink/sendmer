@@ -52,7 +52,8 @@
 使用明确的内部接口约束依赖方向。
 
 `AlterSendmer` 当前仍使用 crates.io 的 `sendmer 0.11.0`。核心新 API 需要先完成桌面依赖迁移，
-再移除兼容入口。桌面端的 UI 状态、历史、偏好和更新逻辑继续由 AlterSendmer 持有，缓存布局、导出
+再移除兼容入口。AlterSendmer 是与 sendmer 同步维护的正式下游客户端；已停止维护的是独立项目 AlterSendme。
+桌面端的 UI 状态、历史、偏好和更新逻辑继续由 AlterSendmer 持有，缓存布局、导出
 提交和恢复范围由 sendmer Core 持有。
 
 ## 1.2 2026-11-26 代码审查后的后续计划
@@ -148,6 +149,22 @@ Rustdoc、doc tests（0 项）、大小检查及其自测、actionlint、安装�
 version/notes/assets 契约均通过。大小门禁扫描 103 个文件、834 个函数，最大 595/115 行。
 真实 relay、弱网故障注入、跨平台断电持久性及性能基准未验证；远端平台验证以 CI 为准。
 保留协议、事件 schema、公开签名、依赖和版本；不实施 C12.5/C12.6，不发布新版本。
+
+**C12.5 实施记录（2026-11-26）**：基于 main `74420a4`。C12.4 合并后 Linux ARM64
+stable 的进程强杀验收暴露快照与 Store 元数据提交之间的时序差异。接收端在记录实时快照前
+等待有界 iroh sync_db 屏障，测试等待实际有效检查点后再中断；保留实际 Store 重开和缺失区间
+断言，不以 JSON 代替已验证数据，不声称全量数据已 fsync 或断电持久。独立修复提交可回滚。
+core 改为私有模块，crate 根部显式导出领域类型和统一收发、生命周期、事件、配额及缓存 API。
+CLI 作为外部消费者使用同一公共契约，进度展示、更新检查和哈希格式化位于二进制私有模块，
+不设 cli_support 或内部访问通道。已有参数类型与弃用根级入口保留一个发布周期。
+SendResult 的 ticket/hash/size/entry_type 和生命周期方法保留，资源句柄收紧。
+新增 3 个 doc tests（1 个正向、2 个编译失败）。此次可见性变更属于 Rust 源码破坏性变更；
+协议、ticket 和事件 schema 不变，正式发布需要新的次版本。
+Linux x86_64 / Rust 1.100.0：最终全量 270 项通过、2 项 ignored（CLI 31/31），
+fmt、严格 Clippy、无默认 feature 检查、Rustdoc、3 项 doc tests、大小门禁通过。
+105 个代码文件、836 个函数，最大 595/115 行。未验证真实 relay 或断电持久性。
+AlterSendmer 与 sendmer 同步维护。根据最新开发顺序，先完成核心 C12.5/C12.6，
+发布新的正式 crate，再迁移 AlterSendmer 至该已发布版本；旧项目 AlterSendme 不纳入验收。
 
 每个阶段都必须先完成对应验收，再提交和推送。涉及公开 API 时同步更新 rustdoc、示例、fixture、
 README、README_ZH 和 AlterSendmer 迁移记录。涉及平台安装器或 workflow 时增加 actionlint、安装器

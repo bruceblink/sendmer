@@ -12,12 +12,12 @@ use std::time::Duration;
 ///
 /// 该上限同时限制接收端为子 blob 大小创建的数组长度，避免远端声明超大
 /// hash sequence 时触发不受控的元数据分配。
-pub(crate) const MAX_LEGACY_COLLECTION_ITEMS: usize = 100_000;
+pub(super) const MAX_LEGACY_COLLECTION_ITEMS: usize = 100_000;
 /// legacy Collection hash sequence 的最大元数据字节数。
-pub(crate) const MAX_LEGACY_COLLECTION_METADATA_BYTES: u64 =
+pub(super) const MAX_LEGACY_COLLECTION_METADATA_BYTES: u64 =
     (MAX_LEGACY_COLLECTION_ITEMS as u64 + 1) * 32;
 /// 接收端单次重试等待的最大时间。
-pub(crate) const MAX_RETRY_BACKOFF_MS: u64 = 30_000;
+pub(super) const MAX_RETRY_BACKOFF_MS: u64 = 30_000;
 
 #[derive(Debug, Default)]
 pub struct SendOptions {

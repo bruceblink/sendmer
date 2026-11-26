@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 #[test]
 fn json_events_keep_piped_stdout_machine_readable_on_receive_failure() {
     let output_dir = tempfile::tempdir().unwrap();
-    let secret = sendmer::core::args::get_or_create_secret().unwrap();
+    let secret = sendmer::endpoint_secret().unwrap();
     let ticket = BlobTicket::new(
         EndpointAddr::new(secret.public()),
         Hash::new(b"sendmer-json-failure-test"),
@@ -101,7 +101,7 @@ fn json_events_report_file_limit_before_sender_startup() {
         &events.last().expect("failed event").event,
         TransferEventData::Failed { error }
             if error.code == TransferErrorCode::InvalidInput
-                && error.phase == sendmer::core::events::TransferPhase::Preparing
+                && error.phase == sendmer::TransferPhase::Preparing
                 && !error.retryable
     ));
     assert!(
@@ -140,7 +140,7 @@ fn json_events_report_total_size_limit_before_sender_startup() {
         &events.last().expect("failed event").event,
         TransferEventData::Failed { error }
             if error.code == TransferErrorCode::InvalidInput
-                && error.phase == sendmer::core::events::TransferPhase::Preparing
+                && error.phase == sendmer::TransferPhase::Preparing
                 && !error.retryable
     ));
     assert!(

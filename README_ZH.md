@@ -219,10 +219,15 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-旧的 `send` 函数和 `SendResult::shutdown` 在一个兼容周期内保留。接收端的主要入口是
+旧的 crate 根级 `send` 函数和 `SendResult::shutdown` 在一个兼容周期内保留。
+尚未发布的 C12.5 主线将 `core` 改为私有模块；选项与领域类型从 crate 根部导入，
+例如 `ReceiveRetryPolicy`、`EntryType`、`ParseTransferSessionIdError`；
+manifest 模型从 `sendmer::manifest` 导入。兼容结果保留公开元数据和生命周期方法，
+不再暴露 router、store、tag、后台任务或临时目录句柄。这是 Rust 源码兼容性变更，
+不是传输协议变更。后续正式发布前需要明确版本迁移策略。接收端的主要入口是
 `receive(ticket, options)`。GUI 和服务集成可以使用 `receive_with_events` 或
-`receive_with_events_and_cancellation`。需要限制普通文件数量或 payload 总大小时，使用带
-limits 的入口，不需要修改现有的 `ReceiveOptions` 结构体。
+`receive_with_events_and_cancellation`。需要限制普通文件数量或 payload 总大小时，使用
+`receive_with_limits_and_cancellation`；无需取消时传入 `None`，不修改 `ReceiveOptions`。
 
 嵌入式调用方可设置 `SendOptions::session_lifetime`。生命周期到期后 router 会关闭，sender
 发出一次不可重试的超时事件，并发布 `SenderTransferStatus::Expired`，调用方随后复用正常清理路径。
@@ -254,8 +259,8 @@ cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode
 - 传输事件类型、`EventEmitter` 与 `TransferEventStreamValidator`
 - `send_handle`、`send_handle_with_events`、`receive`、`receive_with_events` 和
   `receive_with_events_and_cancellation`
-- 兼容入口 `send`、`receive_with_cancellation`、`receive_with_limits` 和
-  `receive_with_limits_and_cancellation`
+- 配额入口 `receive_with_limits_and_cancellation`
+- 已弃用兼容入口 `send`、`receive_with_cancellation`、`receive_with_limits`
 - 推荐使用的 `SendHandle`，以及兼容用的 `SendResult` 与 `ReceiveResult`
 
 ## 开发

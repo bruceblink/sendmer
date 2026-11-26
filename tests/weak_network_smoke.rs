@@ -1,8 +1,5 @@
 use iroh_blobs::ticket::BlobTicket;
-use sendmer::core::{
-    events::{TransferEvent, TransferEventData},
-    options::RelayModeOption,
-};
+use sendmer::{RelayModeOption, TransferEvent, TransferEventData};
 use std::{
     path::{Path, PathBuf},
     process::Stdio,

@@ -1,3 +1,5 @@
+#![warn(clippy::all, clippy::nursery)]
+
 //! Non-blocking release checks and user-confirmed self-updates.
 //!
 //! The updater deliberately delegates installation to the signed release

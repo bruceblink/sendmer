@@ -10,14 +10,14 @@ mod snapshot;
 pub use model::ReceiveCachePruneReport;
 pub use prune::prune_receive_cache;
 
-pub(crate) use lease::ReceiveCacheLease;
+pub(super) use lease::ReceiveCacheLease;
 #[cfg(test)]
-pub(crate) use model::{
+use model::{
     CACHE_MANIFEST_FILE, CACHE_MIN_FREE_BYTES, CACHE_ROOT_LOCK_FILE, CACHE_SCHEMA_VERSION,
     ReceiveCacheManifest,
 };
 #[cfg(test)]
-pub(crate) use prune::{
+use prune::{
     cache_directory_size, cache_key, ensure_cache_capacity_with_free_space, open_lock_file,
 };
 

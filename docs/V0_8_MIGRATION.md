@@ -141,6 +141,33 @@ Failed 的信封阶段必须与 error.phase 一致，Sender 不可报告 Exporti
 校验器，并将 InvalidPhase 与其他非法事件流错误统一处理；本阶段不修改桌面仓库。
 可用 `transfer_event_invalid_phase.jsonl` 验证首次拒绝后不再接受后续输入。
 
+### C12.5（尚未发布）：crate 根级 API 与资源所有权
+
+发布的 0.12.0 已提供双参数 send_handle、事件版 send_handle_with_events、receive 和
+receive_with_events_and_cancellation。AlterSendmer 使用发布版本并通过 ReceiveOptions
+的 retry_policy 字段配置重试，避免引用尚未发布的根级类型。后续主线新增根级类型导出后，
+仍可保持同样的调用代码。
+
+| 旧路径或行为 | 主线替代方式 |
+| --- | --- |
+| `sendmer::core::sender::send_handle_with_events` | `sendmer::send_handle_with_events` |
+| `sendmer::core::receiver::receive_with_cancellation` | `sendmer::receive_with_events_and_cancellation` |
+| `sendmer::core::options::ReceiveRetryPolicy` | `sendmer::ReceiveRetryPolicy` |
+| `sendmer::core::types::EntryType` | `sendmer::EntryType` |
+| `sendmer::core::events::ParseTransferSessionIdError` | `sendmer::ParseTransferSessionIdError` |
+| `sendmer::core::manifest::*` | `sendmer::manifest::*` |
+| 直接访问 SendResult 的 Router、Store 等资源字段 | `SendHandle::close` / `cancel` |
+| 带接收配额与取消的调用 | `sendmer::receive_with_limits_and_cancellation` |
+
+根级旧 send、SendResult、receive_with_cancellation 和 receive_with_limits 仍保留；
+SendResult 的 ticket/hash/size/entry_type 及 shutdown/cancel/into_handle 保留。
+带配额及取消的入口不再标记弃用，避免调用方为迁移而丢失资源约束。
+core 路径及资源字段的可见性收紧是破坏性 Rust 源码变更，必须在下一次发布前选择
+符合 0.x 版本策略的版本并通知调用方。本阶段不发布或改变 0.12.0 既有资产。
+CLI 与 GUI 均通过同一组 crate 根级公共传输入口；进度展示、更新检查和哈希格式化留在 CLI 二进制。
+已发布的参数类型保留一个兼容周期；endpoint_secret 是显式身份配置 API，返回值应按凭据保护。
+事件 schema、ticket 和传输协议不变。
+
 ## 5. CLI JSONL 迁移
 
 `--json-events` 现在把事件信封逐行写入并刷新到 `stdout`。日志、票据提示和人类可读结果写入

@@ -1,11 +1,9 @@
 //! Core library: 负责实现发送/接收逻辑及进度/类型定义。
 //!
-//! 该模块导出内部子模块：`send`, `receive`, `progress`, `types`，
-//! 并提供给上层 crate 使用的库 API（见 `src/lib.rs` 的 pub re-export）。
-pub mod args;
-pub mod cli_helper;
+//! Private implementation modules. Public library contracts are re-exported
+//! explicitly by the crate root; frontends use the same public API.
 pub mod events;
-pub(crate) mod filesystem;
+mod filesystem;
 pub mod manifest;
 pub mod options;
 mod progress;
@@ -16,6 +14,6 @@ pub mod results;
 pub mod sender;
 mod shutdown;
 mod storage;
-pub(crate) mod transport;
+mod transport;
+pub use transport::endpoint_secret;
 pub mod types;
-pub mod update;

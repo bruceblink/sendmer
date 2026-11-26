@@ -22,7 +22,10 @@ pub struct SendHandle {
     inner: SendResult,
 }
 
-/// 发送结果结构体。
+/// Compatibility result with public metadata and ordered lifecycle methods.
+///
+/// Internal router and store resources are crate-owned. New clients should
+/// use the opaque SendHandle and never clean these resources themselves.
 pub struct SendResult {
     pub ticket: BlobTicket,
     pub hash: Hash,
@@ -30,11 +33,11 @@ pub struct SendResult {
     pub entry_type: EntryType,
 
     // CRITICAL: These fields must be kept alive for the duration of the share
-    pub router: iroh::protocol::Router, // Keeps the server running and protocols active
-    pub temp_tag: iroh_blobs::api::TempTag, // Prevents data from being garbage collected
-    pub blobs_data_dir: PathBuf,        // Path for cleanup when share stops
-    pub _progress_handle: n0_future::task::AbortOnDropHandle<anyhow::Result<()>>, // Keeps event channel open
-    pub _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
+    pub(crate) router: iroh::protocol::Router, // Keeps the server running and protocols active
+    pub(crate) temp_tag: iroh_blobs::api::TempTag, // Prevents data from being garbage collected
+    pub(crate) blobs_data_dir: PathBuf,        // Path for cleanup when share stops
+    pub(crate) _progress_handle: n0_future::task::AbortOnDropHandle<anyhow::Result<()>>, // Keeps event channel open
+    pub(crate) _store: iroh_blobs::store::fs::FsStore, // Keeps the blob storage alive
     pub(crate) transfer_status_rx: watch::Receiver<SenderTransferStatus>,
     pub(crate) transfer_status_tx: watch::Sender<SenderTransferStatus>,
     pub(crate) event_emitter: TransferEventEmitter,

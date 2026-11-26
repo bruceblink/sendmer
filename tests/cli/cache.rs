@@ -322,7 +322,7 @@ fn invalid_receive_cache_ttl_fails_before_creating_cache_root() {
     let temp = tempfile::tempdir().unwrap();
     let cache_root = temp.path().join("must-not-be-created");
     let output = tempfile::tempdir().unwrap();
-    let secret = sendmer::core::args::get_or_create_secret().unwrap();
+    let secret = sendmer::endpoint_secret().unwrap();
     let ticket = BlobTicket::new(
         EndpointAddr::new(secret.public()),
         Hash::new(b"invalid receive cache options"),

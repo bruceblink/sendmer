@@ -1,14 +1,16 @@
+#![warn(clippy::all, clippy::nursery)]
+
 //! 进度与事件发射相关的工具与 CLI 辅助实现。
 //!
 //! 本模块包含用于向外部 `EventEmitter` 发射事件的便捷函数，
 //! 以及一个命令行环境下的事件发射器实现 `CliEventEmitter`，
 //! 用于在控制台显示文件传输进度条。
 
-use crate::core::events::{
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use sendmer::{
     EventEmitter, TransferEvent, TransferEventData, TransferEventStreamError,
     TransferEventStreamValidator, TransferSessionId,
 };
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +20,7 @@ use std::time::Duration;
 /// 命令行模式下的事件发射器实现。
 ///
 /// 该实现基于 `indicatif::MultiProgress` 在终端显示进度条，
-/// 并实现了 `EventEmitter` trait（见 `core::types`），以便库代码可以
+/// 并实现了 `EventEmitter` trait（见 sendmer 公共事件 API），以便库代码可以
 /// 在发送/接收流程中透明地发出事件。
 pub struct CliEventEmitter {
     mp: Arc<MultiProgress>,
@@ -218,7 +220,7 @@ fn human_bytes_per_sec(speed: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{human_bytes_per_sec, validate_json_event, write_json_line};
-    use crate::core::events::{Role, TransferEventData, TransferEventEnvelope, TransferSessionId};
+    use sendmer::{Role, TransferEventData, TransferEventEnvelope, TransferSessionId};
     use std::collections::HashMap;
     use std::io;
     use std::str::FromStr;
@@ -248,7 +250,7 @@ mod tests {
                     1,
                     1,
                     Role::Receiver,
-                    crate::core::events::TransferPhase::Preparing,
+                    sendmer::TransferPhase::Preparing,
                     TransferEventData::Started,
                 ),
             )
@@ -260,7 +262,7 @@ mod tests {
                     2,
                     2,
                     Role::Receiver,
-                    crate::core::events::TransferPhase::Finalizing,
+                    sendmer::TransferPhase::Finalizing,
                     TransferEventData::Completed,
                 ),
             )
