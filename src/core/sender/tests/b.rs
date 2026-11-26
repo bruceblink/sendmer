@@ -1,6 +1,8 @@
 use super::super::lifecycle::send;
 use super::super::setup::{ShareRequest, setup_data_sharing, shutdown_started_sender_setup};
-use super::super::validation::{prepare_endpoint, validate_share_path};
+use super::super::validation::prepare_endpoint;
+#[cfg(unix)]
+use super::super::validation::validate_share_path;
 use super::support::RecordingEmitter;
 use crate::core::events::{Role, TransferErrorCode, TransferEventData, TransferPhase};
 use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions};
