@@ -1,47 +1,22 @@
-/// 将已经标准化的路径转换为库内部使用的字符串表示，路径分隔使用 `/`。
-///
-/// - `must_be_relative`：如果为 true，则遇到根目录将返回错误（要求相对路径）。
-pub fn canonicalized_path_to_string(
-    path: impl AsRef<Path>,
-    must_be_relative: bool,
-) -> anyhow::Result<String> {
-    let mut path_str = String::new();
-    let parts = path
-        .as_ref()
-        .components()
-        .filter_map(|c| match c {
-            Component::Normal(x) => {
-                let c = match x.to_str() {
-                    Some(c) => c,
-                    None => return Some(Err(anyhow::anyhow!("invalid character in path"))),
-                };
-
-                if !c.contains('/') && !c.contains('\\') {
-                    Some(Ok(c))
-                } else {
-                    Some(Err(anyhow::anyhow!("invalid path component {:?}", c)))
-                }
-            }
-            Component::RootDir => {
-                if must_be_relative {
-                    Some(Err(anyhow::anyhow!("invalid path component {:?}", c)))
-                } else {
-                    path_str.push('/');
-                    None
-                }
-            }
-            _ => Some(Err(anyhow::anyhow!("invalid path component {:?}", c))),
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let parts = parts.join("/");
-    path_str.push_str(&parts);
-    Ok(path_str)
-}
+use crate::core::progress::{
+    SenderProgressReporter, SenderTransferStatus, TransferEventEmitter, TransferId,
+};
+use iroh_blobs::provider::events::{
+    ConnectMode, EventMask, EventSender, RequestMode, ThrottleMode,
+};
+use n0_future::task::AbortOnDropHandle;
+use std::collections::HashSet;
+use std::num::NonZeroU64;
+use std::time::Duration;
+use tokio::select;
+use tokio::sync::{Semaphore, mpsc, watch};
+use tokio::task::JoinSet;
+use tokio::time::Instant;
 
 /// 从提供者事件流中读取进度信息并使用ProviderProgressTracker进行跟踪。
 ///
 /// 该函数使用ProviderProgressTracker来管理多个并发传输的进度，并根据完成状态发射相应的事件。
-async fn show_provide_progress_with_provider_tracker(
+pub(super) async fn show_provide_progress_with_provider_tracker(
     mut recv: mpsc::Receiver<iroh_blobs::provider::events::ProviderMessage>,
     event_emitter: TransferEventEmitter,
     total_file_size: u64,
@@ -157,13 +132,13 @@ async fn show_provide_progress_with_provider_tracker(
 ///
 /// The provider event stream is processed serially, so this state machine makes admission
 /// decisions without holding a lock across asynchronous response sends.
-struct ReceiverAdmission {
+pub(super) struct ReceiverAdmission {
     max_receivers: Option<NonZeroU64>,
     active_connections: HashSet<u64>,
 }
 
 impl ReceiverAdmission {
-    fn new(max_receivers: Option<NonZeroU64>) -> Self {
+    pub(super) fn new(max_receivers: Option<NonZeroU64>) -> Self {
         Self {
             max_receivers,
             active_connections: HashSet::new(),
@@ -171,7 +146,7 @@ impl ReceiverAdmission {
     }
 
     /// Admit a connection unless it would exceed the configured active-peer limit.
-    fn admit(&mut self, connection_id: u64) -> bool {
+    pub(super) fn admit(&mut self, connection_id: u64) -> bool {
         if self.active_connections.contains(&connection_id) {
             return true;
         }
@@ -187,19 +162,19 @@ impl ReceiverAdmission {
     }
 
     /// Release a connection slot after the provider reports that it closed.
-    fn release(&mut self, connection_id: u64) {
+    pub(super) fn release(&mut self, connection_id: u64) {
         self.active_connections.remove(&connection_id);
     }
 }
 
 /// Serialize payload chunk reservations so every receiver shares one upload budget.
-struct UploadRateLimiter {
+pub(super) struct UploadRateLimiter {
     bytes_per_second: NonZeroU64,
     next_allowed_at: tokio::sync::Mutex<Instant>,
 }
 
 impl UploadRateLimiter {
-    fn new(bytes_per_second: NonZeroU64) -> Self {
+    pub(super) fn new(bytes_per_second: NonZeroU64) -> Self {
         Self {
             bytes_per_second,
             next_allowed_at: tokio::sync::Mutex::new(Instant::now()),
@@ -207,7 +182,7 @@ impl UploadRateLimiter {
     }
 
     /// Reserve the next global pacing slot without holding the mutex while a task sleeps.
-    async fn reserve(&self, bytes: u64) -> Instant {
+    pub(super) async fn reserve(&self, bytes: u64) -> Instant {
         let now = Instant::now();
         let mut next_allowed_at = self.next_allowed_at.lock().await;
         let allowed_at = (*next_allowed_at).max(now);
@@ -218,7 +193,7 @@ impl UploadRateLimiter {
     }
 
     /// Wait for a pacing slot, returning false when sender shutdown cancels the pending wait.
-    async fn wait_for_chunk_or_shutdown(
+    pub(super) async fn wait_for_chunk_or_shutdown(
         &self,
         bytes: u64,
         shutdown_signal_rx: &mut watch::Receiver<bool>,
@@ -237,7 +212,7 @@ impl UploadRateLimiter {
 }
 
 /// Convert a payload chunk into a rounded-up pacing interval that cannot exceed the configured rate.
-fn upload_delay(bytes: u64, bytes_per_second: NonZeroU64) -> Duration {
+pub(super) fn upload_delay(bytes: u64, bytes_per_second: NonZeroU64) -> Duration {
     const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
     let byte_nanoseconds = u128::from(bytes) * NANOS_PER_SECOND;
@@ -251,3 +226,69 @@ fn upload_delay(bytes: u64, bytes_per_second: NonZeroU64) -> Duration {
 
     Duration::new(seconds as u64, (nanoseconds % NANOS_PER_SECOND) as u32)
 }
+
+pub(super) fn create_event_sender(
+    progress_tx: mpsc::Sender<iroh_blobs::provider::events::ProviderMessage>,
+    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    max_receivers: Option<NonZeroU64>,
+) -> EventSender {
+    EventSender::new(
+        progress_tx,
+        provider_event_mask(max_upload_rate_bytes_per_sec, max_receivers),
+    )
+}
+
+/// Build the provider subscription mask for optional throttling and admission control.
+pub(super) const fn provider_event_mask(
+    max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    max_receivers: Option<NonZeroU64>,
+) -> EventMask {
+    EventMask {
+        connected: if max_receivers.is_some() {
+            ConnectMode::Intercept
+        } else {
+            ConnectMode::Notify
+        },
+        get: RequestMode::NotifyLog,
+        throttle: if max_upload_rate_bytes_per_sec.is_some() {
+            ThrottleMode::Intercept
+        } else {
+            ThrottleMode::None
+        },
+        ..EventMask::DEFAULT
+    }
+}
+
+pub(super) fn spawn_provider_progress_task(
+    progress_rx: mpsc::Receiver<iroh_blobs::provider::events::ProviderMessage>,
+    event_emitter: TransferEventEmitter,
+    total_file_size: u64,
+    entry_type: crate::core::types::EntryType,
+    transfer_status_tx: watch::Sender<SenderTransferStatus>,
+    control: ProviderProgressControl,
+) -> AbortOnDropHandle<anyhow::Result<()>> {
+    AbortOnDropHandle::new(tokio::spawn(show_provide_progress_with_provider_tracker(
+        progress_rx,
+        event_emitter,
+        total_file_size,
+        entry_type,
+        transfer_status_tx,
+        control,
+    )))
+}
+
+/// Bundle provider limits and the sender shutdown signal passed to the progress task.
+pub(super) struct ProviderProgressControl {
+    pub(super) max_upload_rate_bytes_per_sec: Option<NonZeroU64>,
+    pub(super) max_receivers: Option<NonZeroU64>,
+    pub(super) shutdown_signal_rx: watch::Receiver<bool>,
+}
+
+/// 尝试取得一个进度跟踪任务配额，不在提供者事件循环中等待。
+pub(super) fn try_acquire_provider_progress_permit(
+    request_task_limit: &std::sync::Arc<Semaphore>,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    request_task_limit.clone().try_acquire_owned().ok()
+}
+
+const PROVIDER_PROGRESS_TASK_LIMIT: usize = 32;

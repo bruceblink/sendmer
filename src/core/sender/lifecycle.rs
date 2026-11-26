@@ -1,3 +1,24 @@
+use super::setup::{
+    SharePlan, finalize_failed_sender_setup, remove_temp_sender_dir, sender_failure,
+    setup_data_sharing, shutdown_started_sender_setup,
+};
+use super::validation::{
+    ctrl_c_requested, prepare_endpoint, validate_share_limits, validate_share_path,
+    wait_until_endpoint_is_online,
+};
+use crate::core::events::{
+    AppHandle, Role, TransferErrorCode, TransferPhase, classified_transfer_error,
+    is_transfer_cancelled, transfer_cancelled_error,
+};
+use crate::core::options::SendOptions;
+use crate::core::progress::TransferEventEmitter;
+use crate::core::results::{SendHandle, SendResult};
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use tokio::select;
+use tracing::info;
+
 /// 开始共享（发送）指定的 `path`（文件或目录）。
 ///
 /// - `path`：要分享的文件或目录路径。
@@ -194,10 +215,7 @@ where
 }
 
 /// Start a share with no event consumer and return the opaque lifecycle handle.
-pub async fn send_handle(
-    path: PathBuf,
-    options: SendOptions,
-) -> anyhow::Result<SendHandle> {
+pub async fn send_handle(path: PathBuf, options: SendOptions) -> anyhow::Result<SendHandle> {
     send_handle_with_events(path, options, None).await
 }
 
@@ -210,12 +228,4 @@ pub async fn send_handle_with_events(
     send(path, options, app_handle)
         .await
         .map(SendResult::into_handle)
-}
-
-fn detect_entry_type(path: &Path) -> crate::core::types::EntryType {
-    if path.is_file() {
-        crate::core::types::EntryType::File
-    } else {
-        crate::core::types::EntryType::Directory
-    }
 }

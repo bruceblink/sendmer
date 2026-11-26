@@ -1,16 +1,19 @@
-use super::{
-    ImportMemoryBudget, MANIFEST_COLLECTION_NAME, ProviderProgressControl, ReceiverAdmission,
-    ShareRequest, UploadRateLimiter, canonicalized_path_to_string, collect_import_sources,
-    ctrl_c_requested, detect_entry_type, import_parallelism, prepare_endpoint,
-    provider_event_mask, send, setup_data_sharing, show_provide_progress_with_provider_tracker,
-    shutdown_started_sender_setup, try_acquire_provider_progress_permit,
-    validate_imported_share_totals, validate_legacy_collection_name, validate_share_limits,
+use super::super::import::{
+    ImportMemoryBudget, canonicalized_path_to_string, collect_import_sources, import_parallelism,
+    validate_legacy_collection_name,
+};
+use super::super::provider::{
+    ProviderProgressControl, ReceiverAdmission, UploadRateLimiter, provider_event_mask,
+    show_provide_progress_with_provider_tracker, try_acquire_provider_progress_permit,
+    upload_delay,
+};
+use super::super::validation::{
+    ctrl_c_requested, detect_entry_type, validate_imported_share_totals, validate_share_limits,
     validate_share_path,
 };
-use crate::core::events::{
-    EventEmitter, Role, TransferErrorCode, TransferEvent, TransferEventData, TransferPhase,
-};
-use crate::core::options::{AddrInfoOptions, RelayModeOption, SendOptions, apply_options};
+use crate::core::events::Role;
+use crate::core::manifest::MANIFEST_COLLECTION_NAME;
+use crate::core::options::{AddrInfoOptions, apply_options};
 use crate::core::progress::{SenderTransferStatus, TransferEventEmitter};
 use crate::core::types::EntryType;
 use iroh::{EndpointAddr, RelayUrl, SecretKey, TransportAddr};
@@ -20,26 +23,8 @@ use iroh_blobs::provider::events::{
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Semaphore, watch};
-
-#[derive(Default)]
-struct RecordingEmitter {
-    events: Mutex<Vec<TransferEvent>>,
-}
-
-impl RecordingEmitter {
-    fn events(&self) -> Vec<TransferEvent> {
-        self.events.lock().expect("events lock").clone()
-    }
-}
-
-impl EventEmitter for RecordingEmitter {
-    fn emit(&self, event: &TransferEvent) {
-        self.events.lock().expect("events lock").push(event.clone());
-    }
-}
 
 #[tokio::test]
 async fn ctrl_c_requested_checks_without_waiting() {
@@ -92,11 +77,11 @@ fn receiver_admission_allows_repeated_events_for_same_connection() {
 #[test]
 fn upload_delay_rounds_up_to_preserve_the_rate_ceiling() {
     assert_eq!(
-        super::upload_delay(1, NonZeroU64::new(3).expect("non-zero rate")),
+        upload_delay(1, NonZeroU64::new(3).expect("non-zero rate")),
         Duration::from_nanos(333_333_334)
     );
     assert_eq!(
-        super::upload_delay(
+        upload_delay(
             16 * 1024,
             NonZeroU64::new(16 * 1024).expect("non-zero rate")
         ),
@@ -462,8 +447,7 @@ fn validate_share_path_rejects_missing_path() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let missing = temp_dir.path().join("missing-share");
 
-    let err =
-        validate_share_path(&missing, false).expect_err("missing path should be rejected");
+    let err = validate_share_path(&missing, false).expect_err("missing path should be rejected");
 
     assert!(
         err.to_string()
@@ -536,8 +520,7 @@ fn validate_share_path_rejects_empty_directory() {
     let empty = temp_dir.path().join("empty-share");
     std::fs::create_dir_all(&empty).expect("create empty directory");
 
-    let error =
-        validate_share_path(&empty, false).expect_err("empty directory should be rejected");
+    let error = validate_share_path(&empty, false).expect_err("empty directory should be rejected");
 
     assert!(error.to_string().contains("empty directory"));
     assert!(error.to_string().contains("empty-share"));
@@ -551,8 +534,8 @@ fn validate_share_path_rejects_empty_nested_directory() {
     std::fs::create_dir_all(&empty_nested).expect("create empty nested directory");
     std::fs::write(root.join("file.txt"), b"content").expect("write source file");
 
-    let error = validate_share_path(&root, false)
-        .expect_err("empty nested directory should be rejected");
+    let error =
+        validate_share_path(&root, false).expect_err("empty nested directory should be rejected");
 
     assert!(error.to_string().contains("empty directory"));
     assert!(error.to_string().contains("empty"));

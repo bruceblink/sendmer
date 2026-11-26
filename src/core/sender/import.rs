@@ -1,5 +1,20 @@
+use crate::core::manifest::{
+    MANIFEST_COLLECTION_NAME, MANIFEST_ENTRY_PREFIX, ManifestEntry, ManifestEntryKind,
+    ManifestMetadata, ManifestPath, ManifestPayload, ManifestPermissions, ManifestRoot,
+    TransferManifest, UnixTimestamp,
+};
+use anyhow::Context;
+use iroh_blobs::api::{Store, TempTag};
+use iroh_blobs::format::collection::Collection;
+use n0_future::{BufferedStreamExt, StreamExt};
+use std::num::NonZeroU64;
+use std::path::{Component, Path, PathBuf};
+use tokio::sync::Notify;
+use tokio_util::io::ReaderStream;
+use walkdir::WalkDir;
+
 /// 将 `path`（文件或目录）导入到给定的 `Store`，并返回导入后的集合信息。
-async fn import(
+pub(super) async fn import(
     path: PathBuf,
     db: &Store,
     max_import_memory_bytes: Option<NonZeroU64>,
@@ -245,7 +260,7 @@ async fn import_manifest(
     })
 }
 
-fn import_parallelism(source_count: usize) -> usize {
+pub(super) fn import_parallelism(source_count: usize) -> usize {
     let available = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1);
@@ -253,19 +268,19 @@ fn import_parallelism(source_count: usize) -> usize {
 }
 
 /// Bound estimated source-file bytes held by concurrent imports without claiming an RSS limit.
-struct ImportMemoryBudget {
+pub(super) struct ImportMemoryBudget {
     limit_bytes: u64,
     available_bytes: std::sync::Mutex<u64>,
     notify: Notify,
 }
 
-struct ImportMemoryPermit {
+pub(super) struct ImportMemoryPermit {
     budget: std::sync::Arc<ImportMemoryBudget>,
     bytes: u64,
 }
 
 impl ImportMemoryBudget {
-    fn new(limit: NonZeroU64) -> Self {
+    pub(super) fn new(limit: NonZeroU64) -> Self {
         Self {
             limit_bytes: limit.get(),
             available_bytes: std::sync::Mutex::new(limit.get()),
@@ -274,7 +289,10 @@ impl ImportMemoryBudget {
     }
 
     /// Reserve a source's estimated bytes, allowing one source larger than the budget to run.
-    async fn acquire(self: &std::sync::Arc<Self>, requested_bytes: u64) -> ImportMemoryPermit {
+    pub(super) async fn acquire(
+        self: &std::sync::Arc<Self>,
+        requested_bytes: u64,
+    ) -> ImportMemoryPermit {
         let bytes = requested_bytes.min(self.limit_bytes);
         loop {
             let notified = self.notify.notified();
@@ -316,7 +334,7 @@ impl Drop for ImportMemoryPermit {
     }
 }
 
-fn collect_import_sources(path: PathBuf) -> anyhow::Result<Vec<ImportedSource>> {
+pub(super) fn collect_import_sources(path: PathBuf) -> anyhow::Result<Vec<ImportedSource>> {
     let path = path.canonicalize()?;
     anyhow::ensure!(path.exists(), "path {} does not exist", path.display());
     let root = path.parent().context("context get parent")?;
@@ -348,7 +366,7 @@ fn collect_import_sources(path: PathBuf) -> anyhow::Result<Vec<ImportedSource>> 
 }
 
 /// 拒绝旧 Collection 会被接收端识别为 TM1 控制条目的用户文件名。
-fn validate_legacy_collection_name(name: &str) -> anyhow::Result<()> {
+pub(super) fn validate_legacy_collection_name(name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         name != MANIFEST_COLLECTION_NAME,
         "legacy collection name is reserved for the transfer manifest"
@@ -457,4 +475,121 @@ async fn build_collection_from_imports(
         size,
         _collection: collection,
     })
+}
+
+pub(super) struct ImportedSource {
+    pub(super) name: String,
+    path: PathBuf,
+    size: u64,
+    pub(super) fingerprint: SourceFingerprint,
+}
+
+/// 文件导入前记录的元数据，用于确认打开的句柄仍对应扫描到的文件。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SourceFingerprint {
+    size: u64,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl SourceFingerprint {
+    /// 从文件元数据生成指纹；修改时间缺失时无法安全确认源文件身份。
+    fn from_metadata(metadata: &std::fs::Metadata) -> anyhow::Result<Self> {
+        Ok(Self {
+            size: metadata.len(),
+            modified: metadata
+                .modified()
+                .context("source file has no modification timestamp")?,
+            #[cfg(unix)]
+            device: {
+                use std::os::unix::fs::MetadataExt;
+                metadata.dev()
+            },
+            #[cfg(unix)]
+            inode: {
+                use std::os::unix::fs::MetadataExt;
+                metadata.ino()
+            },
+        })
+    }
+
+    /// 比较打开句柄的元数据，拒绝扫描后被替换的路径。
+    pub(super) fn verify_open_metadata(
+        &self,
+        path: &Path,
+        metadata: &std::fs::Metadata,
+    ) -> anyhow::Result<()> {
+        let actual = Self::from_metadata(metadata)?;
+        anyhow::ensure!(
+            self == &actual,
+            "source file {} changed between scan and open",
+            path.display()
+        );
+        Ok(())
+    }
+}
+
+struct ImportedBlob {
+    name: String,
+    temp_tag: TempTag,
+    size: u64,
+}
+
+struct ManifestSource {
+    path: PathBuf,
+    relative: ManifestPath,
+    kind: ManifestEntryKind,
+    size: u64,
+    metadata: ManifestMetadata,
+    fingerprint: Option<SourceFingerprint>,
+}
+
+pub(super) struct ImportedCollection {
+    pub(super) temp_tag: TempTag,
+    pub(super) file_count: u64,
+    pub(super) size: u64,
+    _collection: Collection,
+}
+
+/// 将已经标准化的路径转换为库内部使用的字符串表示，路径分隔使用 `/`。
+///
+/// - `must_be_relative`：如果为 true，则遇到根目录将返回错误（要求相对路径）。
+pub fn canonicalized_path_to_string(
+    path: impl AsRef<Path>,
+    must_be_relative: bool,
+) -> anyhow::Result<String> {
+    let mut path_str = String::new();
+    let parts = path
+        .as_ref()
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(x) => {
+                let c = match x.to_str() {
+                    Some(c) => c,
+                    None => return Some(Err(anyhow::anyhow!("invalid character in path"))),
+                };
+
+                if !c.contains('/') && !c.contains('\\') {
+                    Some(Ok(c))
+                } else {
+                    Some(Err(anyhow::anyhow!("invalid path component {:?}", c)))
+                }
+            }
+            Component::RootDir => {
+                if must_be_relative {
+                    Some(Err(anyhow::anyhow!("invalid path component {:?}", c)))
+                } else {
+                    path_str.push('/');
+                    None
+                }
+            }
+            _ => Some(Err(anyhow::anyhow!("invalid path component {:?}", c))),
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let parts = parts.join("/");
+    path_str.push_str(&parts);
+    Ok(path_str)
 }
