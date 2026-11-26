@@ -1,3 +1,4 @@
+use super::ReceiveCachePruneReport;
 /// Remove expired receive-cache entries without touching active or unknown data.
 ///
 /// Each entry uses the TTL recorded in its versioned manifest. A missing root

@@ -125,7 +125,7 @@ receiver 会话，第二行切换到 sender 后被拒绝，第三行恢复 recei
 桌面适配清单：从正式 `sendmer v0.11.0` 开始，为每个 send 或 receive 会话单独创建校验器；在更新
 UI 或历史前调用 `accept`；收到 `RoleChanged` 后停止该会话的事件更新并显示事件流无效摘要。
 
-### C12.3（尚未发布）：阶段与终态统一校验
+### v0.13.0：C12.3：阶段与终态统一校验
 
 事件发射器和消费者校验器共享同一套内部状态转换规则。schema 1 的字段、序列化和单条事件
 反序列化规则不变。首事件仍为 Started；兼容 Preparing、Connecting、Metadata、Transferring
@@ -141,12 +141,11 @@ Failed 的信封阶段必须与 error.phase 一致，Sender 不可报告 Exporti
 校验器，并将 InvalidPhase 与其他非法事件流错误统一处理；本阶段不修改桌面仓库。
 可用 `transfer_event_invalid_phase.jsonl` 验证首次拒绝后不再接受后续输入。
 
-### C12.5（尚未发布）：crate 根级 API 与资源所有权
+### v0.13.0：C12.5：crate 根级 API 与资源所有权
 
 发布的 0.12.0 已提供双参数 send_handle、事件版 send_handle_with_events、receive 和
-receive_with_events_and_cancellation。AlterSendmer 使用发布版本并通过 ReceiveOptions
-的 retry_policy 字段配置重试，避免引用尚未发布的根级类型。后续主线新增根级类型导出后，
-仍可保持同样的调用代码。
+receive_with_events_and_cancellation。AlterSendmer 与 sendmer 同步维护，按更新后的顺序，
+先正式发布 sendmer v0.13.0，再迁移桌面端至该已发布版本，并通过完整下游回归。
 
 | 旧路径或行为 | 主线替代方式 |
 | --- | --- |
@@ -167,6 +166,20 @@ core 路径及资源字段的可见性收紧是破坏性 Rust 源码变更，必
 CLI 与 GUI 均通过同一组 crate 根级公共传输入口；进度展示、更新检查和哈希格式化留在 CLI 二进制。
 已发布的参数类型保留一个兼容周期；endpoint_secret 是显式身份配置 API，返回值应按凭据保护。
 事件 schema、ticket 和传输协议不变。
+
+### v0.13.0：C12.6 feature 收敛
+
+正式发布二进制使用 `--all-features` 构建。默认源码构建包含基础 CLI，
+不再默认启用 clipboard。库调用方应使用 `default-features = false`，按需启用
+`manifest` 和 `persistent-recovery`。例如同步维护的 AlterSendmer 在 v0.13.0 正式发布后使用：
+
+```toml
+sendmer = { version = "0.13.0", default-features = false, features = ["manifest", "persistent-recovery"] }
+```
+
+旧的 CLI 参数类型仍在 `cli` feature 内保留一个兼容周期。事件模型和协议验证保持可用，
+CLI 专用 JSONL、诊断输出和 updater 不进入无 CLI 构建；未启用的 manifest 或持久缓存操作明确拒绝。
+不将不支持的 TM1 当作 legacy 文件集合导出。
 
 ## 5. CLI JSONL 迁移
 

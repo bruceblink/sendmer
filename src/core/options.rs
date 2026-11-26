@@ -68,6 +68,10 @@ impl SendOptions {
     /// Reject invalid sender settings before endpoint and temporary-store setup begins.
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
+            !self.manifest_mode || cfg!(feature = "manifest"),
+            "TM1 transfers require the manifest feature"
+        );
+        anyhow::ensure!(
             self.session_lifetime
                 .is_none_or(|lifetime| !lifetime.is_zero()),
             "sender session lifetime must be greater than zero"

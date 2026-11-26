@@ -193,7 +193,7 @@ pub struct SendArgs {
     #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub session_lifetime_seconds: Option<NonZeroU64>,
 
-    /// Use the v0.10 transfer manifest for empty directories and portable metadata.
+    /// Use TM1 for empty directories and portable metadata (requires manifest feature).
     #[clap(long, default_value_t = false)]
     pub manifest: bool,
 
@@ -256,7 +256,7 @@ pub struct ReceiveArgs {
     #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub download_idle_timeout_ms: Option<u64>,
 
-    /// Optional directory for receive data that can resume in a later process.
+    /// Persistent receive data (requires persistent-recovery feature).
     #[clap(long, hide_short_help = true, help_heading = "Advanced options")]
     pub cache_dir: Option<PathBuf>,
 

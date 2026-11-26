@@ -5,7 +5,9 @@
 use crate::core::events::{
     TransferError, TransferErrorCode, TransferPhase, classify_transfer_error,
 };
-use crate::core::manifest::{ManifestEntryKind, TransferManifest, validate_windows_utf8_component};
+use crate::core::manifest::validate_windows_utf8_component;
+#[cfg(feature = "manifest")]
+use crate::core::manifest::{ManifestEntryKind, TransferManifest};
 use iroh_blobs::{
     api::{
         Store,

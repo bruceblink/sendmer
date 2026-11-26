@@ -20,14 +20,18 @@ pub(super) async fn cleanup_failed_receive(
     context: &mut ReceiveContext,
     terminal: RecoveryTerminalState,
 ) -> anyhow::Result<()> {
+    #[cfg(not(feature = "persistent-recovery"))]
+    let _ = terminal;
+    #[cfg(feature = "persistent-recovery")]
     context.refresh_recovery(None).await;
     let endpoint_cleanup_result = close_receive_endpoint(&context.endpoint).await;
     let store_cleanup_result =
         shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
             .await;
     let preserve_uncached_storage =
-        should_preserve_uncached_storage(context.cache_lease.is_some(), &store_cleanup_result);
+        should_preserve_uncached_storage(cache_lease_present(context), &store_cleanup_result);
     let shutdown_result = combine_cleanup_results(endpoint_cleanup_result, store_cleanup_result);
+    #[cfg(feature = "persistent-recovery")]
     if let Some(lease) = &context.cache_lease {
         lease.finish_recovery(terminal);
     }
@@ -48,14 +52,16 @@ pub(super) async fn finish_receive(
     context: &mut ReceiveContext,
     artifacts: ReceiveArtifacts,
 ) -> anyhow::Result<ReceiveResult> {
+    #[cfg(feature = "persistent-recovery")]
     context.refresh_recovery(None).await;
     let endpoint_cleanup_result = close_receive_endpoint(&context.endpoint).await;
     let store_cleanup_result =
         shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)
             .await;
     let preserve_uncached_storage =
-        should_preserve_uncached_storage(context.cache_lease.is_some(), &store_cleanup_result);
+        should_preserve_uncached_storage(cache_lease_present(context), &store_cleanup_result);
     let shutdown_result = combine_cleanup_results(endpoint_cleanup_result, store_cleanup_result);
+    #[cfg(feature = "persistent-recovery")]
     if let Some(lease) = &context.cache_lease {
         let terminal = if shutdown_result.is_ok() {
             RecoveryTerminalState::Completed
@@ -140,15 +146,28 @@ async fn cleanup_active_staging_dir(
 }
 
 /// Preserve persistent data after failure, but remove it after a clean export.
+#[cfg_attr(
+    not(feature = "persistent-recovery"),
+    allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the persistent-cache build consumes the lease"
+    )
+)]
 async fn finalize_receive_storage(
     context: &mut ReceiveContext,
     receive_succeeded: bool,
 ) -> anyhow::Result<()> {
-    match context.cache_lease.take() {
-        Some(lease) if receive_succeeded => lease.remove().await,
-        Some(lease) => lease.preserve(),
-        None => remove_temp_receive_dir(&context.iroh_data_dir).await,
+    #[cfg(feature = "persistent-recovery")]
+    if let Some(lease) = context.cache_lease.take() {
+        return if receive_succeeded {
+            lease.remove().await
+        } else {
+            lease.preserve()
+        };
     }
+    #[cfg(not(feature = "persistent-recovery"))]
+    let _ = receive_succeeded;
+    remove_temp_receive_dir(&context.iroh_data_dir).await
 }
 
 async fn finalize_receive_storage_after_store_cleanup(
@@ -187,4 +206,14 @@ fn combine_cleanup_results(
             "subsequent cleanup step also failed: {second_error:#}"
         ))),
     }
+}
+
+#[cfg(feature = "persistent-recovery")]
+const fn cache_lease_present(context: &ReceiveContext) -> bool {
+    context.cache_lease.is_some()
+}
+
+#[cfg(not(feature = "persistent-recovery"))]
+const fn cache_lease_present(_context: &ReceiveContext) -> bool {
+    false
 }

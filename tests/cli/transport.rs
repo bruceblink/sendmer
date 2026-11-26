@@ -474,6 +474,7 @@ fn cli_ticket_survives_two_sequential_receives() {
     );
 }
 
+#[cfg(feature = "manifest")]
 #[test]
 fn receive_cli_tm1_directory_supports_relative_output_dir() {
     let source_dir = tempfile::tempdir().unwrap();

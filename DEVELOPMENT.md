@@ -27,6 +27,22 @@ prepare/policy/limits；错误分类及关闭原语独立于入口。CLI 和弱�
 单个代码文件不得超过 600 行。单个函数不得超过 120 行。核心模块使用同一事件 schema
 和相同的文件提交规则，避免 CLI 和桌面客户端复制传输实现。
 
+## 构建模式
+
+正式发布二进制显式使用 `--all-features`，包含旧版本的全部 CLI 能力。
+源码默认启用 `cli`；最小库构建使用 `--no-default-features`。独立 feature 为
+`manifest`、`persistent-recovery` 和兼容的 `clipboard`（依赖 cli）。
+不改变基础事件 API、传输协议和路径安全校验。禁用的能力明确返回错误。
+
+```bash
+cargo clippy --locked --all-targets --no-default-features -- -D warnings
+cargo test --locked --no-default-features --lib --test features
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --workspace --bins --tests --examples
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-features --bins --tests --examples
+```
+
 ## 代码大小检查
 
 CI 和 Release Quality Gate 自动检查 Git 跟踪及新增、未忽略的 Rust、Shell、

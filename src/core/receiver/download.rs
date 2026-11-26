@@ -3,10 +3,12 @@ use super::errors::receive_failure;
 use super::limits::validate_receive_limits;
 use super::retry::download_missing_data;
 use crate::core::events::{TransferErrorCode, TransferPhase};
-use crate::core::filesystem::{
-    collection_root_name, export_atomically, export_manifest_atomically,
-};
-use crate::core::manifest::{MANIFEST_COLLECTION_NAME, ManifestEntryKind, TransferManifest};
+#[cfg(feature = "manifest")]
+use crate::core::filesystem::export_manifest_atomically;
+use crate::core::filesystem::{collection_root_name, export_atomically};
+use crate::core::manifest::MANIFEST_COLLECTION_NAME;
+#[cfg(feature = "manifest")]
+use crate::core::manifest::{ManifestEntryKind, TransferManifest};
 use crate::core::options::ReceiveLimits;
 use crate::core::progress::TransferEventEmitter;
 use anyhow::Context;
@@ -67,11 +69,21 @@ pub(super) async fn receive_once(
         .iter()
         .find_map(|(name, hash)| (name == MANIFEST_COLLECTION_NAME).then_some(*hash));
     match manifest_hash {
+        #[cfg(feature = "manifest")]
         Some(hash) => receive_manifest(context, output_dir, event_emitter, collection, hash).await,
+        #[cfg(not(feature = "manifest"))]
+        Some(_) => Err(receive_failure(
+            anyhow::anyhow!("TM1 transfers require the manifest feature"),
+            TransferErrorCode::RemoteRejected,
+            TransferPhase::Metadata,
+            false,
+            "received transfer requires the manifest feature",
+        )),
         None => receive_legacy_collection(context, output_dir, event_emitter, collection).await,
     }
 }
 
+#[cfg(feature = "manifest")]
 async fn receive_manifest(
     context: &mut ReceiveContext,
     output_dir: &Path,

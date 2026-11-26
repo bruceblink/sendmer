@@ -25,15 +25,15 @@ sendmer uses 256-bit node IDs, so tickets remain valid even if IP addresses chan
 
 ```powershell
 # Pin both the installer and the release version
-$env:SENDMER_VERSION="v0.12.0"
-iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.ps1 -useb | iex
+$env:SENDMER_VERSION="v0.13.0"
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.13.0/install.ps1 -useb | iex
 ```
 
 For Git Bash, MSYS2, or Cygwin, use the shell installer instead. It requires `unzip`:
 
 ```bash
-export SENDMER_VERSION=v0.12.0
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash
+export SENDMER_VERSION=v0.13.0
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.13.0/install.sh | bash
 ```
 
 The installer verifies the archive, SBOM, and SLSA provenance with Sigstore
@@ -58,8 +58,8 @@ After installation:
 The prebuilt macOS release supports Apple Silicon (ARM64) only. Run the installer in a native ARM64 shell; Intel and Rosetta x86_64 targets are unsupported.
 
 ```bash
-export SENDMER_VERSION=v0.12.0
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash
+export SENDMER_VERSION=v0.13.0
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.13.0/install.sh | bash
 ```
 
 The installer verifies the archive, SBOM, and SLSA provenance before
@@ -88,7 +88,7 @@ sendmer --help
 ### Cargo
 
 ```bash
-cargo install sendmer --locked
+cargo install sendmer --locked --all-features
 ```
 
 ## Usage
@@ -214,7 +214,16 @@ Send-specific options:
 - `--max-import-memory <bytes>`: optionally bound estimated regular-file bytes held by concurrent sender imports; this is an import working-set budget, not a process RSS limit
 - `--session-lifetime-seconds <seconds>`: optionally close the sender after a fixed lifetime once the share is ready; zero is rejected and receiver activity does not extend it
 - `--manifest`: opt into the v0.10 TM1 transfer manifest for empty directories and portable file metadata; legacy collection mode remains the default
-- `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard (available in the default `clipboard` feature build)
+- `--clipboard`: copy the generated `sendmer receive ...` command to the clipboard (available in builds with the `clipboard` feature, including official releases)
+
+## Build features
+
+Official release binaries enable all features, preserving clipboard, TM1 and persistent recovery.
+A default source build includes only the basic CLI. For library-only use set
+`default-features = false`; enable `manifest` and/or `persistent-recovery` explicitly when needed.
+`clipboard` also enables `cli`. JSON Lines, terminal diagnostics and self-update are CLI
+implementation details, not core dependencies. Disabled TM1 or persistent-cache requests fail
+explicitly, never silently downgrade or skip validation.
 
 ## Library Usage
 
@@ -235,12 +244,11 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 The legacy crate-root `send` function and `SendResult::shutdown` remain available for a
-compatibility cycle. On unreleased main (C12.5), `core` is private; use crate-root imports
+compatibility cycle. Starting with v0.13.0 (C12.5), `core` is private; use crate-root imports
 such as `ReceiveRetryPolicy`, `EntryType` and `ParseTransferSessionIdError`, or
 `sendmer::manifest` for the existing manifest model. `SendResult` retains public transfer
 metadata but no longer exposes router, store, tag, task or temporary-directory handles.
-This is a Rust source-compatibility change, not a wire-format change. Use the published 0.12.0
-crate until a new compatible version is selected for release.
+This is a Rust source-compatibility change, not a wire-format change.
 The canonical receiver entry point is `receive(ticket, options)`. GUI and service integrations can
 use `receive_with_events` or `receive_with_events_and_cancellation`. Use `receive_with_limits_and_cancellation` when a receiver must enforce file-count and
 payload-size quotas without changing `ReceiveOptions`; pass `None` when no cancellation is needed.
@@ -265,7 +273,7 @@ Use `TransferEventStreamValidator` to reject role changes, duplicate or missing 
 events, invalid phase transitions, events after termination, and invalid progress before updating UI or history. The first event fixes the session's sender/receiver
 role. The validator is stateful for one session stream and should be
 reset when a new transfer starts. The shared lifecycle rules allow metadata after progress and
-retry failures at an earlier operation phase. Schema 1 remains unchanged. The unreleased C12.3
+retry failures at an earlier operation phase. Schema 1 remains unchanged. The v0.13.0 C12.3
 validator adds `TransferEventStreamError::InvalidPhase`; exhaustive Rust matches need a new arm.
 Failure and cleanup diagnostics in core tracing keep stable error categories, phases, retryability, and
 attempt counts; they do not include source/destination paths, tickets, or lower-level connection text.

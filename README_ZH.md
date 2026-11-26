@@ -24,15 +24,15 @@ sendmer 使用 256 位节点 ID，因此 ticket 在 IP 地址变化后仍可继�
 
 ```powershell
 # 固定安装器和发布版本
-$env:SENDMER_VERSION="v0.12.0"
-iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.ps1 -useb | iex
+$env:SENDMER_VERSION="v0.13.0"
+iwr https://raw.githubusercontent.com/bruceblink/sendmer/v0.13.0/install.ps1 -useb | iex
 ```
 
 Git Bash、MSYS2 或 Cygwin 请改用 shell 安装器，并确保已安装 `unzip`：
 
 ```bash
-export SENDMER_VERSION=v0.12.0
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash
+export SENDMER_VERSION=v0.13.0
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.13.0/install.sh | bash
 ```
 
 安装器会在解压前使用 Sigstore 校验归档、SBOM 和 SLSA provenance。
@@ -57,8 +57,8 @@ C:\Users\<用户名>\.sendmer\bin\sendmer.exe
 macOS 预编译发布资产仅支持 Apple Silicon（ARM64）。请在原生 ARM64 Shell 中运行安装器；不支持 Intel 和 Rosetta x86_64 安装目标。
 
 ```bash
-export SENDMER_VERSION=v0.12.0
-curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.12.0/install.sh | bash
+export SENDMER_VERSION=v0.13.0
+curl -fsSL https://raw.githubusercontent.com/bruceblink/sendmer/v0.13.0/install.sh | bash
 ```
 
 安装器会在安装前校验归档、SBOM 和 SLSA provenance。
@@ -87,7 +87,7 @@ sendmer --help
 ### Cargo
 
 ```bash
-cargo install sendmer --locked
+cargo install sendmer --locked --all-features
 ```
 
 ## 用法
@@ -199,7 +199,15 @@ sendmer cache prune --cache-dir <path>
 - `--max-import-memory <bytes>`：可选地限制并行 sender 导入任务估算的普通文件字节预算；这是导入工作集上限，不是进程 RSS 上限
 - `--session-lifetime-seconds <seconds>`：可选地在共享就绪后按固定生命周期关闭 sender；零值会被拒绝，接收方活动不会延长生命周期
 - `--manifest`：显式启用 v0.10 TM1 传输清单，以保留空目录和可移植文件元数据；默认仍使用旧 collection 模式
-- `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板（默认启用 `clipboard` feature 时可用）
+- `--clipboard`：把生成的 `sendmer receive ...` 命令复制到剪贴板（启用 `clipboard` feature 时可用，正式发布二进制已启用）
+
+## 构建 feature
+
+正式发布二进制显式启用全部 feature，保留 clipboard、TM1 和持久接收恢复。
+源码默认构建只包含基础 CLI；仅作为库使用时设置 `default-features = false`，
+按需启用 `manifest` 和 `persistent-recovery`。旧 `clipboard` feature 保留并依赖 `cli`。
+JSON Lines、终端诊断和自更新属于 CLI 实现，不是核心库依赖。
+未启用的 TM1 和持久缓存请求明确失败，不静默降级，也不跳过数据校验。
 
 ## 作为库使用
 
@@ -220,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 旧的 crate 根级 `send` 函数和 `SendResult::shutdown` 在一个兼容周期内保留。
-尚未发布的 C12.5 主线将 `core` 改为私有模块；选项与领域类型从 crate 根部导入，
+从 v0.13.0（C12.5）开始，主线将 `core` 改为私有模块；选项与领域类型从 crate 根部导入，
 例如 `ReceiveRetryPolicy`、`EntryType`、`ParseTransferSessionIdError`；
 manifest 模型从 `sendmer::manifest` 导入。兼容结果保留公开元数据和生命周期方法，
 不再暴露 router、store、tag、后台任务或临时目录句柄。这是 Rust 源码兼容性变更，
@@ -246,7 +254,7 @@ cancelled 三种终态最多出现一个。失败事件包含 `TransferErrorCode
 `TransferEventStreamValidator` 可在更新 UI 或历史前拒绝重复序号、序号缺口、会话切换、非法阶段转换、进度越界和终态后
 的迟到事件；首事件确定本会话的 sender/receiver 角色，后续角色变化也会拒绝。校验器针对一条
 会话流保存状态，新传输开始时应创建新的校验器。共享状态机允许进度后出现元数据事件，
-并允许重试失败报告较早的操作阶段。尚未发布的 C12.3 新增 `TransferEventStreamError::InvalidPhase`，
+并允许重试失败报告较早的操作阶段。v0.13.0 的 C12.3 新增 `TransferEventStreamError::InvalidPhase`，
 穷举匹配的 Rust 调用方需要增加分支；JSON schema 仍为 1。参见
 [v0.8.0 迁移指南](docs/V0_8_MIGRATION.md)和可编译的
 [`event_consumer` 示例](examples/event_consumer.rs)。

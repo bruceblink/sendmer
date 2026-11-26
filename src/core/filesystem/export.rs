@@ -30,6 +30,7 @@ pub async fn export_atomically(
 }
 
 /// Export a TM1 directory tree after validating all logical paths and payload mappings.
+#[cfg(feature = "manifest")]
 pub async fn export_manifest_atomically(
     db: &Store,
     collection: &Collection,
@@ -121,6 +122,7 @@ pub async fn export_manifest_atomically(
     result
 }
 
+#[cfg(feature = "manifest")]
 pub fn ensure_export_root_available_path(
     output_dir: &Path,
     root: &Path,
@@ -149,6 +151,7 @@ pub fn ensure_export_root_available_path(
     }
 }
 
+#[cfg(feature = "manifest")]
 pub fn commit_staged_export_path(
     staging_dir: &Path,
     output_dir: &Path,
@@ -182,6 +185,7 @@ pub fn commit_staged_export_path(
 }
 
 /// 检查 TM1 在当前主机上的目标路径是否发生大小写碰撞。
+#[cfg(feature = "manifest")]
 pub fn validate_manifest_export_targets(manifest: &TransferManifest) -> anyhow::Result<()> {
     let mut targets = std::collections::BTreeSet::new();
     for entry in &manifest.entries {
@@ -194,6 +198,7 @@ pub fn validate_manifest_export_targets(manifest: &TransferManifest) -> anyhow::
     Ok(())
 }
 
+#[cfg(feature = "manifest")]
 pub fn manifest_target_key(path: &Path) -> String {
     let value = path.to_string_lossy().replace('\\', "/");
     #[cfg(any(windows, target_os = "macos"))]
@@ -206,6 +211,7 @@ pub fn manifest_target_key(path: &Path) -> String {
     }
 }
 
+#[cfg(feature = "manifest")]
 pub fn apply_manifest_metadata(
     target: &Path,
     metadata: &crate::core::manifest::ManifestMetadata,
