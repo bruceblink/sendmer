@@ -10,12 +10,12 @@ use super::support::{
     assert_cached_payload, find_staging_dir, finish_cancelled_export_cleanup, poll_once_then_drop,
 };
 use crate::core::events::{TransferErrorCode, TransferPhase, classified_transfer_error};
+#[cfg(unix)]
+use crate::core::filesystem::get_export_path;
 use crate::core::filesystem::{
     collection_root_name, commit_staged_export, create_staging_dir, export_manifest_atomically,
     move_staged_root_without_replacing,
 };
-#[cfg(unix)]
-use crate::core::filesystem::get_export_path;
 use crate::core::manifest::{
     MANIFEST_ENTRY_PREFIX, ManifestEntry, ManifestEntryKind, ManifestMetadata, ManifestPath,
     ManifestPayload, ManifestRoot, TransferManifest,
