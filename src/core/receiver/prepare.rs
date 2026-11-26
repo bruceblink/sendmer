@@ -1,16 +1,16 @@
+use super::context::ReceiveContext;
 use super::errors::{receive_failure, receive_protocol_failure, show_get_error};
 use super::policy::{await_receive_phase, size_fetch_backoff};
 use crate::core::events::{TransferErrorCode, TransferPhase};
 use crate::core::options::{MAX_LEGACY_COLLECTION_METADATA_BYTES, ReceiveRetryPolicy};
 use crate::core::progress::ReceiverProgressReporter;
-use crate::core::receive_cache::ReceiveCacheLease;
 use anyhow::Context;
 use iroh::Endpoint;
 use iroh_blobs::api::remote::GetProgressItem;
 use iroh_blobs::get::request::get_hash_seq_and_sizes;
 use n0_future::StreamExt;
 use std::sync::Arc as StdArc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Fetch remote collection sizes with a fresh connection for each retry.
 ///
@@ -131,12 +131,13 @@ pub(super) async fn process_get_stream_with_limit<S>(
     reporter: &mut ReceiverProgressReporter,
     idle_timeout: Option<Duration>,
     max_transfer_bytes: Option<u64>,
-    cache_lease: Option<&ReceiveCacheLease>,
+    context: Option<&ReceiveContext>,
 ) -> anyhow::Result<()>
 where
     S: n0_future::Stream<Item = GetProgressItem> + Unpin + Send,
 {
     let mut seen_done = false;
+    let mut last_checkpoint = Instant::now();
     while let Some(item) = next_get_progress_item(stream, idle_timeout).await? {
         match item {
             GetProgressItem::Progress(offset) => {
@@ -148,15 +149,24 @@ where
                         "received transfer exceeds the configured byte limit"
                     );
                 }
-                if let Some(cache_lease) = cache_lease {
+                if let Some(context) = context
+                    && let Some(cache_lease) = &context.cache_lease
+                {
                     cache_lease.check_capacity()?;
+                    if last_checkpoint.elapsed() >= Duration::from_secs(1) {
+                        context.refresh_recovery(Some(downloaded)).await;
+                        last_checkpoint = Instant::now();
+                    }
                 }
                 reporter.on_progress(downloaded);
             }
             GetProgressItem::Done(value) => {
                 let _stats = value;
-                if let Some(cache_lease) = cache_lease {
+                if let Some(context) = context
+                    && let Some(cache_lease) = &context.cache_lease
+                {
                     cache_lease.check_capacity()?;
+                    context.refresh_recovery(None).await;
                 }
                 reporter.emit_completed_progress();
                 seen_done = true;

@@ -346,3 +346,6 @@ mod manifest;
 
 #[path = "cli/transport.rs"]
 mod transport;
+
+#[path = "cli/recovery.rs"]
+mod recovery;

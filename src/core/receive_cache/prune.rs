@@ -377,7 +377,7 @@ pub fn open_lock_file(path: &Path) -> anyhow::Result<File> {
 }
 
 /// Write a heartbeat timestamp without replacing the inode used for locking.
-pub fn touch_lock_file(file: &mut File) -> anyhow::Result<()> {
+pub fn touch_lock_file(mut file: &File) -> anyhow::Result<()> {
     let now = unix_seconds()?;
     file.set_len(0).context("truncate receive cache lock")?;
     file.seek(SeekFrom::Start(0))
@@ -391,7 +391,7 @@ pub fn validate_or_create_manifest(
     expected_key: &str,
     ttl_seconds: u64,
     entry_created: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u64> {
     let manifest_path = entry_dir.join(CACHE_MANIFEST_FILE);
     match std::fs::symlink_metadata(&manifest_path) {
         Ok(metadata) => {
@@ -424,7 +424,7 @@ pub fn validate_or_create_manifest(
                 manifest.ttl_seconds > 0,
                 "receive cache manifest TTL must be greater than zero"
             );
-            Ok(())
+            Ok(manifest.ttl_seconds)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             anyhow::ensure!(
@@ -438,7 +438,8 @@ pub fn validate_or_create_manifest(
                 created_at_unix_seconds: unix_seconds()?,
                 ttl_seconds,
             };
-            write_new_manifest(&manifest_path, &manifest)
+            write_new_manifest(&manifest_path, &manifest)?;
+            Ok(ttl_seconds)
         }
         Err(error) => Err(error).context("read receive cache manifest"),
     }
@@ -522,7 +523,7 @@ pub fn cache_key(hash_and_format: HashAndFormat) -> String {
     )
 }
 
-fn unix_seconds() -> anyhow::Result<u64> {
+pub fn unix_seconds() -> anyhow::Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system clock is before the Unix epoch")

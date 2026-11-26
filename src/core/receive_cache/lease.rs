@@ -1,11 +1,16 @@
 use super::model::*;
 use super::prune::*;
+use super::snapshot::RecoveryJournal;
+use crate::core::events::TransferSessionId;
 use crate::core::options::ReceiveCacheOptions;
+use crate::core::recovery::RecoveryTerminalState;
 use anyhow::Context;
 use fs4::{FileExt, TryLockError};
 use iroh_blobs::HashAndFormat;
+use iroh_blobs::api::remote::LocalInfo;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// Holds the advisory lock for one content-addressed receive-cache entry.
 ///
@@ -16,6 +21,8 @@ pub struct ReceiveCacheLease {
     cache_root: PathBuf,
     entry_dir: PathBuf,
     lock_file: File,
+    snapshot_ttl_seconds: u64,
+    recovery: Mutex<Option<RecoveryJournal>>,
 }
 
 impl ReceiveCacheLease {
@@ -65,7 +72,7 @@ impl ReceiveCacheLease {
             "receive cache entry escapes its layout directory"
         );
 
-        let mut lock_file = open_lock_file(&canonical_entry.join(CACHE_LOCK_FILE))?;
+        let lock_file = open_lock_file(&canonical_entry.join(CACHE_LOCK_FILE))?;
         match FileExt::try_lock(&lock_file) {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
@@ -76,24 +83,89 @@ impl ReceiveCacheLease {
             }
         }
 
-        validate_or_create_manifest(
+        let snapshot_ttl_seconds = validate_or_create_manifest(
             &canonical_entry,
             &cache_key,
             options.ttl.as_secs(),
             entry_created,
         )?;
-        touch_lock_file(&mut lock_file)?;
+        touch_lock_file(&lock_file)?;
         FileExt::unlock(&root_lock).context("unlock receive cache root")?;
 
         Ok(Self {
             cache_root,
             entry_dir: canonical_entry,
             lock_file,
+            snapshot_ttl_seconds,
+            recovery: Mutex::new(None),
         })
     }
 
     pub fn entry_dir(&self) -> &Path {
         &self.entry_dir
+    }
+
+    /// Initialize a new event-session journal while this entry is exclusively locked.
+    pub fn begin_recovery(&self, session_id: TransferSessionId) {
+        let mut recovery = self
+            .recovery
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *recovery = RecoveryJournal::open(&self.entry_dir, self.snapshot_ttl_seconds, session_id);
+    }
+
+    pub fn set_recovery_layout(&self, sizes: Arc<[u64]>) {
+        if let Some(journal) = self
+            .recovery
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+        {
+            journal.set_layout(sizes);
+        }
+    }
+
+    pub fn recovery_enabled(&self) -> bool {
+        self.recovery
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_some()
+    }
+
+    /// The journal is advisory: failed metadata writes cannot invalidate verified blobs.
+    pub fn checkpoint_recovery(&self, local: &LocalInfo, processed: Option<u64>) {
+        let mut recovery = self
+            .recovery
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(journal) = recovery.as_mut()
+            && journal
+                .checkpoint(local, processed)
+                .and_then(|written| {
+                    if written {
+                        touch_lock_file(&self.lock_file)
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err()
+        {
+            tracing::warn!("receive recovery checkpoint unavailable; retain verified blob data");
+            *recovery = None;
+        }
+    }
+
+    pub fn finish_recovery(&self, terminal: RecoveryTerminalState) {
+        let mut recovery = self
+            .recovery
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(journal) = recovery.as_mut()
+            && journal.finish(terminal).is_err()
+        {
+            tracing::warn!("unable to persist receive recovery terminal");
+            *recovery = None;
+        }
     }
 
     /// 在传输进行中检查缓存容量和磁盘余量，防止预检查通过后继续无限增长。
@@ -106,7 +178,7 @@ impl ReceiveCacheLease {
     }
 
     /// Keep verified ranges for a later process and release the lease.
-    pub fn preserve(mut self) -> anyhow::Result<()> {
+    pub fn preserve(self) -> anyhow::Result<()> {
         // 释放 entry 锁后再取得 root shared 锁，统一使用 root -> entry 的顺序。
         // prune 持有 root exclusive 后会等待 entry 锁，保留路径不能反向等待 root。
         FileExt::unlock(&self.lock_file).context("unlock receive cache entry before preserve")?;
@@ -124,7 +196,7 @@ impl ReceiveCacheLease {
             return Ok(());
         }
 
-        let touch_result = touch_lock_file(&mut self.lock_file);
+        let touch_result = touch_lock_file(&self.lock_file);
         let capacity_result = if touch_result.is_ok() {
             ensure_cache_capacity(&self.cache_root)
         } else {
@@ -154,6 +226,7 @@ impl ReceiveCacheLease {
             cache_root,
             entry_dir,
             lock_file,
+            ..
         } = self;
         // 先释放旧 entry 锁，再取得 root exclusive；否则新 receive 可能已持有
         // root shared 并等待同一个 entry 锁，导致删除路径和打开路径互相等待。

@@ -9,6 +9,7 @@ use crate::core::events::{
 use crate::core::filesystem::resolve_output_dir;
 use crate::core::options::{ReceiveLimits, ReceiveOptions};
 use crate::core::progress::TransferEventEmitter;
+use crate::core::recovery::RecoveryTerminalState;
 use crate::core::results::ReceiveResult;
 use iroh_blobs::ticket::BlobTicket;
 use std::future::Future;
@@ -100,7 +101,7 @@ pub async fn receive_with_limits_and_cancellation(
     if cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await {
         let error = finalize_failed_receive(
             transfer_cancelled_error(),
-            cleanup_failed_receive(&mut context).await,
+            cleanup_failed_receive(&mut context, RecoveryTerminalState::Cancelled).await,
         );
         event_emitter.emit_cancelled();
         return Err(error);
@@ -182,17 +183,18 @@ async fn prepare_receive_context(
         event_emitter.emit_cancelled();
         return Err(transfer_cancelled_error());
     }
-    let mut context = match ReceiveContext::prepare(ticket, options, limits).await {
-        Ok(context) => context,
-        Err(error) => {
-            emit_receive_failed(event_emitter, &error);
-            return Err(error);
-        }
-    };
+    let mut context =
+        match ReceiveContext::prepare(ticket, options, limits, event_emitter.session_id()).await {
+            Ok(context) => context,
+            Err(error) => {
+                emit_receive_failed(event_emitter, &error);
+                return Err(error);
+            }
+        };
     if cancellation_requested(cancellation.as_ref()) || ctrl_c_requested(ctrl_c.as_mut()).await {
         let error = finalize_failed_receive(
             transfer_cancelled_error(),
-            cleanup_failed_receive(&mut context).await,
+            cleanup_failed_receive(&mut context, RecoveryTerminalState::Cancelled).await,
         );
         event_emitter.emit_cancelled();
         return Err(error);
@@ -237,7 +239,13 @@ where
             } else {
                 tracing::error!(cancelled, "download operation failed");
             }
-            let error = finalize_failed_receive(error, cleanup_failed_receive(context).await);
+            let terminal = if cancelled {
+                RecoveryTerminalState::Cancelled
+            } else {
+                RecoveryTerminalState::Failed
+            };
+            let error =
+                finalize_failed_receive(error, cleanup_failed_receive(context, terminal).await);
             if cancelled {
                 event_emitter.emit_cancelled();
                 return Err(error);

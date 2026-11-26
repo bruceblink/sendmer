@@ -132,6 +132,23 @@ Linux x86_64 / Rust 1.100.0：完整 workspace 首轮 260 项通过、1 项接�
 契约均通过。原生 Windows/macOS 和真实 relay/弱网故障注入不计入本地通过结果。首次关闭超时
 根因未确定，未修改阈值或传输逻辑。
 
+**C12.4 实施记录（2026-11-26）**：基于 main `2d00bd2`（C12.3 PR #12 和独立
+Windows 修复 PR #11 已合并）。C12.3 PR CI 和合并后 CI 均通过。持久接收缓存条目新增
+辅助 RecoverySnapshot 日志 recovery.json，在独占条目锁内校验、原子替换和记录终态。
+范围坐标按已验证 hash sequence 及子 blob 尺寸展开；实际缺失范围仍由 iroh store 决定。
+旧快照在 TTL、键、角色、schema、区间及终态均有效时与实时 store 校验；不根据快照
+跳过任何数据。Failed/Cancelled 可作为恢复摘要，Completed/Expired 不复用。每次接收
+使用新事件会话 ID；未知 schema 保留至正常条目清理，损坏快照可重建，关闭快照功能
+不关闭既有持久接收缓存。快照同步 I/O 与额外 store 查询的性能开销尚未独立测量。
+
+Linux x86_64 / Rust 1.100.0：新增 8 项恢复单元测试和 1 项 CLI 集成测试，同时扩展既有
+失败、取消、接收进程强杀、发送方重启用例。完整 workspace 270 项通过、2 项按原 opt-in
+条件 ignored（CLI 31/31），没有修改超时阈值。严格 Clippy、format、无默认 feature、
+Rustdoc、doc tests（0 项）、大小检查及其自测、actionlint、安装器模拟和 Release
+version/notes/assets 契约均通过。大小门禁扫描 103 个文件、834 个函数，最大 595/115 行。
+真实 relay、弱网故障注入、跨平台断电持久性及性能基准未验证；远端平台验证以 CI 为准。
+保留协议、事件 schema、公开签名、依赖和版本；不实施 C12.5/C12.6，不发布新版本。
+
 每个阶段都必须先完成对应验收，再提交和推送。涉及公开 API 时同步更新 rustdoc、示例、fixture、
 README、README_ZH 和 AlterSendmer 迁移记录。涉及平台安装器或 workflow 时增加 actionlint、安装器
 测试和 release rehearsal。外部 relay 不可达时标记为“未执行”，不把本地 loopback 结果写成真实
@@ -289,7 +306,17 @@ relay token 或底层连接标识。`file_names` 只能携带使用 `/` 分隔�
 - 失败、超时或取消后保留已验证数据；后续进程通过 `local().missing()` 请求缺失范围；成功
   原子导出后删除对应条目。
 - prune 只删除已过期、schema 已知且未被占用的条目；活动、损坏、未知或未来 schema 数据保留。
-- 跨进程恢复仍要求有效 ticket 和可重新连接的发送端，不是离线下载或永久会话。
+- `recovery.json` 是 schema 1 的辅助记录，绑定缓存键、更新时间、传输总字节数和
+  RecoverySnapshot。区间坐标按根 hash sequence、collection metadata、各子 blob 的顺序展开，
+  使用实际缺失 BAO chunk 的补集，末块裁剪至已验证尺寸；processed_bytes 仅是进度记录。
+  旧快照仅在 TTL、角色、键、schema、范围和终态有效且范围仍被当前 store 覆盖时作为可信摘要。
+  恢复请求始终由 iroh store 生成，不根据快照跳过数据。新接收生成新事件会话 ID。
+- 快照最多 1 MiB、8192 个区间；周期检查点约每秒一次，并在重试和终态时刷新。
+  条目锁内同目录临时文件同步后原子替换，Unix 额外同步目录；不保证所有平台断电持久性。
+  不支持的快照 schema 保留至条目正常清理，损坏的受支持快照可重建，快照错误不删除 blob。
+  环境变量 `SENDMER_DISABLE_RECOVERY_SNAPSHOT=1` 禁用快照读写，不禁用持久缓存。
+- 跨进程恢复仍要求有效 ticket；存在缺失数据时需要可重新连接的发送端。已完整缓存可以重新导出，
+  但不提供任意内容的离线下载或永久会话。
 
 ## 5. 已完成版本与跨项目对齐
 
