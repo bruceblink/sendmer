@@ -52,8 +52,20 @@ pub(super) async fn finish_receive(
     context: &mut ReceiveContext,
     artifacts: ReceiveArtifacts,
 ) -> anyhow::Result<ReceiveResult> {
+    // The successful export only copies verified blobs; this session owns the
+    // store exclusively and the default FsStore has GC disabled. Reuse only a
+    // complete checkpoint committed in the current timestamp second. Otherwise
+    // refresh as before, including when the previous barrier or journal failed.
     #[cfg(feature = "persistent-recovery")]
-    context.refresh_recovery(None).await;
+    if !context
+        .cache_lease
+        .as_ref()
+        .is_some_and(|lease| lease.has_fresh_complete_checkpoint())
+    {
+        context.refresh_recovery(None).await;
+    } else {
+        tracing::debug!("reuse fresh complete receive recovery checkpoint");
+    }
     let endpoint_cleanup_result = close_receive_endpoint(&context.endpoint).await;
     let store_cleanup_result =
         shutdown_receive_store_and_cleanup_staging(&context.db, &mut context.active_staging_dir)

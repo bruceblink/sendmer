@@ -11,7 +11,7 @@ impl ReceiveContext {
         let Some(lease) = &self.cache_lease else {
             return;
         };
-        if !lease.recovery_enabled() {
+        if !lease.begin_checkpoint() {
             return;
         }
         match tokio::time::timeout(
@@ -32,7 +32,7 @@ impl ReceiveContext {
         let Some(lease) = &self.cache_lease else {
             return;
         };
-        if !lease.recovery_enabled() {
+        if !lease.begin_checkpoint() {
             return;
         }
         match tokio::time::timeout(Duration::from_secs(2), self.db.sync_db()).await {

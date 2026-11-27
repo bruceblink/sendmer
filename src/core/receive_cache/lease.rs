@@ -125,11 +125,29 @@ impl ReceiveCacheLease {
         }
     }
 
-    pub fn recovery_enabled(&self) -> bool {
+    /// Invalidate the reuse proof before any new observation or barrier can fail.
+    pub(crate) fn begin_checkpoint(&self) -> bool {
+        let mut recovery = self
+            .recovery
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        recovery.as_mut().is_some_and(|journal| {
+            journal.invalidate_complete_checkpoint();
+            true
+        })
+    }
+
+    /// A fresh checkpoint is from this session and follows a successful store
+    /// barrier, atomic journal write and heartbeat update.
+    pub(crate) fn has_fresh_complete_checkpoint(&self) -> bool {
+        let Ok(now) = unix_seconds() else {
+            return false;
+        };
         self.recovery
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .is_some()
+            .as_ref()
+            .is_some_and(|journal| journal.has_fresh_complete_checkpoint_at(now))
     }
 
     /// The journal is advisory: failed metadata writes cannot invalidate verified blobs.
