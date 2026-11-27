@@ -279,3 +279,91 @@ async fn forged_complete_snapshot_is_rebuilt_from_an_incomplete_store() {
 fn root_bytes_len(sizes: &[u64]) -> u64 {
     sizes.len() as u64 * 32 + sizes.iter().sum::<u64>()
 }
+
+#[tokio::test]
+async fn only_fresh_successfully_committed_complete_checkpoint_can_be_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = iroh_blobs::store::fs::FsStore::load(store_dir.path())
+        .await
+        .unwrap();
+    let child = store
+        .add_bytes(b"payload".as_slice())
+        .temp_tag()
+        .await
+        .unwrap();
+    let mut collection = Collection::default();
+    collection.push("payload.txt".into(), child.hash());
+    let root = collection.store(&store).await.unwrap();
+    let local = store
+        .remote()
+        .local(HashAndFormat::hash_seq(root.hash()))
+        .await
+        .unwrap();
+    assert!(local.is_complete());
+    store.sync_db().await.unwrap();
+    let mut journal =
+        RecoveryJournal::open_enabled(dir.path(), 60, TransferSessionId::new()).unwrap();
+    assert!(!journal.has_fresh_complete_checkpoint_at(journal.record.updated_at_unix_seconds));
+    assert!(journal.checkpoint(&local, None).unwrap());
+    let committed_at = journal.record.updated_at_unix_seconds;
+    assert!(journal.has_fresh_complete_checkpoint_at(committed_at));
+    assert!(!journal.has_fresh_complete_checkpoint_at(committed_at + 1));
+    assert!(!journal.has_fresh_complete_checkpoint_at(committed_at - 1));
+
+    // Reopening a complete record does not make it evidence in the new session.
+    let mut reopened =
+        RecoveryJournal::open_enabled(dir.path(), 60, TransferSessionId::new()).unwrap();
+    assert!(reopened.previous.is_some());
+    assert!(!reopened.has_fresh_complete_checkpoint_at(reopened.record.updated_at_unix_seconds));
+
+    // An observation/barrier attempt invalidates the proof even if it later fails.
+    journal.invalidate_complete_checkpoint();
+    assert!(!journal.has_fresh_complete_checkpoint_at(committed_at));
+    assert!(journal.checkpoint(&local, None).unwrap());
+    assert!(journal.has_fresh_complete_checkpoint_at(journal.record.updated_at_unix_seconds));
+
+    // A new layout or an incomplete observation must revoke the optimization.
+    journal.set_layout(Arc::from([1_u64]));
+    assert!(!journal.has_fresh_complete_checkpoint_at(committed_at));
+    let absent = store
+        .remote()
+        .local(HashAndFormat::hash_seq(Hash::new(b"absent")))
+        .await
+        .unwrap();
+    assert!(!absent.is_complete());
+    assert!(!reopened.checkpoint(&absent, None).unwrap());
+    assert!(!reopened.has_fresh_complete_checkpoint_at(reopened.record.updated_at_unix_seconds));
+
+    assert!(reopened.checkpoint(&local, None).unwrap());
+    reopened.finish(RecoveryTerminalState::Failed).unwrap();
+    assert!(!reopened.has_fresh_complete_checkpoint_at(reopened.record.updated_at_unix_seconds));
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_checkpoint_write_cannot_mark_complete() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = iroh_blobs::store::fs::FsStore::load(store_dir.path())
+        .await
+        .unwrap();
+    let tag = store
+        .add_bytes(b"payload".as_slice())
+        .temp_tag()
+        .await
+        .unwrap();
+    let local = store
+        .remote()
+        .local(HashAndFormat::raw(tag.hash()))
+        .await
+        .unwrap();
+    assert!(local.is_complete());
+    store.sync_db().await.unwrap();
+    let mut journal =
+        RecoveryJournal::open_enabled(dir.path(), 60, TransferSessionId::new()).unwrap();
+    std::fs::create_dir(dir.path().join(SNAPSHOT_TEMP)).unwrap();
+    assert!(journal.checkpoint(&local, None).is_err());
+    assert!(!journal.has_fresh_complete_checkpoint_at(journal.record.updated_at_unix_seconds));
+    store.shutdown().await.unwrap();
+}

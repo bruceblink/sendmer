@@ -61,6 +61,8 @@ pub(super) struct RecoveryJournal {
     record: RecoveryRecord,
     previous: Option<RecoveryRecord>,
     sizes: Option<Arc<[u64]>>,
+    // Only a successful checkpoint against the live store in this session can set this.
+    committed_complete: bool,
 }
 
 impl RecoveryJournal {
@@ -99,11 +101,25 @@ impl RecoveryJournal {
             },
             previous,
             sizes: None,
+            committed_complete: false,
         })
     }
 
     pub(super) fn set_layout(&mut self, sizes: Arc<[u64]>) {
         self.sizes = Some(sizes);
+        self.committed_complete = false;
+    }
+
+    pub(super) const fn invalidate_complete_checkpoint(&mut self) {
+        self.committed_complete = false;
+    }
+
+    /// A same-second, fully committed live checkpoint needs no identical refresh
+    /// after a successful copy-only export. Never reuse a previous session here.
+    pub(super) const fn has_fresh_complete_checkpoint_at(&self, now: u64) -> bool {
+        self.committed_complete
+            && self.record.updated_at_unix_seconds == now
+            && self.record.snapshot.last_terminal_state.is_none()
     }
 
     pub(super) fn checkpoint(
@@ -111,6 +127,7 @@ impl RecoveryJournal {
         local: &LocalInfo,
         processed: Option<u64>,
     ) -> anyhow::Result<bool> {
+        self.committed_complete = false;
         // An incomplete hash sequence has no reliable flattened coordinate system
         // until the sender's verified metadata sizes have been obtained.
         let (total, ranges) = if let Some(sizes) = &self.sizes {
@@ -126,8 +143,9 @@ impl RecoveryJournal {
         } else {
             return Ok(false);
         };
+        let local_bytes = local.local_bytes();
         anyhow::ensure!(
-            ranges.iter().map(|r| r.end - r.start).sum::<u64>() <= local.local_bytes(),
+            ranges.iter().map(|r| r.end - r.start).sum::<u64>() <= local_bytes,
             "recovery ranges exceed verified local bytes"
         );
         self.record.transfer_total = total;
@@ -150,6 +168,10 @@ impl RecoveryJournal {
             .snapshot
             .record_progress(processed.unwrap_or(verified).max(verified).min(total));
         self.persist()?;
+        self.committed_complete = local.is_complete()
+            && total == local_bytes
+            && verified == total
+            && self.record.snapshot.processed_bytes == total;
         Ok(true)
     }
 
