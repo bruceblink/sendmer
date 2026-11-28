@@ -7,7 +7,7 @@ mod verification;
 
 use super::{read_ticket, sendmer_bin, stop_child};
 use anyhow::{Context, ensure};
-use forwarding::{LOOPBACK, Network, PAYLOAD_BYTES, SEED, Traffic, forward_udp};
+use forwarding::{LOOPBACK, Network, PAYLOAD_BYTES, PROXY_LOOPBACK, SEED, Traffic, forward_udp};
 use iroh::EndpointAddr;
 use iroh_blobs::Hash;
 use iroh_blobs::ticket::BlobTicket;
@@ -53,34 +53,28 @@ struct WindowsUdpIsolation {
 
 #[cfg(windows)]
 impl WindowsUdpIsolation {
-    /// 阻止 sendmer 直接访问对端端口，让测试流量只能经过 UDP 转发器。
-    fn install(sender_port: u16, receiver_port: u16) -> anyhow::Result<Self> {
+    /// 阻止 sendmer 访问直接地址，让测试流量只能经过独立回环地址的转发器。
+    fn install() -> anyhow::Result<Self> {
         let binary = sendmer_bin();
-        let rules = [sender_port, receiver_port]
-            .into_iter()
-            .map(|port| format!("sendmer-weak-network-{port}"))
-            .collect::<Vec<_>>();
-        for (rule, port) in rules.iter().zip([sender_port, receiver_port]) {
-            let status = std::process::Command::new("netsh")
-                .args([
-                    "advfirewall",
-                    "firewall",
-                    "add",
-                    "rule",
-                    &format!("name={rule}"),
-                    "dir=out",
-                    "action=block",
-                    "protocol=UDP",
-                    "remoteip=127.0.0.1",
-                    &format!("remoteport={port}"),
-                ])
-                .arg(format!("program={}", binary.display()))
-                .status()?;
-            anyhow::ensure!(
-                status.success(),
-                "unable to install Windows UDP isolation rule"
-            );
-        }
+        let rule = "sendmer-weak-network-direct".to_owned();
+        let status = std::process::Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                "name=sendmer-weak-network-direct",
+                "dir=out",
+                "action=block",
+                "protocol=UDP",
+                "remoteip=127.0.0.1",
+            ])
+            .arg(format!("program={}", binary.display()))
+            .status()?;
+        anyhow::ensure!(
+            status.success(),
+            "unable to install Windows UDP isolation rule"
+        );
         Ok(Self { rules })
     }
 }
@@ -116,7 +110,12 @@ async fn run_case(network: Network, manifest: bool) -> anyhow::Result<()> {
         file
     };
     tokio::fs::create_dir(&output).await?;
-    let link = UdpSocket::bind(LOOPBACK).await?;
+    let proxy_bind = if cfg!(windows) {
+        PROXY_LOOPBACK
+    } else {
+        LOOPBACK
+    };
+    let link = UdpSocket::bind(proxy_bind).await?;
     let mut send = isolated_sendmer(link.local_addr()?.port());
     send.args([
         "send",
@@ -183,7 +182,7 @@ async fn receive_through_link(
     #[cfg(windows)]
     let receiver_port = reserve_loopback_port()?;
     #[cfg(windows)]
-    let _isolation = WindowsUdpIsolation::install(sender_addr.port(), receiver_port)?;
+    let _isolation = WindowsUdpIsolation::install()?;
     let proxy_ticket = BlobTicket::new(
         EndpointAddr::new(ticket.addr().id).with_ip_addr(proxy_addr),
         ticket.hash(),
