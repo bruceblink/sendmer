@@ -879,6 +879,25 @@ toolchain matrix job、lint、MSRV、workflow 和安装器检查；相对输出�
 - 八组均通过。每组输出文件的 BLAKE3 与首轮记录一致。接收进度未回退，终态只出现一次，
   断网用例恢复前输出目录为空，成功后清理缓存。TM1 用例同时核对了空子目录。
 
+**R13.1 真实 relay 与弱网验收（2026-11-28）**
+
+- 验收提交为 `9e560223d67c057f3a3db89c982311c1bf0810b4`，环境为 macOS arm64、Rust stable
+  `1.100.0`。relay 测试使用 `SENDMER_RELAY_SMOKE=1` 和 `IROH_FORCE_STAGING_RELAYS=1`，
+  未设置自定义 relay URL，使用 iroh 默认 staging relay。
+- `relay_only_ticket_round_trips_a_file` 通过，耗时 5.83 s。relay-only ticket 含 relay 地址且不含
+  IP 地址，接收文件内容与发送数据一致。
+- `throttled_relay_transfer_recovers_after_sender_restart` 通过，耗时 25.82 s。发送端中断后使用
+  相同节点身份和地址重启，接收端完成恢复，测试校验 ticket identity、终态和文件内容。
+- 本地 UDP 弱网基线的单文件与 TM1 目录全部通过。种子为 `21`，BLAKE3 为
+  `696629d7b9e50215bf202da7e15c1558ba7b890aef43137eefa21312db681b71`。限速、丢包、15 秒断网和
+  主动重试均完成，断网主动重试记录 4 次应用层重试。
+- 本地 UDP 延迟与组合故障的单文件与 TM1 目录全部通过。组合故障包含 75 ms 单程延迟、抖动、
+  256 KiB/s 限速、双向 3% 丢包和 15 秒断网。单文件组合主动重试在断网后 687 ms 恢复首包、
+  17.464 s 完成，成功请求读取 655360 字节。TM1 目录组合主动重试在断网后 628 ms 恢复首包、
+  16.806 s 完成，成功请求读取 671744 字节。
+- 本轮真实 relay 和本地故障注入均通过。真实两台设备、Wi-Fi 与热点切换、Windows 原生弱网和
+  断电持久性仍待后续验收。
+
 **验证命令与回退**
 
 ```bash
