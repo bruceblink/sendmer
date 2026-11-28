@@ -102,6 +102,36 @@ cargo test -q
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
+## Windows 原生弱网验收
+
+该验收使用 Windows 原生进程和本机 UDP 转发器。测试会注入限速、丢包、固定延迟、抖动和
+双向断网，并检查 BLAKE3、恢复首包、完成时间、应用层重试次数、事件顺序和缓存清理。
+测试使用 proxy ticket 把 sender 和 receiver 的数据经过本机转发端口。它不代表 Wi-Fi/热点
+切换、两台真实设备传输或断电持久性。
+
+在 PowerShell 中确认 Rust stable、Cargo 和 Git 可用，然后执行：
+
+```powershell
+$env:SENDMER_WEAK_NETWORK_SMOKE = "1"
+$env:IROH_FORCE_STAGING_RELAYS = "1"
+
+cargo test --locked --all-features --test weak_network_smoke local_udp_weak_network_baseline -- --ignored --nocapture
+cargo test --locked --all-features --test weak_network_smoke local_udp_latency_and_combined -- --ignored --nocapture
+```
+
+需要验证真实 relay 时继续执行：
+
+```powershell
+$env:SENDMER_RELAY_SMOKE = "1"
+
+cargo test --locked --all-features --test relay_smoke relay_only_ticket_round_trips_a_file -- --ignored --nocapture
+cargo test --locked --all-features --test weak_network_smoke throttled_relay_transfer_recovers_after_sender_restart -- --ignored --nocapture
+```
+
+验收记录应包含提交版本、Windows 版本、Rust 版本、目标工具链、测试命令、随机种子、链路参数、
+下行和上行转发字节、丢包计数、断网丢弃计数、恢复首包时间、完成时间、重试次数、最终 BLAKE3
+和缓存目录清理结果。测试失败时保留完整 stdout、stderr、RUST_LOG 和失败阶段。
+
 ## 关键流程说明
 
 - `sendmer::send_handle`：

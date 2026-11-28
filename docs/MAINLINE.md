@@ -911,6 +911,14 @@ toolchain matrix job、lint、MSRV、workflow 和安装器检查；相对输出�
   下一次外部验收应补充 Windows 原生 runner、两台设备网络记录、切换时间点、传输哈希、恢复
   请求范围和断电恢复后的缓存清理结果。
 
+Windows 原生弱网验收步骤已固定在 `DEVELOPMENT.md`。有 Windows 设备时，使用 PowerShell 设置
+`SENDMER_WEAK_NETWORK_SMOKE=1` 后依次运行 `local_udp_weak_network_baseline` 和
+`local_udp_latency_and_combined`。需要真实 relay 时再设置 `SENDMER_RELAY_SMOKE=1`，运行
+relay-only round-trip 和发送方重启恢复。记录提交版本、Windows/Rust/toolchain、种子、链路参数、
+转发字节、丢包、断网丢弃、恢复首包、完成时间、重试次数、最终 BLAKE3 和缓存清理结果。
+GitHub Actions 的 `Windows native weak-network acceptance` 作业使用 `windows-latest` 执行前两项
+本地 UDP 验收。该作业不能替代 Wi-Fi/热点切换、两台设备传输或断电持久性。
+
 **验证命令与回退**
 
 ```bash
