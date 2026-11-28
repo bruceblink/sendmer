@@ -163,8 +163,8 @@ SendResult 的 ticket/hash/size/entry_type 和生命周期方法保留，资源�
 Linux x86_64 / Rust 1.100.0：最终全量 270 项通过、2 项 ignored（CLI 31/31），
 fmt、严格 Clippy、无默认 feature 检查、Rustdoc、3 项 doc tests、大小门禁通过。
 105 个代码文件、836 个函数，最大 595/115 行。未验证真实 relay 或断电持久性。
-AlterSendmer 与 sendmer 同步维护。根据最新开发顺序，先完成核心 C12.5/C12.6，
-发布新的正式 crate，再迁移 AlterSendmer 至该已发布版本；旧项目 AlterSendme 不纳入验收。
+AlterSendmer 与 sendmer 同步维护。C12.5 和 C12.6 已完成，核心 `v0.13.0` 已发布，
+AlterSendmer `v0.8.0` 已迁移到固定的 `sendmer 0.13.0`；旧项目 AlterSendme 不纳入验收。
 
 **C12.6 实施记录（2026-11-26，v0.13.0）**：C12.5 已通过 PR #14 合入 main
 （`515c580`），PR CI 20/20 成功。核心 `v0.13.0` 已发布后，AlterSendmer 完成 `v0.8.0`
