@@ -75,7 +75,7 @@ impl WindowsUdpIsolation {
             status.success(),
             "unable to install Windows UDP isolation rule"
         );
-        Ok(Self { rules })
+        Ok(Self { rules: vec![rule] })
     }
 }
 
