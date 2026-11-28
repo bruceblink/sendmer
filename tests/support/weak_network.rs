@@ -1,4 +1,4 @@
-//! 在 macOS 回环链路上测试真实 sendmer 进程。测试链路只转发 UDP 数据包。
+//! 在 macOS 和 Windows 回环链路上测试真实 sendmer 进程。测试链路只转发 UDP 数据包。
 
 #[path = "weak_network/forwarding.rs"]
 mod forwarding;
@@ -20,7 +20,8 @@ use tokio::process::Command;
 use tokio::time::{Duration, Instant, timeout};
 use verification::{verify_combined_payload, verify_events, verify_link};
 
-/// 限制测试子进程只能向转发端口发包，防止 iroh 建连后改走直连。
+/// 在 macOS 上限制子进程只能向转发端口发包，防止 iroh 建连后改走直连。
+#[cfg(target_os = "macos")]
 fn isolated_sendmer(proxy_port: u16) -> Command {
     let mut command = Command::new("/usr/bin/sandbox-exec");
     let profile = format!(
@@ -31,6 +32,12 @@ fn isolated_sendmer(proxy_port: u16) -> Command {
     );
     command.args(["-p", &profile]).arg(sendmer_bin());
     command
+}
+
+/// Windows runner 使用只包含转发端口的 proxy ticket，避免测试依赖 macOS 沙箱接口。
+#[cfg(target_os = "windows")]
+fn isolated_sendmer(_proxy_port: u16) -> Command {
+    Command::new(sendmer_bin())
 }
 
 /// 每一组使用独立进程和缓存。TM1 用例同时检查目录内容和空子目录。
