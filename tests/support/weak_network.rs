@@ -40,6 +40,63 @@ fn isolated_sendmer(_proxy_port: u16) -> Command {
     Command::new(sendmer_bin())
 }
 
+#[cfg(windows)]
+fn reserve_loopback_port() -> anyhow::Result<u16> {
+    let socket = std::net::UdpSocket::bind(("127.0.0.1", 0))?;
+    Ok(socket.local_addr()?.port())
+}
+
+#[cfg(windows)]
+struct WindowsUdpIsolation {
+    rules: Vec<String>,
+}
+
+#[cfg(windows)]
+impl WindowsUdpIsolation {
+    /// 阻止 sendmer 直接访问对端端口，让测试流量只能经过 UDP 转发器。
+    fn install(sender_port: u16, receiver_port: u16) -> anyhow::Result<Self> {
+        let binary = sendmer_bin();
+        let rules = [sender_port, receiver_port]
+            .into_iter()
+            .map(|port| format!("sendmer-weak-network-{port}"))
+            .collect::<Vec<_>>();
+        for (rule, port) in rules.iter().zip([sender_port, receiver_port]) {
+            let status = std::process::Command::new("netsh")
+                .args([
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
+                    &format!("name={rule}"),
+                    "dir=out",
+                    "action=block",
+                    "protocol=UDP",
+                    "remoteip=127.0.0.1",
+                    &format!("remoteport={port}"),
+                ])
+                .arg(format!("program={}", binary.display()))
+                .status()?;
+            anyhow::ensure!(
+                status.success(),
+                "unable to install Windows UDP isolation rule"
+            );
+        }
+        Ok(Self { rules })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsUdpIsolation {
+    fn drop(&mut self) {
+        for rule in &self.rules {
+            let _ = std::process::Command::new("netsh")
+                .args(["advfirewall", "firewall", "delete", "rule"])
+                .arg(format!("name={rule}"))
+                .status();
+        }
+    }
+}
+
 /// 每一组使用独立进程和缓存。TM1 用例同时检查目录内容和空子目录。
 async fn run_case(network: Network, manifest: bool) -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
@@ -123,6 +180,10 @@ async fn receive_through_link(
         .find(|addr| addr.is_ipv4() && addr.ip().is_loopback())
         .context("sender ticket has no IPv4 loopback address")?;
     let proxy_addr = link.local_addr()?;
+    #[cfg(windows)]
+    let receiver_port = reserve_loopback_port()?;
+    #[cfg(windows)]
+    let _isolation = WindowsUdpIsolation::install(sender_addr.port(), receiver_port)?;
     let proxy_ticket = BlobTicket::new(
         EndpointAddr::new(ticket.addr().id).with_ip_addr(proxy_addr),
         ticket.hash(),
@@ -138,8 +199,18 @@ async fn receive_through_link(
         "--relay",
         "disabled",
         "--magic-ipv4-addr",
-        LOOPBACK,
     ]);
+    let receiver_bind = {
+        #[cfg(windows)]
+        {
+            format!("127.0.0.1:{receiver_port}")
+        }
+        #[cfg(not(windows))]
+        {
+            LOOPBACK.to_owned()
+        }
+    };
+    receive.arg(receiver_bind);
     // 默认参数另有断网用例。这里缩短空闲等待，确保断网期间进入应用层重试。
     if network.forces_retry() {
         receive.args([

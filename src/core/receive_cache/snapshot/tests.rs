@@ -3,6 +3,7 @@ use iroh_blobs::api::proto::Bitfield;
 use iroh_blobs::format::collection::Collection;
 use iroh_blobs::protocol::{ChunkRanges, ChunkRangesSeq};
 use iroh_blobs::{Hash, HashAndFormat};
+#[cfg(unix)]
 use std::time::Instant;
 
 fn sample_record(key: &str) -> RecoveryRecord {
@@ -370,6 +371,7 @@ async fn failed_checkpoint_write_cannot_mark_complete() {
 }
 
 #[cfg(unix)]
+/// 递归统计测试目录的普通文件逻辑长度，跳过符号链接和特殊文件。
 fn directory_bytes(path: &std::path::Path) -> u64 {
     std::fs::read_dir(path)
         .into_iter()
