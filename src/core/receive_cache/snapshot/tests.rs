@@ -3,6 +3,7 @@ use iroh_blobs::api::proto::Bitfield;
 use iroh_blobs::format::collection::Collection;
 use iroh_blobs::protocol::{ChunkRanges, ChunkRangesSeq};
 use iroh_blobs::{Hash, HashAndFormat};
+use std::time::Instant;
 
 fn sample_record(key: &str) -> RecoveryRecord {
     let mut snapshot = RecoverySnapshot::new(Role::Receiver, TransferSessionId::new());
@@ -365,5 +366,110 @@ async fn failed_checkpoint_write_cannot_mark_complete() {
     std::fs::create_dir(dir.path().join(SNAPSHOT_TEMP)).unwrap();
     assert!(journal.checkpoint(&local, None).is_err());
     assert!(!journal.has_fresh_complete_checkpoint_at(journal.record.updated_at_unix_seconds));
+    store.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+fn directory_bytes(path: &std::path::Path) -> u64 {
+    std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(file_type) if file_type.is_dir() => directory_bytes(&path),
+                Ok(file_type) if file_type.is_file() => entry.metadata().map_or(0, |m| m.len()),
+                _ => 0,
+            }
+        })
+        .sum()
+}
+
+#[cfg(unix)]
+fn process_cpu_micros() -> u128 {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // 安全边界：getrusage 会初始化当前进程的可写结构体。
+    let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+    assert_eq!(result, 0, "getrusage failed");
+    // 安全边界：返回值为成功时，usage 已完成初始化。
+    let usage = unsafe { usage.assume_init() };
+    let micros = |time: libc::timeval| {
+        u128::try_from(time.tv_sec).unwrap_or_default() * 1_000_000
+            + u128::try_from(time.tv_usec).unwrap_or_default()
+    };
+    micros(usage.ru_utime) + micros(usage.ru_stime)
+}
+
+#[cfg(unix)]
+fn process_peak_rss_bytes() -> u64 {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // 安全边界：getrusage 会初始化当前进程的可写结构体。
+    let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+    assert_eq!(result, 0, "getrusage failed");
+    // 安全边界：返回值为成功时，usage 已完成初始化。
+    let usage = unsafe { usage.assume_init() };
+    let rss = u64::try_from(usage.ru_maxrss).unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        rss
+    } else {
+        rss.saturating_mul(1024)
+    }
+}
+
+/// 测量真实恢复检查点成本。常规测试不依赖该基准的耗时结果。
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "explicit P13.1 resource benchmark"]
+async fn recovery_checkpoint_resource_baseline() {
+    let bytes = std::env::var("SENDMER_BENCH_RECOVERY_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1024 * 1024);
+    let iterations = std::env::var("SENDMER_BENCH_RECOVERY_ITERATIONS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = iroh_blobs::store::fs::FsStore::load(store_dir.path())
+        .await
+        .unwrap();
+    let payload = vec![0x5a_u8; bytes];
+    let tag = store.add_bytes(payload).temp_tag().await.unwrap();
+    let local = store
+        .remote()
+        .local(HashAndFormat::raw(tag.hash()))
+        .await
+        .unwrap();
+    assert!(local.is_complete());
+    store.sync_db().await.unwrap();
+    let mut journal =
+        RecoveryJournal::open_enabled(cache_dir.path(), 3600, TransferSessionId::new()).unwrap();
+    let cpu_before = process_cpu_micros();
+    let started = Instant::now();
+    let mut peak_cache = 0_u64;
+    let mut peak_store = 0_u64;
+    for _ in 0..iterations {
+        assert!(journal.checkpoint(&local, None).unwrap());
+        peak_cache = peak_cache.max(directory_bytes(cache_dir.path()));
+        peak_store = peak_store.max(directory_bytes(store_dir.path()));
+    }
+    let elapsed = started.elapsed();
+    let cpu_micros = process_cpu_micros().saturating_sub(cpu_before);
+    println!(
+        "recovery_checkpoint bytes={} iterations={} total_ms={:.3} avg_ms={:.3} cpu_ms={:.3} peak_rss_bytes={} peak_cache_bytes={} peak_store_bytes={} peak_disk_bytes={}",
+        bytes,
+        iterations,
+        elapsed.as_secs_f64() * 1_000.0,
+        elapsed.as_secs_f64() * 1_000.0 / iterations as f64,
+        cpu_micros as f64 / 1_000.0,
+        process_peak_rss_bytes(),
+        peak_cache,
+        peak_store,
+        peak_cache.saturating_add(peak_store),
+    );
     store.shutdown().await.unwrap();
 }

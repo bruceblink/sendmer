@@ -227,8 +227,31 @@ bash ./tests/release-assets.sh
 生成，输入文件使用固定字节模式并在计时前完成写入和同步。结果用于同一设备和同一 toolchain
 的回归比较，不代表其他系统或网络环境。
 
-本轮未执行 1 GiB 和十万文件档位，也没有测量真实 relay、接收端恢复检查点的单独耗时、CPU、内存
-或磁盘峰值。下一次 P13.1 扩展先增加资源采样和恢复检查点计时，再决定是否运行更大数据档位。
+**恢复检查点资源基线（2026-11-28）**：新增 Unix 下的 ignored 基准测试
+`recovery_checkpoint_resource_baseline`。它对真实 `FsStore` 和 `RecoveryJournal::checkpoint` 运行
+多次检查点，输出检查点耗时、当前进程 CPU 时间、进程最大 RSS、FsStore 目录逻辑字节数、快照目录
+逻辑字节数和两者合计。默认使用 1 MiB、8 次迭代；可通过
+`SENDMER_BENCH_RECOVERY_BYTES` 和 `SENDMER_BENCH_RECOVERY_ITERATIONS` 调整。
+
+macOS ARM64、Rust 1.100.0 的结果如下：
+
+| 载荷 | 迭代 | 平均检查点 | CPU 时间 | 峰值 RSS | 峰值磁盘逻辑字节 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 MiB | 8 | 8.084 ms | 4.346 ms | 23.1 MiB | 2,105,630 |
+| 16 MiB | 4 | 7.965 ms | 1.317 ms | 38.8 MiB | 17,899,745 |
+
+验证命令如下：
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+SENDMER_BENCH_RECOVERY_BYTES=1048576 SENDMER_BENCH_RECOVERY_ITERATIONS=8 \
+  cargo test --locked --all-features --lib recovery_checkpoint_resource_baseline -- --ignored --nocapture
+```
+
+本基准测量进程级 CPU 时间和最大 RSS，磁盘值是目录中文件长度之和，不包含文件系统块分配、缓存
+写回时间或真实断电持久性。当前 Unix 实现已验证，Windows 资源采样尚未接入。1 GiB、十万文件、
+真实 relay 和跨平台断电持久性仍待后续验收。
 
 每个方向都需要建立独立提交、验证命令、未执行项和回滚边界。涉及 AlterSendmer 的工作必须先
 确认 sendmer 已有公开 API 可以满足需求。核心 API 变更必须先更新本文件、示例、迁移说明和下游
