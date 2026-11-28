@@ -13,7 +13,7 @@ use tokio::{
     process::{Child, ChildStdout, Command},
 };
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 #[path = "support/weak_network.rs"]
 mod weak_network;
 

@@ -106,9 +106,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 该验收使用 Windows 原生进程和本机 UDP 转发器。测试会注入限速、丢包、固定延迟、抖动和
 双向断网，并检查 BLAKE3、恢复首包、完成时间、应用层重试次数、事件顺序和缓存清理。
-Windows 测试会为 sender 和 receiver 的直连对端端口安装临时 Windows Firewall 出站阻断规则，
-让数据经过 proxy ticket 指定的转发端口。PowerShell 必须以管理员权限运行，测试结束会删除规则。
-它不代表 Wi-Fi/热点切换、两台真实设备传输或断电持久性。
+当前 Windows runner 的实验性路径无法完全阻止 iroh 绕过用户态转发器，因此暂不作为通过条件。
+具备可控 Windows 网络隔离方案后，再启用这组命令并保留完整输出。它不代表 Wi-Fi/热点切换、
+两台真实设备传输或断电持久性。
 
 在 PowerShell 中确认 Rust stable、Cargo 和 Git 可用，然后执行：
 

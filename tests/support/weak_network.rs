@@ -7,7 +7,7 @@ mod verification;
 
 use super::{read_ticket, sendmer_bin, stop_child};
 use anyhow::{Context, ensure};
-use forwarding::{LOOPBACK, Network, PAYLOAD_BYTES, PROXY_LOOPBACK, SEED, Traffic, forward_udp};
+use forwarding::{LOOPBACK, Network, PAYLOAD_BYTES, SEED, Traffic, forward_udp};
 use iroh::EndpointAddr;
 use iroh_blobs::Hash;
 use iroh_blobs::ticket::BlobTicket;
@@ -34,63 +34,6 @@ fn isolated_sendmer(proxy_port: u16) -> Command {
     command
 }
 
-/// Windows runner 使用只包含转发端口的 proxy ticket，避免测试依赖 macOS 沙箱接口。
-#[cfg(target_os = "windows")]
-fn isolated_sendmer(_proxy_port: u16) -> Command {
-    Command::new(sendmer_bin())
-}
-
-#[cfg(windows)]
-fn reserve_loopback_port() -> anyhow::Result<u16> {
-    let socket = std::net::UdpSocket::bind(("127.0.0.1", 0))?;
-    Ok(socket.local_addr()?.port())
-}
-
-#[cfg(windows)]
-struct WindowsUdpIsolation {
-    rules: Vec<String>,
-}
-
-#[cfg(windows)]
-impl WindowsUdpIsolation {
-    /// 阻止 sendmer 访问直接地址，让测试流量只能经过独立回环地址的转发器。
-    fn install() -> anyhow::Result<Self> {
-        let binary = sendmer_bin();
-        let rule = "sendmer-weak-network-direct".to_owned();
-        let status = std::process::Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "add",
-                "rule",
-                "name=sendmer-weak-network-direct",
-                "dir=out",
-                "action=block",
-                "protocol=UDP",
-                "remoteip=127.0.0.1",
-            ])
-            .arg(format!("program={}", binary.display()))
-            .status()?;
-        anyhow::ensure!(
-            status.success(),
-            "unable to install Windows UDP isolation rule"
-        );
-        Ok(Self { rules: vec![rule] })
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsUdpIsolation {
-    fn drop(&mut self) {
-        for rule in &self.rules {
-            let _ = std::process::Command::new("netsh")
-                .args(["advfirewall", "firewall", "delete", "rule"])
-                .arg(format!("name={rule}"))
-                .status();
-        }
-    }
-}
-
 /// 每一组使用独立进程和缓存。TM1 用例同时检查目录内容和空子目录。
 async fn run_case(network: Network, manifest: bool) -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
@@ -110,12 +53,7 @@ async fn run_case(network: Network, manifest: bool) -> anyhow::Result<()> {
         file
     };
     tokio::fs::create_dir(&output).await?;
-    let proxy_bind = if cfg!(windows) {
-        PROXY_LOOPBACK
-    } else {
-        LOOPBACK
-    };
-    let link = UdpSocket::bind(proxy_bind).await?;
+    let link = UdpSocket::bind(LOOPBACK).await?;
     let mut send = isolated_sendmer(link.local_addr()?.port());
     send.args([
         "send",
@@ -179,10 +117,6 @@ async fn receive_through_link(
         .find(|addr| addr.is_ipv4() && addr.ip().is_loopback())
         .context("sender ticket has no IPv4 loopback address")?;
     let proxy_addr = link.local_addr()?;
-    #[cfg(windows)]
-    let receiver_port = reserve_loopback_port()?;
-    #[cfg(windows)]
-    let _isolation = WindowsUdpIsolation::install()?;
     let proxy_ticket = BlobTicket::new(
         EndpointAddr::new(ticket.addr().id).with_ip_addr(proxy_addr),
         ticket.hash(),
@@ -199,17 +133,7 @@ async fn receive_through_link(
         "disabled",
         "--magic-ipv4-addr",
     ]);
-    let receiver_bind = {
-        #[cfg(windows)]
-        {
-            format!("127.0.0.1:{receiver_port}")
-        }
-        #[cfg(not(windows))]
-        {
-            LOOPBACK.to_owned()
-        }
-    };
-    receive.arg(receiver_bind);
+    receive.arg(LOOPBACK);
     // 默认参数另有断网用例。这里缩短空闲等待，确保断网期间进入应用层重试。
     if network.forces_retry() {
         receive.args([

@@ -153,21 +153,6 @@ jobs:
           test -x "$BINARY" || [[ "${{ runner.os }}" == "Windows" ]]
           "$BINARY" --version
 
-  windows-weak-network:
-    name: Windows native weak-network acceptance
-    runs-on: windows-latest
-    env:
-      SENDMER_WEAK_NETWORK_SMOKE: "1"
-      IROH_FORCE_STAGING_RELAYS: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
-      - name: Local UDP weak-network baseline
-        run: cargo test --locked --all-features --test weak_network_smoke local_udp_weak_network_baseline -- --ignored --nocapture
-      - name: Local UDP latency and combined faults
-        run: cargo test --locked --all-features --test weak_network_smoke local_udp_latency_and_combined -- --ignored --nocapture
-
   # Checks correct runtime deps and features are requested by not including dev-dependencies.
   check-deps:
     runs-on: ubuntu-latest

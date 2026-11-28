@@ -13,7 +13,6 @@ pub(super) const JITTER_MS: [u64; 4] = [50, 75, 100, 75];
 pub(super) const OUTAGE: Duration = Duration::from_secs(15);
 pub(super) const SEED: u64 = 21;
 pub(super) const LOOPBACK: &str = "127.0.0.1:0";
-pub(super) const PROXY_LOOPBACK: &str = "127.0.0.2:0";
 const QUEUE_LIMIT: usize = 1024;
 
 #[derive(Clone, Copy, Debug)]

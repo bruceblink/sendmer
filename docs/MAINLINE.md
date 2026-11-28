@@ -900,8 +900,9 @@ toolchain matrix job、lint、MSRV、workflow 和安装器检查；相对输出�
 
 **R13.1 外部环境验收边界（2026-11-28）**
 
-- 当前验收主机为 macOS arm64。Windows 原生弱网由 `windows-latest` CI 作业执行，现有 Windows
-  通用矩阵继续验证 MSVC/GNU 编译、Clippy 和通用测试。
+- 当前验收主机为 macOS arm64。Windows 原生弱网实验性 CI 已运行，但 iroh 绕过用户态转发器，
+  只转发约 10 KiB 后无法完成 payload，作业已撤回。现有 Windows 通用矩阵继续验证 MSVC/GNU
+  编译、Clippy 和通用测试。
 - 当前环境没有第二台可控设备，也没有可控的 Wi-Fi 与热点切换链路。两台设备传输和网络切换
   需要两台设备、同一局域网、热点链路、时间同步和可回收的测试文件目录。
 - 断电持久性不能用进程强杀替代。现有接收进程强杀、发送方重启、快照损坏和缓存恢复测试已经
@@ -916,9 +917,10 @@ Windows 原生弱网验收步骤已固定在 `DEVELOPMENT.md`。有 Windows 设�
 `local_udp_latency_and_combined`。需要真实 relay 时再设置 `SENDMER_RELAY_SMOKE=1`，运行
 relay-only round-trip 和发送方重启恢复。记录提交版本、Windows/Rust/toolchain、种子、链路参数、
 转发字节、丢包、断网丢弃、恢复首包、完成时间、重试次数、最终 BLAKE3 和缓存清理结果。
-GitHub Actions 的 `Windows native weak-network acceptance` 作业使用 `windows-latest` 执行前两项
-本地 UDP 验收。Windows 测试通过临时 Windows Firewall 出站规则阻断 sender 和 receiver 的直连
-对端端口，规则在测试结束时删除。该作业不能替代 Wi-Fi/热点切换、两台设备传输或断电持久性。
+Windows PowerShell 步骤已写入 `DEVELOPMENT.md`，当前保留为待重新启用的实验性入口。上次
+`windows-latest` 运行安装和删除 Firewall 规则成功，但 payload 仍只转发约 10 KiB，随后失败。
+在形成可靠的 Windows 网络隔离方案前，不把该结果标记为通过。该验收不能替代 Wi-Fi/热点切换、
+两台设备传输或断电持久性。
 
 **验证命令与回退**
 
