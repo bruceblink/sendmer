@@ -51,10 +51,10 @@
 共享作用域。C12.1 已拆分超限测试并增加大小门禁；C12.2 已将目标模块改为真实 Rust 子模块，
 使用明确的内部接口约束依赖方向。
 
-`AlterSendmer` 当前仍使用 crates.io 的 `sendmer 0.11.0`。核心新 API 需要先完成桌面依赖迁移，
-再移除兼容入口。AlterSendmer 是与 sendmer 同步维护的正式下游客户端；已停止维护的是独立项目 AlterSendme。
-桌面端的 UI 状态、历史、偏好和更新逻辑继续由 AlterSendmer 持有，缓存布局、导出
-提交和恢复范围由 sendmer Core 持有。
+`AlterSendmer v0.8.0` 已完成迁移，使用 crates.io 的固定版本 `sendmer = "=0.13.0"`，不再依赖
+`sendmer::core::*`。兼容入口继续保留一个发布周期。AlterSendmer 是与 sendmer 同步维护的正式
+下游客户端；已停止维护的是独立项目 AlterSendme。桌面端的 UI 状态、历史、偏好和更新逻辑继续
+由 AlterSendmer 持有，缓存布局、导出提交和恢复范围由 sendmer Core 持有。
 
 ## 1.2 2026-11-26 代码审查后的后续计划
 
@@ -78,8 +78,8 @@
 | C12.2 模块边界 | sendmer | 将 `sender`、`receiver` 和测试从 `include!` 改为真实子模块 | 模块只通过明确接口交互，严格 Clippy 和 workspace 测试通过 | 每个模块拆分保持独立提交 |
 | C12.3 统一状态机 | sendmer | 定义统一的内部传输状态，集中校验阶段转换和终态 | 非法阶段、重复终态、终态后事件和跨角色事件均有单元测试 | 保留现有事件 schema，先回退内部状态实现 |
 | C12.4 恢复流程 | sendmer | 接入 `RecoverySnapshot` 的原子读写、范围校验、TTL 和终态判断 | 中断、重启、发送方重启、过期、旧 schema 和损坏快照测试通过 | 可关闭快照复用，保留已验证缓存数据 |
-| C12.5 API 迁移 | sendmer 与 AlterSendmer | 统一 CLI/库公共 API、收紧 core 与 SendResult；核心正式发布 v0.13.0 后迁移 AlterSendmer | 核心 API 契约、格式、Clippy、测试通过；正式发布后下游不再依赖 core 并独立验收 | 兼容入口保留一个发布周期 |
-| C12.6 可选功能 | sendmer | 将 clipboard、manifest、JSON Lines、持久恢复、诊断和 updater 移入 feature 或 CLI 层 | 默认构建只编译主路径，`--no-default-features` 和 `--all-features` 均通过 | 保留旧 feature 名称，下一版本再移除默认启用 |
+| C12.5 API 迁移 | sendmer 与 AlterSendmer | 统一 CLI/库公共 API、收紧 core 与 SendResult，迁移桌面客户端 | 核心 API 接口约定、格式、Clippy、测试通过；AlterSendmer v0.8.0 使用 sendmer 0.13.0 且不依赖 core | 兼容入口保留一个发布周期 |
+| C12.6 可选功能 | sendmer | 将 clipboard、manifest、JSON Lines、持久恢复、诊断和 updater 移入 feature 或 CLI 层 | 默认构建、`--no-default-features` 和 `--all-features` 均通过，v0.13.0 已发布 | 保留旧 feature 名称，下一版本再移除默认启用 |
 
 **C12.1 本地实施记录（2026-11-26）**：基于 `1312081`，安装器在下载前拒绝 macOS Intel
 目标，测试覆盖 ARM64 两种架构名称、Intel 拒绝及原有签名失败。CLI 和弱网测试按职责拆分，
@@ -166,22 +166,23 @@ fmt、严格 Clippy、无默认 feature 检查、Rustdoc、3 项 doc tests、大
 AlterSendmer 与 sendmer 同步维护。根据最新开发顺序，先完成核心 C12.5/C12.6，
 发布新的正式 crate，再迁移 AlterSendmer 至该已发布版本；旧项目 AlterSendme 不纳入验收。
 
-**C12.6 实施记录（2026-11-26，v0.13.0 发布候选）**：C12.5 已通过 PR #14 合入 main
-（`515c580`），PR CI 20/20 成功。按用户确定的发布顺序，AlterSendmer PR #2 为 draft，
-不在核心正式 Release 和 crates.io 发布前合并。CLI 与 AlterSendmer 通过同一 crate-root API。
+**C12.6 实施记录（2026-11-26，v0.13.0）**：C12.5 已通过 PR #14 合入 main
+（`515c580`），PR CI 20/20 成功。核心 `v0.13.0` 已发布后，AlterSendmer 完成 `v0.8.0`
+迁移。CLI 与 AlterSendmer 通过同一 crate-root API。
 新增 cli、manifest、persistent-recovery feature，保留 clipboard 名称并依赖 cli。
 默认源码构建启用基础 CLI；无默认 feature 的核心构建不直接依赖 clap、console、indicatif、
 tracing-subscriber、crossterm、filetime、fs4。CLI 展示、JSONL、诊断和 updater 在二进制层；
 TM1 导入导出、持久缓存和快照逻辑按 feature 编译，公开模型及安全验证保留。
 禁用能力明确返回错误：禁用缓存不创建或清理存储；不支持的 TM1 不作为 legacy 数据导出。
 正式五平台原生和 cross 构建显式启用全部 feature，兼容既有安装用户。
-v0.13.0 是包含 Rust 源码/API/默认 feature 变更的新次版本；不覆盖已发布 v0.12.0。
+v0.13.0 是包含 Rust 源码、API 和默认 feature 变更的新次版本，不覆盖已发布 v0.12.0。
 Linux x86_64 / Rust 1.100.0：三种构建严格 Clippy 通过；最小库 184 项、默认 CLI 237 项、
 全功能 270 项测试通过（默认及全功能各 2 项 opt-in ignored）；默认 CLI 19 项、全功能 CLI
 31 项通过。实际 v0.12.0 全功能 sender 到 v0.13.0 默认 receiver 的 TM1 拒绝测试通过，
 无导出文件。大小门禁 108 个文件、843 个函数，最大 573/115 行。未验证真实 relay、
 故障注入或断电持久性。正式 tag 仅在候选 PR/main CI 与发布前门禁验收完成后创建，
-签名、SBOM、provenance、不可变 release 信任策略不变；未发布时不得声称 v0.13.0 已上线。
+签名、SBOM、provenance 和不可变 release 信任策略不变。GitHub Release、crates.io 和五目标资产
+已完成回读，macOS 资产只保留 ARM64。
 
 每个阶段都必须先完成对应验收，再提交和推送。涉及公开 API 时同步更新 rustdoc、示例、fixture、
 README、README_ZH 和 AlterSendmer 迁移记录。涉及平台安装器或 workflow 时增加 actionlint、安装器
@@ -201,11 +202,33 @@ python3 ./tests/release-notes.py
 bash ./tests/release-assets.sh
 ```
 
+## 1.3 2026-11-28 v0.13.0 之后的研发方向
+
+`sendmer v0.13.0` 和 `AlterSendmer v0.8.0` 已完成核心迁移。后续工作进入稳定性证据、性能边界
+和可选适配器评估阶段。新的方向必须复用现有传输、manifest、缓存和原子导出能力，不在核心协议中
+复制桌面状态或引入账号、云端存储和后台同步。
+
+| 阶段 | 方向 | 目标 | 验收条件 | 范围边界 |
+| --- | --- | --- | --- | --- |
+| R13.1 | 真实网络与恢复验收 | 验证 relay、弱网、发送方重启、接收进程重启和缓存过期 | 记录运行环境、故障参数、恢复时间、缺失范围、最终 BLAKE3 和缓存清理结果 | 不修改协议和默认重试参数；服务不可达时记录未执行 |
+| P13.1 | 恢复性能与资源边界 | 测量快照检查点、store 查询、缓存占用和大目录导入成本 | 形成 1 MiB、1 GiB、十万文件三个规模档位的基线，报告 CPU、内存、磁盘和耗时 | 不把单机结果写成跨平台结论；不提前增加限额参数 |
+| A13.1 | 局域网适配器评估 | 评估发现、设备身份核验和接收确认是否适合作为独立适配器 | 先完成威胁模型、广播字段、用户确认流程和发现失败回退设计 | sendmer Core 继续只处理 ticket 和传输；桌面端负责界面和确认 |
+| T13.1 | 文本与批量输入评估 | 复用 TM1 manifest 和现有校验流程支持短文本、链接和批量选择 | 明确字节限制、UTF-8 规则、历史展示、目标冲突和恢复行为 | 不创建第二套传输协议；先完成需求与数据约定 |
+| I13.1 | 互通与移动端评估 | 评估 LocalSend 互通和移动端接入成本 | 形成平台能力矩阵、身份确认差异、后台限制和维护成本报告 | 未完成独立安全设计前不进入核心实现 |
+
+优先推进 `R13.1` 和 `P13.1`。它们可以直接验证 v0.13.0 的恢复和资源边界，改动范围集中，回退
+只涉及测试、基准和报告。`A13.1`、`T13.1` 和 `I13.1` 先完成设计评估，再决定是否建立新的
+代码模块或公开 API。
+
+每个方向都需要建立独立提交、验证命令、未执行项和回滚边界。涉及 AlterSendmer 的工作必须先
+确认 sendmer 已有公开 API 可以满足需求。核心 API 变更必须先更新本文件、示例、迁移说明和下游
+适配清单，再开始实现。
+
 ## 2. 产品边界与当前基线
 
-当前核心发布基线为 `sendmer v0.12.0`。tag `v0.12.0` 指向 `b4460a2`，Release workflow
-`45422939567` 已完成构建和发布，crates.io 可解析 `sendmer 0.12.0`。`AlterSendmer v0.7.3`
-仍通过 crates.io 使用 `sendmer 0.11.0`。本项目提供一次性的点对点文件传输。接收方持有有效传输票据即可请求内容，
+当前核心发布基线为 `sendmer v0.13.0`。tag `v0.13.0` 指向 `198d650`，Release workflow
+`45837190246` 已完成构建和发布，crates.io 可解析 `sendmer 0.13.0`。`AlterSendmer v0.8.0`
+使用固定版本 `sendmer = "=0.13.0"`。本项目提供一次性的点对点文件传输。接收方持有有效传输票据即可请求内容，
 因此用户应通过可信渠道分享票据。
 
 核心传输层负责：
@@ -364,6 +387,7 @@ relay token 或底层连接标识。`file_names` 只能携带使用 `/` 分隔�
 | `v0.11.0` | 事件流角色一致性校验、CLI 短帮助分层和依赖安全补丁 | `AlterSendmer v0.7.0`、`v0.7.1` |
 | `v0.11.1` | 缓存动态配额检查、句柄导入、准备阶段取消和导出路径安全修复 | 待桌面适配 |
 | `v0.11.2` | 修复 macOS ARM64 GitHub runner 标签并恢复完整发布矩阵 | 待桌面适配 |
+| `v0.13.0` | 统一事件状态机、持久恢复快照、真实模块边界、可选 feature 和 crate-root API | `AlterSendmer v0.8.0` |
 
 `AlterSendmer v0.6.0` 使用 `sendmer = "0.10.0"`，只映射公开配置、事件和结构化错误：上传
 上限以 MiB/s 输入后转换为 bytes/s；持久缓存默认启用并提供 `1 / 7 / 30` 天新条目 TTL 和安全
